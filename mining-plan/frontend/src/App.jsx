@@ -40,27 +40,95 @@ import {
   Legend,
   ResponsiveContainer
 } from 'recharts';
+import { Delaunay } from 'd3-delaunay';
+import GeometryFactory from 'jsts/org/locationtech/jts/geom/GeometryFactory.js';
+import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
+import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
+
+const DEFAULT_PLANNING_PARAMS = {
+  mineCapacity: '',
+  seamThickness: '',
+  coalDensity: '1.4',
+  recoveryRateMin: '0.85',
+  recoveryRateMax: '0.95',
+  roadwayOrientation: 'x',
+  miningMethod: '综放',
+  coalPillarMin: '30',
+  coalPillarMax: '50',
+  coalPillarTarget: '40',
+  faceCountSuggestedMin: '',
+  faceCountSuggestedMax: '',
+  faceCountSelected: '',
+  faceWidthMin: '',
+  faceWidthMax: '',
+  faceAdvanceMin: '',
+  faceAdvanceMax: '',
+  boundaryPillarMin: '50',
+  boundaryPillarMax: '80',
+  boundaryPillarTarget: '65',
+};
 
 const App = () => {
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
-  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology'
+  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning'
   const [miningHeight, setMiningHeight] = useState(4.5);
   const [stepLength, setStepLength] = useState(25);
   const [richFactor, setRichFactor] = useState(1.1);
   const [scenarioWeights, setScenarioWeights] = useState({ wd: 0.45, wo: 0.30, wf: 0.25 });
+  const [lastParamExtractionMode, setLastParamExtractionMode] = useState('full'); // 'full' | 'geo'
+  const [planningParams, setPlanningParams] = useState(() => ({ ...DEFAULT_PLANNING_PARAMS }));
+  // 智能规划：保存反算可行解集，用于调节 N 时即时重绘
+  const [planningReverseSolutions, setPlanningReverseSolutions] = useState([]);
+  const [planningAdvanceAxis, setPlanningAdvanceAxis] = useState('x');
   const [showMainMap, setShowMainMap] = useState(true);
   const [showErrorAnalysis, setShowErrorAnalysis] = useState(true);
   const [showMeasuredMapping, setShowMeasuredMapping] = useState(true);
   const [activeAccordion, setActiveAccordion] = useState(['summary']);
+
+  const lastAutoSeamThicknessRef = useRef(null);
+
+  const openRightPanelOnly = (key) => {
+    setActiveAccordion(key ? [key] : []);
+  };
+
+  const switchMainViewModeWithRightPanel = (mode) => {
+    setMainViewMode(mode);
+    if (mode === 'planning') openRightPanelOnly('planning');
+    if (mode === 'odi') openRightPanelOnly('summary');
+  };
   const [boundaryData, setBoundaryData] = useState([]);
   const [drillholeData, setDrillholeData] = useState([]);
   const [drillholeLayersById, setDrillholeLayersById] = useState({});
+  // 含水层扰动场景：含水层类型选择（来自“含水层标记”列，例如：1含、2含、3）
+  const [selectedAquiferType, setSelectedAquiferType] = useState('');
   const [workingFaceData, setWorkingFaceData] = useState([]);
+  // 智能规划：规划工作面轮廓（世界坐标）
+  const [plannedWorkfaceLoopsWorld, setPlannedWorkfaceLoopsWorld] = useState([]); // [{ faceIndex, loop: [{x,y}...] }]
+  const [showPlanningBoundaryOverlay, setShowPlanningBoundaryOverlay] = useState(false);
   const [generatedPoints, setGeneratedPoints] = useState(null);
+  // 智能规划：工作面宽度范围仅首次计算回填，后续保持用户选择（需纳入清空/撤回）
+  const [hasInitializedFaceWidthRange, setHasInitializedFaceWidthRange] = useState(false);
+  const [planningPreStartSnapshot, setPlanningPreStartSnapshot] = useState(null);
   // 工作面：高精度参数提取（向导 Step2）
   const [mineActualHeightM, setMineActualHeightM] = useState(4.5);
+  // 含水层扰动场景：多工作面采高（按工作面编号 No.1~No.n 分别设置）
+  const [aquiferMineHeightByFace, setAquiferMineHeightByFace] = useState([]); // number[]; index=faceIndex-1
+  const [aquiferSelectedFaceNo, setAquiferSelectedFaceNo] = useState(1); // 1..n
   const [roofCavingAngleDeg, setRoofCavingAngleDeg] = useState(0);
+
+  // 含水层扰动场景：多工作面顶板垮落角 δ（按工作面编号 No.1~No.n 分别设置）
+  const [aquiferRoofCavingAngleByFace, setAquiferRoofCavingAngleByFace] = useState([]); // number[]; index=faceIndex-1
+
+  // 地表下沉场景：多工作面采高/顶板垮落角（按工作面编号分别设置）
+  const [surfaceMineHeightByFace, setSurfaceMineHeightByFace] = useState([]);
+  const [surfaceSelectedFaceNo, setSurfaceSelectedFaceNo] = useState(1);
+  const [surfaceRoofCavingAngleByFace, setSurfaceRoofCavingAngleByFace] = useState([]);
+
+  // 上行开采场景：多工作面采高/顶板垮落角（按工作面编号分别设置）
+  const [upwardMineHeightByFace, setUpwardMineHeightByFace] = useState([]);
+  const [upwardSelectedFaceNo, setUpwardSelectedFaceNo] = useState(1);
+  const [upwardRoofCavingAngleByFace, setUpwardRoofCavingAngleByFace] = useState([]);
   const [paramExtractionResult, setParamExtractionResult] = useState(null);
   // ODI 计算结果（分级响应 + 中间主图）
   const [odiResult, setOdiResult] = useState(null);
@@ -77,6 +145,8 @@ const App = () => {
   const [odiVizPalette, setOdiVizPalette] = useState('blueRed');
   const [odiVizSteps, setOdiVizSteps] = useState(5); // 3~10
   const [odiVizRange, setOdiVizRange] = useState({ min: '', max: '' }); // string inputs
+  // 含水层扰动场景：ODI 自然邻域插值输出平滑度（0=不平滑；越大越丝滑）
+  const [aquiferOdiSmoothPasses, setAquiferOdiSmoothPasses] = useState(2); // 0~6
   const [showMainMapCoordinates, setShowMainMapCoordinates] = useState(true);
   const [crosshair, setCrosshair] = useState({
     active: false,
@@ -89,9 +159,21 @@ const App = () => {
   const [selectedCoal, setSelectedCoal] = useState('');
   const [showBoundaryLabels, setShowBoundaryLabels] = useState(false);
   const [showDrillholeLabels, setShowDrillholeLabels] = useState(false);
+  const [showWorkfaceOutline, setShowWorkfaceOutline] = useState(false);
+  const [showMeasuredPoints, setShowMeasuredPoints] = useState(true);
+
+  // 主图测量工具：点击两点，显示水平/垂直距离（世界坐标单位）
+  const [measureEnabled, setMeasureEnabled] = useState(false);
+  const [measureAxis, setMeasureAxis] = useState('h'); // 'h' | 'v'
+  const [measurePoints, setMeasurePoints] = useState([]); // [{ sx, sy, wx, wy }]
 
   // 实测约束数据（分场景独立存储）：当前先实现“地表下沉场景”的分区逻辑
   const [measuredConstraintData, setMeasuredConstraintData] = useState([]);
+  // 实测测线（按导入文件分组）：用于误差计算/测线选择
+  const [measuredConstraintLines, setMeasuredConstraintLines] = useState([]); // [{ lineId, label, points: [{id,x,y,measured,fileId}] }]
+  const [selectedMeasuredLineId, setSelectedMeasuredLineId] = useState('');
+  const [errorAnalysisByLineId, setErrorAnalysisByLineId] = useState({}); // { [lineId]: { computedAt, data: [...] } }
+  const [showErrorExportMenu, setShowErrorExportMenu] = useState(false);
   const [measuredZoningResult, setMeasuredZoningResult] = useState(null);
 
   const setMeasuredZoningResultTracked = (next) => {
@@ -114,9 +196,13 @@ const App = () => {
   const workingFaceFileInputRef = useRef(null);
   const mainMapSvgRef = useRef(null);
   const mainMapContainerRef = useRef(null);
+  const errorChartContainerRef = useRef(null);
+  const errorExportMenuRef = useRef(null);
+  const errorExportButtonRef = useRef(null);
 
   const [isMainMapFullscreen, setIsMainMapFullscreen] = useState(false);
   const [showMainMapExportMenu, setShowMainMapExportMenu] = useState(false);
+  const [showMainMapLabelsMenu, setShowMainMapLabelsMenu] = useState(false);
 
   const uid = useId();
   const [mapVizSettings, setMapVizSettings] = useState({
@@ -137,7 +223,16 @@ const App = () => {
         workingFaceData: [],
         generatedPoints: null,
         mineActualHeightM: 4.5,
+        aquiferMineHeightByFace: [],
+        aquiferSelectedFaceNo: 1,
         roofCavingAngleDeg: 0,
+        aquiferRoofCavingAngleByFace: [],
+        surfaceMineHeightByFace: [],
+        surfaceSelectedFaceNo: 1,
+        surfaceRoofCavingAngleByFace: [],
+        upwardMineHeightByFace: [],
+        upwardSelectedFaceNo: 1,
+        upwardRoofCavingAngleByFace: [],
         paramExtractionResult: null,
         odiResult: null,
         showLayerDrillholes: true,
@@ -151,8 +246,11 @@ const App = () => {
         odiVizPalette: 'blueRed',
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
+        aquiferOdiSmoothPasses: 0,
         showBoundaryLabels: false,
         showDrillholeLabels: false,
+        showWorkfaceOutline: false,
+        showMeasuredPoints: true,
         miningHeight: 4.5,
         stepLength: 25,
         richFactor: 1.1,
@@ -168,7 +266,11 @@ const App = () => {
           Mi: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
         },
         measuredConstraintData: [],
+        measuredConstraintLines: [],
+        selectedMeasuredLineId: '',
+        errorAnalysisByLineId: {},
         measuredZoningResult: null,
+        selectedAquiferType: '',
       },
       aquifer: {
         boundaryData: [],
@@ -177,7 +279,16 @@ const App = () => {
         workingFaceData: [],
         generatedPoints: null,
         mineActualHeightM: 4.5,
+        aquiferMineHeightByFace: [],
+        aquiferSelectedFaceNo: 1,
         roofCavingAngleDeg: 0,
+        aquiferRoofCavingAngleByFace: [],
+        surfaceMineHeightByFace: [],
+        surfaceSelectedFaceNo: 1,
+        surfaceRoofCavingAngleByFace: [],
+        upwardMineHeightByFace: [],
+        upwardSelectedFaceNo: 1,
+        upwardRoofCavingAngleByFace: [],
         paramExtractionResult: null,
         odiResult: null,
         showLayerDrillholes: true,
@@ -191,12 +302,14 @@ const App = () => {
         odiVizPalette: 'blueRed',
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
+        aquiferOdiSmoothPasses: 2,
         showBoundaryLabels: false,
         showDrillholeLabels: false,
+        showMeasuredPoints: true,
         miningHeight: 4.5,
         stepLength: 25,
         richFactor: 1.1,
-        scenarioWeights: { wd: 0.6, wo: 0.25, wf: 0.15 },
+        scenarioWeights: { wd: 0.15, wo: 0.25, wf: 0.6 },
         selectedCoal: '',
         geologyLayoutMode: '2x2',
         geoPickA: 'Ti',
@@ -208,7 +321,11 @@ const App = () => {
           Mi: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
         },
         measuredConstraintData: [],
+        measuredConstraintLines: [],
+        selectedMeasuredLineId: '',
+        errorAnalysisByLineId: {},
         measuredZoningResult: null,
+        selectedAquiferType: '',
       },
       upward: {
         boundaryData: [],
@@ -217,7 +334,16 @@ const App = () => {
         workingFaceData: [],
         generatedPoints: null,
         mineActualHeightM: 4.5,
+        aquiferMineHeightByFace: [],
+        aquiferSelectedFaceNo: 1,
         roofCavingAngleDeg: 0,
+        aquiferRoofCavingAngleByFace: [],
+        surfaceMineHeightByFace: [],
+        surfaceSelectedFaceNo: 1,
+        surfaceRoofCavingAngleByFace: [],
+        upwardMineHeightByFace: [],
+        upwardSelectedFaceNo: 1,
+        upwardRoofCavingAngleByFace: [],
         paramExtractionResult: null,
         odiResult: null,
         showLayerDrillholes: true,
@@ -231,8 +357,10 @@ const App = () => {
         odiVizPalette: 'blueRed',
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
+        aquiferOdiSmoothPasses: 0,
         showBoundaryLabels: false,
         showDrillholeLabels: false,
+        showMeasuredPoints: true,
         miningHeight: 4.5,
         stepLength: 25,
         richFactor: 1.1,
@@ -248,7 +376,11 @@ const App = () => {
           Mi: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
         },
         measuredConstraintData: [],
+        measuredConstraintLines: [],
+        selectedMeasuredLineId: '',
+        errorAnalysisByLineId: {},
         measuredZoningResult: null,
+        selectedAquiferType: '',
       },
     }),
     []
@@ -267,7 +399,16 @@ const App = () => {
     workingFaceData: cloneJson(workingFaceData),
     generatedPoints: cloneJson(generatedPoints),
     mineActualHeightM,
+    aquiferMineHeightByFace: cloneJson(aquiferMineHeightByFace),
+    aquiferSelectedFaceNo,
     roofCavingAngleDeg,
+    aquiferRoofCavingAngleByFace: cloneJson(aquiferRoofCavingAngleByFace),
+    surfaceMineHeightByFace: cloneJson(surfaceMineHeightByFace),
+    surfaceSelectedFaceNo,
+    surfaceRoofCavingAngleByFace: cloneJson(surfaceRoofCavingAngleByFace),
+    upwardMineHeightByFace: cloneJson(upwardMineHeightByFace),
+    upwardSelectedFaceNo,
+    upwardRoofCavingAngleByFace: cloneJson(upwardRoofCavingAngleByFace),
     paramExtractionResult: cloneJson(paramExtractionResult),
     odiResult: cloneJson(odiResult),
     showLayerDrillholes,
@@ -281,8 +422,11 @@ const App = () => {
     odiVizPalette,
     odiVizSteps,
     odiVizRange: cloneJson(odiVizRange),
+    aquiferOdiSmoothPasses,
     showBoundaryLabels,
     showDrillholeLabels,
+    showWorkfaceOutline,
+    showMeasuredPoints,
     miningHeight,
     stepLength,
     richFactor,
@@ -293,7 +437,11 @@ const App = () => {
     geoPickB,
     mapVizSettings: cloneJson(mapVizSettings),
     measuredConstraintData: cloneJson(measuredConstraintData),
+    measuredConstraintLines: cloneJson(measuredConstraintLines),
+    selectedMeasuredLineId,
+    errorAnalysisByLineId: cloneJson(errorAnalysisByLineId),
     measuredZoningResult: cloneJson(measuredZoningResult),
+    selectedAquiferType,
   });
 
   const applyScenarioParams = (p) => {
@@ -304,7 +452,28 @@ const App = () => {
     setWorkingFaceData(p.workingFaceData ?? []);
     setGeneratedPoints(p.generatedPoints ?? null);
     setMineActualHeightM(Number.isFinite(Number(p.mineActualHeightM)) ? Number(p.mineActualHeightM) : 4.5);
+    setAquiferMineHeightByFace(Array.isArray(p.aquiferMineHeightByFace) ? p.aquiferMineHeightByFace.map((v) => Number(v)) : []);
+    {
+      const v = Number(p.aquiferSelectedFaceNo);
+      const s = Number.isFinite(v) ? Math.max(1, Math.round(v)) : 1;
+      setAquiferSelectedFaceNo(s);
+    }
     setRoofCavingAngleDeg(Number.isFinite(Number(p.roofCavingAngleDeg)) ? Number(p.roofCavingAngleDeg) : 0);
+    setAquiferRoofCavingAngleByFace(Array.isArray(p.aquiferRoofCavingAngleByFace) ? p.aquiferRoofCavingAngleByFace.map((v) => Number(v)) : []);
+    setSurfaceMineHeightByFace(Array.isArray(p.surfaceMineHeightByFace) ? p.surfaceMineHeightByFace.map((v) => Number(v)) : []);
+    {
+      const v = Number(p.surfaceSelectedFaceNo);
+      const s = Number.isFinite(v) ? Math.max(1, Math.round(v)) : 1;
+      setSurfaceSelectedFaceNo(s);
+    }
+    setSurfaceRoofCavingAngleByFace(Array.isArray(p.surfaceRoofCavingAngleByFace) ? p.surfaceRoofCavingAngleByFace.map((v) => Number(v)) : []);
+    setUpwardMineHeightByFace(Array.isArray(p.upwardMineHeightByFace) ? p.upwardMineHeightByFace.map((v) => Number(v)) : []);
+    {
+      const v = Number(p.upwardSelectedFaceNo);
+      const s = Number.isFinite(v) ? Math.max(1, Math.round(v)) : 1;
+      setUpwardSelectedFaceNo(s);
+    }
+    setUpwardRoofCavingAngleByFace(Array.isArray(p.upwardRoofCavingAngleByFace) ? p.upwardRoofCavingAngleByFace.map((v) => Number(v)) : []);
     setParamExtractionResult(p.paramExtractionResult ?? null);
     setOdiResult(p.odiResult ?? null);
     setShowLayerDrillholes(p.showLayerDrillholes ?? true);
@@ -322,8 +491,15 @@ const App = () => {
       setOdiVizSteps(s);
     }
     setOdiVizRange(p.odiVizRange ?? { min: '', max: '' });
+    {
+      const v = Number(p.aquiferOdiSmoothPasses);
+      const s = Number.isFinite(v) ? Math.max(0, Math.min(6, Math.round(v))) : 2;
+      setAquiferOdiSmoothPasses(s);
+    }
     setShowBoundaryLabels(Boolean(p.showBoundaryLabels));
     setShowDrillholeLabels(Boolean(p.showDrillholeLabels));
+    setShowWorkfaceOutline(Boolean(p.showWorkfaceOutline));
+    setShowMeasuredPoints(p.showMeasuredPoints ?? true);
     setMiningHeight(Number(p.miningHeight));
     setStepLength(Number(p.stepLength));
     setRichFactor(Number(p.richFactor));
@@ -334,7 +510,11 @@ const App = () => {
     setGeoPickB(String(p.geoPickB ?? 'Hi'));
     setMapVizSettings(p.mapVizSettings);
     setMeasuredConstraintData(p.measuredConstraintData ?? []);
+    setMeasuredConstraintLines(p.measuredConstraintLines ?? []);
+    setSelectedMeasuredLineId(String(p.selectedMeasuredLineId ?? ''));
+    setErrorAnalysisByLineId(p.errorAnalysisByLineId ?? {});
     setMeasuredZoningResultTracked(p.measuredZoningResult ?? null);
+    setSelectedAquiferType(String(p.selectedAquiferType ?? ''));
   };
 
   const handleScenarioSelect = (nextId) => {
@@ -353,7 +533,7 @@ const App = () => {
     setActiveTab(nextId);
   };
 
-  // 全局：清空所有 / 撤回 / 前进一步（重做）
+  // 全局：清空当前场景 / 撤回 / 前进一步（重做）
   const HISTORY_MAX = 30;
   const isRestoringRef = useRef(false);
   const historyPastRef = useRef([]);
@@ -381,6 +561,13 @@ const App = () => {
       showMainMap,
       showMeasuredMapping,
       showErrorAnalysis,
+      planningParams: cloneJson(planningParams),
+      planningReverseSolutions: cloneJson(planningReverseSolutions),
+      planningAdvanceAxis,
+      plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+      showPlanningBoundaryOverlay,
+      hasInitializedFaceWidthRange,
+      planningPreStartSnapshot: cloneJson(planningPreStartSnapshot),
       scenarioParamsById: scenarioParamsMerged,
     };
   };
@@ -397,6 +584,13 @@ const App = () => {
       setShowMainMap(Boolean(snap.showMainMap));
       setShowMeasuredMapping(Boolean(snap.showMeasuredMapping));
       setShowErrorAnalysis(Boolean(snap.showErrorAnalysis));
+      setPlanningParams(snap.planningParams ? cloneJson(snap.planningParams) : { ...DEFAULT_PLANNING_PARAMS });
+      setPlanningReverseSolutions(snap.planningReverseSolutions ?? []);
+      setPlanningAdvanceAxis(String(snap.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x');
+      setPlannedWorkfaceLoopsWorld(snap.plannedWorkfaceLoopsWorld ?? []);
+      setShowPlanningBoundaryOverlay(Boolean(snap.showPlanningBoundaryOverlay));
+      setHasInitializedFaceWidthRange(Boolean(snap.hasInitializedFaceWidthRange));
+      setPlanningPreStartSnapshot(snap.planningPreStartSnapshot ? cloneJson(snap.planningPreStartSnapshot) : null);
       setScenarioParamsById(cloneJson(merged));
       applyScenarioParams(nextScenarioParams);
       setActiveTab(tab);
@@ -495,20 +689,60 @@ const App = () => {
   }, []);
 
   const handleClearAll = () => {
-    const clearedScenarioParamsById = {
-      surface: cloneJson(scenarioDefaultsById.surface),
-      aquifer: cloneJson(scenarioDefaultsById.aquifer),
-      upward: cloneJson(scenarioDefaultsById.upward),
-    };
+    const current = getAppSnapshot();
+
+    // 若当前已有“智能规划”产物，则优先回退到“启动智能规划”点击前的规划快照（只影响规划模块，不清空场景输入）
+    const hasPlanningArtifacts = Boolean(
+      current.showPlanningBoundaryOverlay
+      || (Array.isArray(current.plannedWorkfaceLoopsWorld) && current.plannedWorkfaceLoopsWorld.length)
+      || (Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions.length)
+      || (!Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions)
+      || current.hasInitializedFaceWidthRange
+      || String(current?.planningParams?.faceCountSelected ?? '').trim()
+      || String(current?.planningParams?.faceCountSuggestedMin ?? '').trim()
+      || String(current?.planningParams?.faceCountSuggestedMax ?? '').trim()
+    );
+
+    if (hasPlanningArtifacts && planningPreStartSnapshot) {
+      const nextSnap = {
+        ...current,
+        planningParams: cloneJson(planningPreStartSnapshot.planningParams ?? current.planningParams),
+        planningReverseSolutions: cloneJson(planningPreStartSnapshot.planningReverseSolutions ?? current.planningReverseSolutions),
+        planningAdvanceAxis: String(planningPreStartSnapshot.planningAdvanceAxis ?? current.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x',
+        plannedWorkfaceLoopsWorld: cloneJson(planningPreStartSnapshot.plannedWorkfaceLoopsWorld ?? []),
+        showPlanningBoundaryOverlay: Boolean(planningPreStartSnapshot.showPlanningBoundaryOverlay),
+        hasInitializedFaceWidthRange: Boolean(planningPreStartSnapshot.hasInitializedFaceWidthRange),
+        planningPreStartSnapshot: null,
+      };
+      pushHistoryFromCurrentTo(nextSnap);
+      applyAppSnapshot(nextSnap);
+      setPlanningPreStartSnapshot(null);
+      setMeasureEnabled(false);
+      setMeasurePoints([]);
+      return;
+    }
+
+    const tab = String(current.activeTab ?? activeTab);
+    const merged = cloneJson(current.scenarioParamsById ?? {});
+    merged[tab] = cloneJson(scenarioDefaultsById?.[tab] ?? scenarioDefaultsById.surface);
+    // 清空：同时重置智能规划模块，且支持撤回
     const nextSnap = {
-      activeTab: 'surface',
-      mainViewMode: 'odi',
-      showMainMap: true,
-      showErrorAnalysis: true,
-      scenarioParamsById: clearedScenarioParamsById,
+      ...current,
+      scenarioParamsById: merged,
+      activeTab: tab,
+      planningParams: { ...DEFAULT_PLANNING_PARAMS },
+      planningReverseSolutions: [],
+      planningAdvanceAxis: 'x',
+      plannedWorkfaceLoopsWorld: [],
+      showPlanningBoundaryOverlay: false,
+      hasInitializedFaceWidthRange: false,
+      planningPreStartSnapshot: null,
     };
     pushHistoryFromCurrentTo(nextSnap);
     applyAppSnapshot(nextSnap);
+    setPlanningPreStartSnapshot(null);
+    setMeasureEnabled(false);
+    setMeasurePoints([]);
   };
 
   // 自动记录：把用户操作形成的状态变化纳入历史栈（防止每次输入都刷屏，做一个短暂 debounce）
@@ -554,12 +788,19 @@ const App = () => {
     showMainMap,
     showMeasuredMapping,
     showErrorAnalysis,
+    planningParams,
+    planningReverseSolutions,
+    planningAdvanceAxis,
+    plannedWorkfaceLoopsWorld,
+    showPlanningBoundaryOverlay,
+    hasInitializedFaceWidthRange,
     boundaryData,
     drillholeData,
     drillholeLayersById,
     selectedCoal,
     showBoundaryLabels,
     showDrillholeLabels,
+    showWorkfaceOutline,
     miningHeight,
     stepLength,
     richFactor,
@@ -570,17 +811,183 @@ const App = () => {
     mapVizSettings,
     measuredConstraintData,
     measuredZoningResult,
+    aquiferOdiSmoothPasses,
+    aquiferMineHeightByFace,
+    aquiferSelectedFaceNo,
+    aquiferRoofCavingAngleByFace,
+    surfaceMineHeightByFace,
+    surfaceSelectedFaceNo,
+    surfaceRoofCavingAngleByFace,
+    upwardMineHeightByFace,
+    upwardSelectedFaceNo,
+    upwardRoofCavingAngleByFace,
     scenarioParamsById,
   ]);
 
-  // 模拟误差分析数据
-  const errorData = [
-    { id: '测点1', odi: 0.12, measured: 0.85, error: 0.05 },
-    { id: '测点2', odi: 0.35, measured: 1.25, error: 0.08 },
-    { id: '测点3', odi: 0.68, measured: 2.90, error: -0.12 },
-    { id: '测点4', odi: 0.82, measured: 4.10, error: 0.02 },
-    { id: '测点5', odi: 0.91, measured: 4.80, error: 0.15 },
-  ];
+  const workingFaceDataTagged = useMemo(() => {
+    // 约定：每 4 个点为 1 个工作面（No.1~No.n），依导入顺序编号
+    const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+    return src.map((p, idx) => ({ ...p, faceIndex: Math.floor(idx / 4) + 1 }));
+  }, [workingFaceData]);
+
+  const workfaceCount = useMemo(() => {
+    // 以导入工作面坐标数据为准：按 4 点一组判别工作面数量
+    const n = Math.floor((workingFaceDataTagged?.length ?? 0) / 4);
+    return Math.max(0, n);
+  }, [workingFaceDataTagged]);
+
+  const activeSelectedFaceNo = useMemo(() => {
+    if (activeTab === 'surface') return surfaceSelectedFaceNo;
+    if (activeTab === 'upward') return upwardSelectedFaceNo;
+    return aquiferSelectedFaceNo;
+  }, [activeTab, surfaceSelectedFaceNo, upwardSelectedFaceNo, aquiferSelectedFaceNo]);
+
+  const setActiveSelectedFaceNo = (next) => {
+    if (activeTab === 'surface') setSurfaceSelectedFaceNo(next);
+    else if (activeTab === 'upward') setUpwardSelectedFaceNo(next);
+    else setAquiferSelectedFaceNo(next);
+  };
+
+  const activeMineHeightByFace = useMemo(() => {
+    if (activeTab === 'surface') return surfaceMineHeightByFace;
+    if (activeTab === 'upward') return upwardMineHeightByFace;
+    return aquiferMineHeightByFace;
+  }, [activeTab, surfaceMineHeightByFace, upwardMineHeightByFace, aquiferMineHeightByFace]);
+
+  const setActiveMineHeightByFace = (next) => {
+    if (activeTab === 'surface') setSurfaceMineHeightByFace(next);
+    else if (activeTab === 'upward') setUpwardMineHeightByFace(next);
+    else setAquiferMineHeightByFace(next);
+  };
+
+  const activeRoofAngleByFace = useMemo(() => {
+    if (activeTab === 'surface') return surfaceRoofCavingAngleByFace;
+    if (activeTab === 'upward') return upwardRoofCavingAngleByFace;
+    return aquiferRoofCavingAngleByFace;
+  }, [activeTab, surfaceRoofCavingAngleByFace, upwardRoofCavingAngleByFace, aquiferRoofCavingAngleByFace]);
+
+  const setActiveRoofAngleByFace = (next) => {
+    if (activeTab === 'surface') setSurfaceRoofCavingAngleByFace(next);
+    else if (activeTab === 'upward') setUpwardRoofCavingAngleByFace(next);
+    else setAquiferRoofCavingAngleByFace(next);
+  };
+
+  useEffect(() => {
+    if (!workfaceCount) {
+      // 无工作面时，保持默认
+      if (activeSelectedFaceNo !== 1) setActiveSelectedFaceNo(1);
+      if ((activeMineHeightByFace?.length ?? 0) !== 0) setActiveMineHeightByFace([]);
+      if ((activeRoofAngleByFace?.length ?? 0) !== 0) setActiveRoofAngleByFace([]);
+      return;
+    }
+
+    // 选择项保持在 1..n
+    if (activeSelectedFaceNo < 1 || activeSelectedFaceNo > workfaceCount) {
+      setActiveSelectedFaceNo(1);
+    }
+
+    // 采高数组对齐 workfaceCount：缺失部分用当前 mineActualHeightM 兜底
+    const cur = Array.isArray(activeMineHeightByFace) ? activeMineHeightByFace : [];
+    if (cur.length !== workfaceCount) {
+      const fallback = Number.isFinite(Number(mineActualHeightM)) ? Number(mineActualHeightM) : 4.5;
+      const next = Array.from({ length: workfaceCount }, (_, i) => {
+        const v = Number(cur[i]);
+        return Number.isFinite(v) ? v : fallback;
+      });
+      setActiveMineHeightByFace(next);
+    }
+
+    // 顶板垮落角数组对齐 workfaceCount：缺失部分用当前 roofCavingAngleDeg 兜底
+    const curD = Array.isArray(activeRoofAngleByFace) ? activeRoofAngleByFace : [];
+    if (curD.length !== workfaceCount) {
+      const fallbackD = Number.isFinite(Number(roofCavingAngleDeg)) ? Number(roofCavingAngleDeg) : 0;
+      const nextD = Array.from({ length: workfaceCount }, (_, i) => {
+        const v = Number(curD[i]);
+        return Number.isFinite(v) ? v : fallbackD;
+      });
+      setActiveRoofAngleByFace(nextD);
+    }
+  }, [activeTab, workfaceCount, activeSelectedFaceNo, activeMineHeightByFace, activeRoofAngleByFace, mineActualHeightM, roofCavingAngleDeg]);
+
+  const safeFileId = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').slice(0, 120);
+  const normalizeMinMax = (values, eps = 1e-12) => {
+    const a = (Array.isArray(values) ? values : []).map((v) => Number(v)).filter(Number.isFinite);
+    if (!a.length) return { min: 0, max: 1, norm: () => 0 };
+    const min = Math.min(...a);
+    const max = Math.max(...a);
+    const span = max - min;
+    if (!(span > eps)) return { min, max, norm: () => 0 };
+    return { min, max, norm: (v) => (Number(v) - min) / span };
+  };
+
+  const getMeasuredValueLabelByScenario = (tab) => {
+    if (tab === 'surface') return '实测地表下沉';
+    if (tab === 'aquifer') return '实测严重破坏高度';
+    return '实测值';
+  };
+
+  const buildErrorTrendForLine = (linePoints, lineId) => {
+    const pts = Array.isArray(linePoints) ? linePoints : [];
+    if (!pts.length) return { lineId, data: [], stats: null };
+
+    // 实测值归一化（按测线）
+    const measuredArr = pts.map((p) => Number(p?.measured)).filter(Number.isFinite);
+    const measuredNormer = normalizeMinMax(measuredArr);
+
+    // 采样 ODI：先按“文件/测线”提取 ODI 列，再在该文件内做 min-max 归一化
+    // 注意：归一化前不做 clamp，避免压缩该文件内 ODI 取值范围；仅对归一化结果 clamp 到 [0,1]
+    const odiSampledRaw = pts.map((p) => {
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      const v = (Number.isFinite(x) && Number.isFinite(y) && odiFieldPack?.field)
+        ? sampleFieldAtWorldXY(odiFieldPack, x, y)
+        : null;
+      return Number.isFinite(v) ? v : null;
+    });
+    const odiNormer = normalizeMinMax(odiSampledRaw.filter(Number.isFinite));
+
+    const data = pts.map((p, idx) => {
+      const id = String(p?.id ?? '').trim() || `P-${idx + 1}`;
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      const measured = Number(p?.measured);
+      const measuredNorm = Number.isFinite(measured) ? clamp(measuredNormer.norm(measured), 0, 1) : null;
+
+      const odiRaw = odiSampledRaw[idx];
+      const odiRenorm = Number.isFinite(odiRaw) ? clamp(odiNormer.norm(odiRaw), 0, 1) : null;
+
+      // 误差：两个归一化值相减取绝对值（0~1），显示/导出时转成百分数
+      const errorRatioRaw = (measuredNorm != null && odiRenorm != null)
+        ? Math.abs(measuredNorm - odiRenorm)
+        : null;
+      const errorRatio = errorRatioRaw != null ? errorRatioRaw : null;
+      const errorRatioChart = errorRatio != null ? clamp(errorRatio, 0, 1) : null;
+
+      return {
+        id,
+        x: Number.isFinite(x) ? x : null,
+        y: Number.isFinite(y) ? y : null,
+        measured: Number.isFinite(measured) ? measured : null,
+        measuredNorm,
+        odiRenorm,
+        errorRatio,
+        errorRatioChart,
+      };
+    });
+
+    const measuredMax = measuredArr.length ? Math.max(...measuredArr) : 0;
+    return {
+      lineId,
+      data,
+      stats: {
+        measuredMin: measuredNormer.min,
+        measuredMax: measuredNormer.max,
+        measuredMaxAbs: measuredMax,
+        odiMin: odiNormer.min,
+        odiMax: odiNormer.max,
+      },
+    };
+  };
 
   const parseBoundaryText = (text) => {
     const cleaned = String(text ?? '').replace(/^\uFEFF/, '');
@@ -635,7 +1042,7 @@ const App = () => {
   };
 
   const parseMeasuredConstraintText = (text, fallbackFileId = '') => {
-    // 期望格式：测点ID，坐标x，坐标y，实测地表下沉/m
+    // 期望格式：测点ID，坐标x，坐标y，实测值
     // 支持：英文逗号/中文逗号/制表符/空格混合分隔；允许第一行为表头
     const cleaned = String(text ?? '').replace(/^[\uFEFF\s]+/, '');
     const lines = cleaned.split(/\r?\n/);
@@ -655,7 +1062,7 @@ const App = () => {
       // 跳过可能的表头
       if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(measured)) continue;
       const id = idRaw || `${fallbackFileId || 'MP'}-${autoId++}`;
-      rows.push({ id, x, y, measured });
+      rows.push({ id, x, y, measured, fileId: fallbackFileId || '' });
     }
 
     return rows;
@@ -699,6 +1106,26 @@ const App = () => {
     if (v <= e[3]) return 3;
     if (v <= e[4]) return 4;
     return 5;
+  };
+  const finiteNumbers = (arr) => (Array.isArray(arr) ? arr.filter(Number.isFinite) : []);
+  const minOf = (arr) => {
+    const a = finiteNumbers(arr);
+    return a.length ? Math.min(...a) : null;
+  };
+  const maxOf = (arr) => {
+    const a = finiteNumbers(arr);
+    return a.length ? Math.max(...a) : null;
+  };
+  const percentile = (arr, p = 0.5) => {
+    const a = finiteNumbers(arr).sort((x, y) => x - y);
+    if (!a.length) return null;
+    const t = Math.min(1, Math.max(0, p));
+    const idx = (a.length - 1) * t;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return a[lo];
+    const w = idx - lo;
+    return a[lo] * (1 - w) + a[hi] * w;
   };
 
   const classifyByOdiThresholds = (odiArr, T) => {
@@ -875,7 +1302,7 @@ const App = () => {
     };
   };
 
-  const computeMeasuredZoningSurface = (odiFieldPackForZoning, measuredConstraintRows, epsGap = 1e-3) => {
+  const computeMeasuredZoningSurface = (odiFieldPackForZoning, measuredConstraintRows, epsGap = 1e-3, options = {}) => {
     if (!odiFieldPackForZoning?.field) {
       return { ok: false, message: '请先完成 ODI 计算并生成 ODI 分布场。' };
     }
@@ -884,19 +1311,30 @@ const App = () => {
       return { ok: false, message: '请先导入“实测约束数据”。' };
     }
 
-    // A) 实测值按范围均分为 5 段（等值分段），生成边界
+    const scenario = String(options?.scenario ?? 'surface');
+
+    const assignGradeByOdiThresholds = (odiNorm, T) => {
+      const v = Number(odiNorm);
+      const t = (T ?? []).map((x) => Number(x));
+      if (!Number.isFinite(v) || t.length !== 4 || t.some((x) => !Number.isFinite(x))) return null;
+      const [T1, T2, T3, T4] = t;
+      // I:[0,T1)  II:[T1,T2)  III:[T2,T3)  IV:[T3,T4)  V:[T4,1]
+      if (v < T1) return 1;
+      if (v < T2) return 2;
+      if (v < T3) return 3;
+      if (v < T4) return 4;
+      return 5;
+    };
+
+    // A) 预处理实测值（数量门槛）
     const measuredAll = rowsIn.map((r) => Number(r?.measured)).filter(Number.isFinite);
     if (measuredAll.length < 5) {
       return { ok: false, message: '实测点数量过少（至少需要 5 个）。' };
     }
     const measuredMinAll = Math.min(...measuredAll);
     const measuredMaxAll = Math.max(...measuredAll);
-    const measuredEdges = buildEqualValueBins5(measuredMinAll, measuredMaxAll);
-    if (!measuredEdges) {
-      return { ok: false, message: '实测值范围过小或无效，无法将实测值均分为 5 段。' };
-    }
 
-    // B) 在每个实测点位置提取 ODI，并按实测边界赋予等级 G
+    // B) 在每个实测点位置提取 ODI
     const sampled = rowsIn
       .map((r) => {
         const x = Number(r?.x);
@@ -904,19 +1342,17 @@ const App = () => {
         const measured = Number(r?.measured);
         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(measured)) return null;
         const odi = sampleFieldAtWorldXY(odiFieldPackForZoning, x, y);
-        const G = assignGradeByEdges5(measured, measuredEdges);
         return {
           id: String(r?.id ?? '').trim(),
           x,
           y,
           measured,
           odi,
-          G,
         };
       })
       .filter(Boolean);
 
-    const valid = sampled.filter((r) => Number.isFinite(r.odi) && Number.isFinite(r.G) && r.G >= 1 && r.G <= 5);
+    const valid = sampled.filter((r) => Number.isFinite(r.odi));
     if (valid.length < 5) {
       return {
         ok: false,
@@ -924,17 +1360,122 @@ const App = () => {
       };
     }
 
-    // C) 阈值反推（目标：min sum (Ghat-G)^2，约束：严格递增间隔 epsGap）
-    const opt = computeOptimalOdiThresholdsDP(valid, epsGap);
-    if (!opt?.T || opt.T.length !== 4) {
-      return { ok: false, message: '阈值反推失败：请检查数据覆盖范围或增加实测点数量。' };
+    // ODI 原本即 0~1 归一化，直接使用不再重新缩放
+    const validWithNorm = valid.map((r) => ({ ...r, odiNorm: clamp(r.odi, 0, 1) }));
+
+    // C) 分级与阈值：surface 与 aquifer 采用不同规则
+    if (scenario === 'aquifer') {
+      // 含水层扰动等级：固定 ODI 五级区间
+      // Ⅰ: [0,0.40) Ⅱ:[0.40,0.65) Ⅲ:[0.65,0.85) Ⅳ:[0.85,0.90) Ⅴ:[0.90,1]
+      const T = enforceMinGapThresholds([0.40, 0.65, 0.85, 0.90], epsGap, 0, 1);
+      if (!T || T.length !== 4 || T.some((v) => !Number.isFinite(v))) {
+        return { ok: false, message: '阈值配置错误：请检查 ODI 分级边界。' };
+      }
+      const [T1, T2, T3, T4] = T;
+
+      const withGrade = validWithNorm
+        .map((r) => ({ ...r, G: assignGradeByOdiThresholds(r.odiNorm, T) }))
+        .filter((r) => Number.isFinite(r.G) && r.G >= 1 && r.G <= 5);
+
+      const measuredByGrade = Array.from({ length: 5 }, () => []);
+      const odiByGrade = Array.from({ length: 5 }, () => []);
+      for (const r of withGrade) {
+        const idx = r.G - 1;
+        measuredByGrade[idx].push(r.measured);
+        odiByGrade[idx].push(r.odiNorm);
+      }
+
+      const measuredStats = Array.from({ length: 5 }, (_, i) => ({
+        measuredMin: minOf(measuredByGrade[i]),
+        measuredMax: maxOf(measuredByGrade[i]),
+        measuredCount: measuredByGrade[i].length,
+        odiNormMin: minOf(odiByGrade[i]),
+        odiNormMax: maxOf(odiByGrade[i]),
+      }));
+
+      const odiRanges = [
+        { odiLo: 0, odiHi: T1 },
+        { odiLo: T1, odiHi: T2 },
+        { odiLo: T2, odiHi: T3 },
+        { odiLo: T3, odiHi: T4 },
+        { odiLo: T4, odiHi: 1 },
+      ].map((r, idx) => {
+        let lo = clamp(Number(r.odiLo), 0, 1);
+        let hi = clamp(Number(r.odiHi), 0, 1);
+        if (!(hi > lo)) {
+          const eps = 1e-6;
+          hi = clamp(lo + eps, 0, 1);
+        }
+        if (idx === 4) hi = 1;
+        return { odiLo: lo, odiHi: hi };
+      });
+
+      const bins = Array.from({ length: 5 }, (_, i) => ({
+        levelIndex: i,
+        measuredMin: measuredStats[i].measuredMin,
+        measuredMax: measuredStats[i].measuredMax,
+        measuredCount: measuredStats[i].measuredCount,
+        odiLo: odiRanges[i].odiLo,
+        odiHi: odiRanges[i].odiHi,
+        odiNormMin: measuredStats[i].odiNormMin,
+        odiNormMax: measuredStats[i].odiNormMax,
+      }));
+
+      return {
+        ok: true,
+        result: {
+          thresholds: { T1, T2, T3, T4, epsGap },
+          fit: null,
+          bins,
+          measuredEdges: null,
+          sampledCount: sampled.length,
+          validOdiCount: withGrade.length,
+          odiSample: withGrade,
+        },
+      };
     }
-    const [T1, T2, T3, T4] = opt.T;
+
+    // surface：沿用原逻辑（实测下沉分级 + 固定 ODI 阈值）
+    const measuredEdges = [
+      Math.min(0, measuredMinAll),
+      0.30,
+      1.20,
+      2.80,
+      4.20,
+      Math.max(measuredMaxAll, 4.20),
+    ];
+
+    const validWithGrade = validWithNorm
+      .map((r) => ({ ...r, G: assignGradeByEdges5(r.measured, measuredEdges) }))
+      .filter((r) => Number.isFinite(r.G) && r.G >= 1 && r.G <= 5);
+
+    if (validWithGrade.length < 5) {
+      return {
+        ok: false,
+        message: '实测点可用于分级的数量不足（需要至少 5 个有效点）。\n提示：请检查实测值是否为有效数值。',
+      };
+    }
+
+    // C) 按测点分级分布反推 4 个 ODI 归一化临界值
+    const odiByGrade = Array.from({ length: 5 }, () => []);
+    for (const r of validWithGrade) {
+      const idx = Math.max(1, Math.min(5, r.G)) - 1;
+      odiByGrade[idx].push(r.odiNorm);
+    }
+
+    // 采用业务指定的 ODI 分级临界值（无需再次拟合）
+    const T = enforceMinGapThresholds([0.045, 0.345, 0.825, 0.847], epsGap, 0, 1);
+    if (!T || T.length !== 4 || T.some((v) => !Number.isFinite(v))) {
+      return { ok: false, message: '阈值配置错误：请检查 ODI 分级边界。' };
+    }
+    const [T1, T2, T3, T4] = T;
 
     const measuredStats = Array.from({ length: 5 }, (_, i) => ({
       measuredMin: measuredEdges[i],
       measuredMax: measuredEdges[i + 1],
-      measuredCount: valid.filter((r) => r.G === i + 1).length,
+      measuredCount: validWithNorm.filter((r) => r.G === i + 1).length,
+      odiNormMin: minOf(odiByGrade[i]),
+      odiNormMax: maxOf(odiByGrade[i]),
     }));
 
     const odiRanges = [
@@ -961,17 +1502,20 @@ const App = () => {
       measuredCount: measuredStats[i].measuredCount,
       odiLo: odiRanges[i].odiLo,
       odiHi: odiRanges[i].odiHi,
+      odiNormMin: measuredStats[i].odiNormMin,
+      odiNormMax: measuredStats[i].odiNormMax,
     }));
 
     return {
       ok: true,
       result: {
         thresholds: { T1, T2, T3, T4, epsGap },
-        fit: { J: opt.J, acc: opt.acc, rmse: opt.rmse, confusion: opt.confusion },
+        fit: null,
         bins,
         measuredEdges,
         sampledCount: sampled.length,
-        validOdiCount: valid.length,
+        validOdiCount: validWithGrade.length,
+        odiSample: validWithGrade,
       },
     };
   };
@@ -1328,6 +1872,9 @@ const App = () => {
       const text = String(reader.result ?? '');
       const points = parseWorkingFaceText(text);
       setWorkingFaceData(points);
+      setActiveSelectedFaceNo(1);
+      setActiveMineHeightByFace([]);
+      setActiveRoofAngleByFace([]);
       // 新导入后默认清掉旧生成结果
       setGeneratedPoints(null);
       setParamExtractionResult(null);
@@ -1381,8 +1928,20 @@ const App = () => {
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i].trim();
       if (!raw) continue;
-      // 支持：逗号/空格/制表符/中文逗号
-      const parts = raw.split(/[\t,，\s]+/).filter(Boolean);
+
+      // 支持：逗号/制表符/空格/中文逗号
+      // 注意：CSV 里可能存在空列（例如：",,"），不能用 filter(Boolean) 否则会导致列错位。
+      let parts = [];
+      if (raw.includes(',') || raw.includes('，')) {
+        parts = raw
+          .replace(/，/g, ',')
+          .split(',')
+          .map((s) => String(s ?? '').trim());
+      } else if (raw.includes('\t')) {
+        parts = raw.split('\t').map((s) => String(s ?? '').trim());
+      } else {
+        parts = raw.split(/\s+/).map((s) => String(s ?? '').trim());
+      }
       if (parts.length < 3) continue;
 
       const seq = Number(parts[0]);
@@ -1390,13 +1949,19 @@ const App = () => {
       const thickness = Number(parts[2]);
       if (!name || Number.isNaN(thickness)) continue;
 
-      layers.push({ seq: Number.isNaN(seq) ? i + 1 : seq, name, thickness });
-    }
+      // 新格式扩展列：含水层标记、关键层标记
+      const aquiferTag = String(parts[3] ?? '').trim();
+      // 若出现多余列，关键层标记把剩余内容拼回，避免偶发分隔符干扰
+      const keyLayerTag = String((parts.length > 5 ? parts.slice(4).join(',') : parts[4]) ?? '').trim();
 
-    // 若序号可用则按序号排序；否则保持导入顺序
-    const hasNumericSeq = layers.some((l) => Number.isFinite(l.seq));
-    if (hasNumericSeq) {
-      layers.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+      layers.push({
+        // 注意：序号仅作为记录字段；层序以“导入行序”为准（从上到下：地表→深部）
+        seq: Number.isNaN(seq) ? null : seq,
+        name,
+        thickness,
+        aquiferTag,
+        keyLayerTag,
+      });
     }
     return layers;
   };
@@ -1423,6 +1988,24 @@ const App = () => {
     return Array.from(set);
   }, [drillholeLayersById]);
 
+  const aquiferTypeOptions = useMemo(() => {
+    const set = new Set();
+    for (const layers of Object.values(drillholeLayersById ?? {})) {
+      for (const layer of layers ?? []) {
+        const tag = String(layer?.aquiferTag ?? '').trim();
+        if (tag) set.add(tag);
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh'));
+  }, [drillholeLayersById]);
+
+  useEffect(() => {
+    if (activeTab !== 'aquifer') return;
+    if (!selectedAquiferType && aquiferTypeOptions.length > 0) {
+      setSelectedAquiferType(aquiferTypeOptions[0]);
+    }
+  }, [activeTab, aquiferTypeOptions, selectedAquiferType]);
+
   useEffect(() => {
     if (!selectedCoal && coalSeams.length > 0) {
       setSelectedCoal(coalSeams[0]);
@@ -1431,6 +2014,45 @@ const App = () => {
 
   const identifiedTarget = useMemo(() => {
     const counts = new Map();
+
+    // 含水层扰动场景：目标评价层 = “目标含水层下关键层（关键层标记=目标层）”
+    if (activeTab === 'aquifer') {
+      const normalizeTag = (v) => String(v ?? '').replace(/\s+/g, '').trim();
+
+      for (const layers of Object.values(drillholeLayersById ?? {})) {
+        const ls = layers ?? [];
+        const idxTarget = ls.findIndex((l) => {
+          const tag = normalizeTag(l?.keyLayerTag);
+          return tag && tag.includes('目标层');
+        });
+        if (idxTarget < 0) continue;
+        const name = String(ls[idxTarget]?.name ?? '').trim();
+        if (!name) continue;
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+
+      if (counts.size === 0) {
+        return {
+          name: '',
+          reason: '',
+        };
+      }
+
+      let bestName = '';
+      let bestCount = -1;
+      for (const [n, c] of counts.entries()) {
+        if (c > bestCount) {
+          bestName = n;
+          bestCount = c;
+        }
+      }
+
+      return {
+        name: bestName,
+        reason: '',
+      };
+    }
+
     for (const layers of Object.values(drillholeLayersById ?? {})) {
       const ls = layers ?? [];
       // 最上层基岩：从地表向深部，首个不包含“土”的层
@@ -1461,11 +2083,30 @@ const App = () => {
       name: bestName,
       reason: '算法依据：从地表向深部检索，首个不包含“土”的岩层定义为“最上层基岩”。（下方列表显示各钻孔识别结果）',
     };
-  }, [drillholeLayersById]);
+  }, [activeTab, drillholeLayersById]);
 
   const perBoreholeTarget = useMemo(() => {
-    // 目标评价层：最上层基岩（与煤层选择无关）
     const out = {};
+
+    if (activeTab === 'aquifer') {
+      const normalizeTag = (v) => String(v ?? '').replace(/\s+/g, '').trim();
+
+      for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
+        const ls = layers ?? [];
+        const idxTarget = ls.findIndex((l) => {
+          const tag = normalizeTag(l?.keyLayerTag);
+          return tag && tag.includes('目标层');
+        });
+        if (idxTarget < 0) continue;
+        out[bhId] = {
+          targetIdx: idxTarget,
+          targetName: String(ls[idxTarget]?.name ?? '').trim(),
+        };
+      }
+      return out;
+    }
+
+    // 其它场景：目标评价层=最上层基岩（与煤层选择无关）
     for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
       const ls = layers ?? [];
       const targetIdx = ls.findIndex((l) => {
@@ -1479,7 +2120,7 @@ const App = () => {
       };
     }
     return out;
-  }, [drillholeLayersById]);
+  }, [activeTab, drillholeLayersById]);
 
   const perBoreholeTargetList = useMemo(() => {
     return Object.entries(perBoreholeTarget ?? {})
@@ -1503,56 +2144,58 @@ const App = () => {
     // Ti/Di 不依赖煤层；Hi/煤厚依赖所选煤层
 
     const Ti = [];
+    const Ei = [];
     const Hi = [];
     const Di = [];
     const Mi = [];
     const CoalThk = [];
 
-    for (const [bhId, mark] of Object.entries(perBoreholeTarget ?? {})) {
+    for (const [bhId, lsRaw] of Object.entries(drillholeLayersById ?? {})) {
       const coord = drillholeCoordsById.get(bhId);
       if (!coord) continue;
-      const ls = drillholeLayersById[bhId] ?? [];
+      const ls = lsRaw ?? [];
 
+      const mark = perBoreholeTarget?.[bhId];
       const targetIdx = mark?.targetIdx;
-      if (!Number.isInteger(targetIdx)) continue;
+      const hasTarget = Number.isInteger(targetIdx);
 
-      const tThickness = Number(ls[targetIdx]?.thickness);
-      if (!Number.isFinite(tThickness)) continue;
-
-      // Di：目标层埋深 = 目标层上覆岩层厚度累加（目标层顶深，不含目标层本身）
-      let depthTop = 0;
-      for (let k = 0; k < targetIdx; k++) {
-        const v = Number(ls[k]?.thickness);
-        if (Number.isFinite(v)) depthTop += v;
+      // Ti/Di 依赖目标层
+      if (hasTarget) {
+        const tThickness = Number(ls[targetIdx]?.thickness);
+        if (Number.isFinite(tThickness)) {
+          const eMod = inferElasticModulus(ls[targetIdx]?.name);
+          // Di：目标层埋深 = 目标层上覆岩层厚度累加（目标层顶深，不含目标层本身）
+          let depthTop = 0;
+          for (let k = 0; k < targetIdx; k++) {
+            const v = Number(ls[k]?.thickness);
+            if (Number.isFinite(v)) depthTop += v;
+          }
+          Ti.push({ id: bhId, x: coord.x, y: coord.y, value: tThickness });
+          Di.push({ id: bhId, x: coord.x, y: coord.y, value: depthTop });
+          if (Number.isFinite(eMod)) {
+            Ei.push({ id: bhId, x: coord.x, y: coord.y, value: eMod });
+          }
+        }
       }
-      const di = depthTop;
 
-      Ti.push({ id: bhId, x: coord.x, y: coord.y, value: tThickness });
-      Di.push({ id: bhId, x: coord.x, y: coord.y, value: di });
-
+      // Mi/CoalThk 依赖所选煤层：Mi=“目标煤层”选择的煤层厚度（各场景一致）
       if (coal) {
         const coalIdx = ls.findIndex((l) => String(l?.name ?? '').trim() === coal);
         if (coalIdx >= 0) {
-          // Mi：目标煤层埋深 = 目标煤层上覆岩层厚度累加（煤层顶深，不含煤层本身）
-          let coalDepthTop = 0;
-          for (let k = 0; k < coalIdx; k++) {
-            const v = Number(ls[k]?.thickness);
-            if (Number.isFinite(v)) coalDepthTop += v;
-          }
-          if (Number.isFinite(coalDepthTop)) {
-            Mi.push({ id: bhId, x: coord.x, y: coord.y, value: coalDepthTop });
-          }
-
-          // 真实煤厚（用于采高判别）：直接取该煤层厚度
           const coalThk = Number(ls[coalIdx]?.thickness);
           if (Number.isFinite(coalThk)) {
             CoalThk.push({ id: bhId, x: coord.x, y: coord.y, value: coalThk });
+
+            // Mi：目标层煤层厚度 = “目标煤层”选择的煤层厚度
+            Mi.push({ id: bhId, x: coord.x, y: coord.y, value: coalThk });
           }
 
-          // Hi：煤层与最上层基岩之间夹层总厚度（不含两者本身）
-          if (coalIdx > targetIdx + 1) {
+          // Hi：煤层与目标层间距 = 两者之间岩层厚度累加（不含目标层与煤层本层）
+          if (hasTarget && coalIdx !== targetIdx) {
+            const a = Math.min(coalIdx, targetIdx);
+            const b = Math.max(coalIdx, targetIdx);
             let hi = 0;
-            for (let k = targetIdx + 1; k <= coalIdx - 1; k++) {
+            for (let k = a + 1; k <= b - 1; k++) {
               const v = Number(ls[k]?.thickness);
               if (Number.isFinite(v)) hi += v;
             }
@@ -1562,8 +2205,39 @@ const App = () => {
       }
     }
 
-    return { Ti, Hi, Di, Mi, CoalThk };
-  }, [drillholeCoordsById, drillholeLayersById, perBoreholeTarget, selectedCoal]);
+    return { Ti, Ei, Hi, Di, Mi, CoalThk };
+  }, [activeTab, drillholeCoordsById, drillholeLayersById, perBoreholeTarget, selectedCoal]);
+
+  const autoSeamThicknessInfo = useMemo(() => {
+    const coal = String(selectedCoal ?? '').trim();
+    if (!coal) return null;
+
+    const values = [];
+    for (const lsRaw of Object.values(drillholeLayersById ?? {})) {
+      const ls = lsRaw ?? [];
+      const idx = ls.findIndex((l) => String(l?.name ?? '').trim() === coal);
+      if (idx < 0) continue;
+      const thk = Number(ls[idx]?.thickness);
+      if (Number.isFinite(thk) && thk > 0) values.push(thk);
+    }
+
+    if (values.length === 0) return null;
+    const avg = values.reduce((a, b) => a + b, 0) / values.length;
+    if (!Number.isFinite(avg) || !(avg > 0)) return null;
+    return { coal, avg, n: values.length };
+  }, [drillholeLayersById, selectedCoal]);
+
+  useEffect(() => {
+    const avg = autoSeamThicknessInfo?.avg;
+    if (!Number.isFinite(avg) || !(avg > 0)) return;
+    const next = avg.toFixed(2);
+    setPlanningParams((p) => {
+      const cur = String(p?.seamThickness ?? '').trim();
+      if (cur === next) return p;
+      return { ...p, seamThickness: next };
+    });
+    lastAutoSeamThicknessRef.current = next;
+  }, [autoSeamThicknessInfo?.avg, autoSeamThicknessInfo?.coal]);
 
   const paletteStops = useMemo(() => {
     // 仅做最小可用的“色带选择”，避免引入额外依赖
@@ -1634,7 +2308,7 @@ const App = () => {
     return { min, max, isAuto: false };
   };
 
-  const renderHeatmapDataUrl = (fieldPack, min, max, paletteName, clipRange, steps, filterRange) => {
+  const renderHeatmapDataUrl = (fieldPack, min, max, paletteName, clipRange, steps, filterRange, customBreaks) => {
     if (!fieldPack?.field || !fieldPack.gridW || !fieldPack.gridH) return null;
     if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
     if (typeof document === 'undefined') return null;
@@ -1668,6 +2342,23 @@ const App = () => {
       const s = Number(steps);
       if (!Number.isFinite(s)) return null;
       return Math.max(3, Math.min(10, Math.round(s)));
+    })();
+
+    const breaks = (() => {
+      if (!Array.isArray(customBreaks)) return null;
+      const arr = customBreaks
+        .map((v) => clamp(Number(v), 0, 1))
+        .filter((v) => Number.isFinite(v))
+        .sort((a, b) => a - b);
+      // need at least 2 points spanning [0,1]
+      if (arr.length < 2) return null;
+      const uniq = [];
+      for (const v of arr) {
+        if (!uniq.length || Math.abs(v - uniq[uniq.length - 1]) > 1e-6) uniq.push(v);
+      }
+      if (uniq[0] > 0) uniq.unshift(0);
+      if (uniq[uniq.length - 1] < 1) uniq.push(1);
+      return uniq.length >= 2 ? uniq : null;
     })();
 
     const filter = (() => {
@@ -1706,7 +2397,21 @@ const App = () => {
 
         // 分级量化：3~10 级
         let t = (v - min) / denom;
-        if (stepsInt && stepsInt >= 3) {
+        if (breaks) {
+          // 依据自定义分段，将值压到各分段中点，确保等值线按实测反演分区显示
+          let idx = -1;
+          for (let k = 1; k < breaks.length; k++) {
+            if (t < breaks[k] || (k === breaks.length - 1 && t <= breaks[k])) {
+              idx = k;
+              break;
+            }
+          }
+          if (idx === -1) idx = breaks.length - 1;
+          const loB = breaks[idx - 1];
+          const hiB = breaks[idx];
+          const mid = (loB + hiB) / 2;
+          t = clamp(mid, 0, 1);
+        } else if (stepsInt && stepsInt >= 3) {
           const q = stepsInt - 1;
           t = q > 0 ? Math.round(t * q) / q : t;
         }
@@ -1726,12 +2431,59 @@ const App = () => {
   };
 
   const odiFieldPack = useMemo(() => {
+    const clamp01 = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return null;
+      return clamp(n, 0, 1);
+    };
+
     const pts = (odiResult?.points ?? [])
       .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.odiNorm));
     if (pts.length < 3) return null;
-    const samples = pts.map((p) => ({ id: String(p.id ?? ''), x: p.x, y: p.y, value: p.odiNorm }));
-    return computeField(samples, 500, 400);
-  }, [odiResult]);
+
+    // ODI 的插值域：与主图边界一致（就地计算，避免引用后置 const 引发 TDZ 黑屏）
+    const worldBounds = (() => {
+      const ptsAll = [
+        ...(boundaryData ?? []),
+        ...(drillholeData ?? []),
+        ...((workingFaceData ?? []) || []),
+        ...((measuredConstraintData ?? []) || []),
+      ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (!ptsAll.length) return null;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of ptsAll) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
+      if (maxX <= minX || maxY <= minY) return null;
+      return { minX, maxX, minY, maxY };
+    })();
+
+    const samples = pts
+      .map((p) => ({ id: String(p.id ?? ''), x: p.x, y: p.y, value: clamp01(p.odiNorm) }))
+      .filter((s) => Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.value));
+    if (samples.length < 3) return null;
+
+    // 仅“含水层扰动场景”使用 GIS 自然邻域插值法；其它场景保持 ODI 原插值（IDW）。
+    const pack = activeTab === 'aquifer'
+      ? computeFieldNaturalNeighbor(samples, 500, 400, boundaryData, worldBounds, {
+          pad: 18,
+          clampRange: { min: 0, max: 1 },
+          kNearest: 32,
+          smoothPasses: aquiferOdiSmoothPasses,
+        })
+      : computeFieldIdwWorld(samples, 500, 400, worldBounds, {
+          pad: 18,
+          clampRange: { min: 0, max: 1 },
+          kNearest: 24,
+        });
+    if (!pack?.field) return pack;
+    // ODI 归一化场固定 0~1，避免色带/分级受 min/max 波动影响
+    return { ...pack, min: 0, max: 1 };
+  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses]);
 
   const odiLevelRanges = useMemo(() => {
     // 默认：ODI 0~1 均分 5 段
@@ -1742,7 +2494,8 @@ const App = () => {
       { lo: 0.6, hi: 0.8, includeHi: false },
       { lo: 0.8, hi: 1.0, includeHi: true },
     ];
-    if (activeTab !== 'surface') return fallback;
+    if (activeTab !== 'surface' && activeTab !== 'aquifer') return fallback;
+    if (measuredZoningResult?.scenario && measuredZoningResult.scenario !== activeTab) return fallback;
     const bins = measuredZoningResult?.bins;
     if (!Array.isArray(bins) || bins.length !== 5) return fallback;
     const mapped = bins
@@ -1776,6 +2529,134 @@ const App = () => {
     const hasUserRange = (vMin != null || vMax != null) && effMax > effMin;
     const filterRange = hasUserRange ? { min: effMin, max: effMax } : null;
 
+    // 3) 中间主图分级：默认 5 级；滑块为 N 级时基于这 5 段“等值”派生 N 段
+    const breaks = (() => {
+      const rs = Array.isArray(odiLevelRanges) && odiLevelRanges.length === 5 ? odiLevelRanges : null;
+      if (!rs) return null;
+
+      const baseEdgesRaw = [
+        clamp(Number(rs[0]?.lo), 0, 1),
+        clamp(Number(rs[0]?.hi), 0, 1),
+        clamp(Number(rs[1]?.hi), 0, 1),
+        clamp(Number(rs[2]?.hi), 0, 1),
+        clamp(Number(rs[3]?.hi), 0, 1),
+        clamp(Number(rs[4]?.hi), 0, 1),
+      ];
+
+      const baseEdges = [];
+      for (const v of baseEdgesRaw) {
+        if (!Number.isFinite(v)) continue;
+        if (!baseEdges.length || Math.abs(v - baseEdges[baseEdges.length - 1]) > 1e-6) baseEdges.push(v);
+      }
+      if (baseEdges.length < 2) return null;
+      if (baseEdges[0] > 0) baseEdges.unshift(0);
+      if (baseEdges[baseEdges.length - 1] < 1) baseEdges.push(1);
+      if (baseEdges.length < 2) return null;
+
+      const N = (() => {
+        const s = Number(odiVizSteps);
+        if (!Number.isFinite(s)) return 5;
+        return Math.max(3, Math.min(10, Math.round(s)));
+      })();
+
+      // 基准就是 5 段（6 个断点）
+      if (N === 5) return baseEdges;
+
+      const totalLo = baseEdges[0];
+      const totalHi = baseEdges[baseEdges.length - 1];
+      const totalW = (totalHi - totalLo) || 1;
+
+      if (N < 5) {
+        // 合并：只在基准断点上取子集，尽量让每段宽度接近 totalW/N
+        const target = totalW / N;
+        const out = [totalLo];
+        let acc = 0;
+        let last = totalLo;
+        // 可用的内部断点
+        const inner = baseEdges.slice(1, -1);
+        for (let i = 0; i < inner.length && out.length < N; i++) {
+          const e = inner[i];
+          const w = e - last;
+          const remainingCutsNeeded = (N - 1) - (out.length - 1);
+          const remainingEdgesAvailable = inner.length - i;
+          acc += w;
+          // 需要保证后面还够断点可选
+          const mustCut = remainingEdgesAvailable === remainingCutsNeeded;
+          if (mustCut || acc >= target) {
+            out.push(e);
+            acc = 0;
+            last = e;
+          } else {
+            last = e;
+          }
+        }
+        out.push(totalHi);
+        // 去重 + 单调
+        const uniq = [];
+        for (const v of out) {
+          if (!uniq.length || Math.abs(v - uniq[uniq.length - 1]) > 1e-6) uniq.push(v);
+        }
+        return uniq.length >= 2 ? uniq : null;
+      }
+
+      // N > 5：在每个基准区间内等距细分，细分数量按区间宽度占比分配，并保证每段至少 1
+      const intervals = [];
+      for (let i = 0; i < baseEdges.length - 1; i++) {
+        const a = baseEdges[i];
+        const b = baseEdges[i + 1];
+        const w = b - a;
+        if (w > 1e-12) intervals.push({ a, b, w });
+      }
+      if (!intervals.length) return baseEdges;
+
+      const alloc = intervals.map((it) => ({ ...it, seg: 1, frac: 0 }));
+      let remaining = N - alloc.length;
+      // 先按比例给出期望增量
+      for (const it of alloc) {
+        const ideal = (it.w / totalW) * remaining;
+        const add = Math.max(0, Math.floor(ideal));
+        it.seg += add;
+        it.frac = ideal - add;
+      }
+      let used = alloc.reduce((s, it) => s + it.seg, 0);
+      // 调整到正好 N 段
+      while (used < N) {
+        let best = 0;
+        for (let i = 1; i < alloc.length; i++) if (alloc[i].frac > alloc[best].frac) best = i;
+        alloc[best].seg += 1;
+        alloc[best].frac = 0;
+        used += 1;
+      }
+      while (used > N) {
+        // 从 seg 最大的区间回收
+        let best = -1;
+        for (let i = 0; i < alloc.length; i++) {
+          if (alloc[i].seg > 1 && (best === -1 || alloc[i].seg > alloc[best].seg)) best = i;
+        }
+        if (best === -1) break;
+        alloc[best].seg -= 1;
+        used -= 1;
+      }
+
+      const out = [totalLo];
+      for (const it of alloc) {
+        const seg = it.seg;
+        for (let k = 1; k <= seg; k++) {
+          const t = k / seg;
+          const v = it.a + (it.b - it.a) * t;
+          out.push(clamp(v, 0, 1));
+        }
+      }
+      const uniq = [];
+      for (const v of out) {
+        if (!Number.isFinite(v)) continue;
+        if (!uniq.length || Math.abs(v - uniq[uniq.length - 1]) > 1e-6) uniq.push(v);
+      }
+      if (uniq[0] > 0) uniq.unshift(0);
+      if (uniq[uniq.length - 1] < 1) uniq.push(1);
+      return uniq.length >= 2 ? uniq : null;
+    })();
+
     return renderHeatmapDataUrl(
       odiFieldPack,
       hasUserRange ? effMin : 0,
@@ -1783,9 +2664,10 @@ const App = () => {
       odiVizPalette,
       clip,
       odiVizSteps,
-      filterRange
+      filterRange,
+      breaks
     );
-  }, [odiFieldPack, odiLevelFilter, odiLevelRanges, odiVizPalette, odiVizSteps, odiVizRange]);
+  }, [odiFieldPack, odiLevelFilter, odiLevelRanges, odiVizPalette, odiVizSteps, odiVizRange, measuredZoningResult, activeTab]);
 
   const handleComputeOdi = () => {
     const pts = paramExtractionResult?.points ?? [];
@@ -1794,11 +2676,13 @@ const App = () => {
 
     // 重新计算 ODI 后：旧的“实测约束分区”基于旧场，需作废，回到“”之前
     setMeasuredZoningResultTracked(null);
+    // 同步清空误差评估结果：旧误差同样基于旧 ODI 场
+    setErrorAnalysisByLineId({});
     setOdiLevelFilter(null);
   };
 
   const handleComputeMeasuredZoning = () => {
-    if (activeTab !== 'surface') {
+    if (activeTab !== 'surface' && activeTab !== 'aquifer') {
       window.alert('该场景的“实测约束分区”暂未实现（界面已预留）。');
       return;
     }
@@ -1811,7 +2695,7 @@ const App = () => {
       return;
     }
 
-    const zoning = computeMeasuredZoningSurface(odiFieldPack, measuredConstraintData, 1e-3);
+    const zoning = computeMeasuredZoningSurface(odiFieldPack, measuredConstraintData, 1e-3, { scenario: activeTab });
     if (!zoning?.ok) {
       window.alert(zoning?.message || '实测分区失败：请检查数据。');
       return;
@@ -1820,7 +2704,7 @@ const App = () => {
     const { thresholds, fit, bins, validOdiCount, measuredEdges } = zoning.result;
 
     setMeasuredZoningResultTracked({
-      scenario: 'surface',
+      scenario: activeTab,
       createdAt: new Date().toISOString(),
       importedCount: measuredConstraintData.length,
       validOdiCount,
@@ -1830,6 +2714,159 @@ const App = () => {
       bins,
     });
     setOdiLevelFilter(null);
+  };
+
+  const handleComputeErrorAnalysis = () => {
+    if (activeTab !== 'surface' && activeTab !== 'aquifer') {
+      window.alert('该场景的“误差分析”暂未实现（界面已预留）。');
+      return;
+    }
+    if (!measuredConstraintLines?.length) {
+      window.alert('请先导入实测约束数据（可多文件=多测线）。');
+      return;
+    }
+    if (!odiFieldPack?.field) {
+      window.alert('请先完成 ODI 计算并生成 ODI 分布场，再计算误差。');
+      return;
+    }
+
+    const next = {};
+    for (const line of measuredConstraintLines) {
+      const lineId = String(line?.lineId ?? '').trim();
+      if (!lineId) continue;
+      const built = buildErrorTrendForLine(line?.points ?? [], lineId);
+      next[lineId] = {
+        computedAt: new Date().toISOString(),
+        label: String(line?.label ?? lineId),
+        data: built.data,
+        stats: built.stats,
+      };
+    }
+    setErrorAnalysisByLineId(next);
+    if (!selectedMeasuredLineId) {
+      const first = measuredConstraintLines?.[0]?.lineId;
+      if (first) setSelectedMeasuredLineId(String(first));
+    }
+    setShowErrorAnalysis(true);
+  };
+
+  const exportErrorChartPng = async (lineId) => {
+    try {
+      const container = errorChartContainerRef.current;
+      if (!container) return;
+      const svg = container.querySelector('svg');
+      if (!svg) {
+        window.alert('未找到可导出的误差图（请先计算误差并展开误差趋势模块）。');
+        return;
+      }
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const safeLine = String(lineId ?? '测线').replace(/[^\w\u4e00-\u9fa5-]+/g, '_');
+      const filename = `误差趋势_${safeLine}_${stamp}.png`;
+
+      const rect = svg.getBoundingClientRect();
+      const w = Math.max(400, Math.round(rect.width || 900));
+      const h = Math.max(240, Math.round(rect.height || 260));
+
+      const cloned = svg.cloneNode(true);
+      if (!cloned.getAttribute('xmlns')) cloned.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      if (!cloned.getAttribute('xmlns:xlink')) cloned.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+      cloned.setAttribute('width', String(w));
+      cloned.setAttribute('height', String(h));
+
+      const xml = new XMLSerializer().serializeToString(cloned);
+      const blob = new Blob([xml], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+
+      const img = new Image();
+      img.decoding = 'async';
+      const loaded = new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
+      img.src = url;
+      await loaded;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+
+      downloadDataUrlFile(filename, canvas.toDataURL('image/png'));
+    } catch (e) {
+      console.error('exportErrorChartPng failed', e);
+    }
+  };
+
+  const exportErrorCsv = (lineId) => {
+    try {
+      const lineKey = String(lineId ?? '').trim();
+      if (!lineKey) {
+        window.alert('请先选择测线。');
+        return;
+      }
+      const pack = errorAnalysisByLineId?.[lineKey];
+      const data = pack?.data ?? [];
+      if (!data.length) {
+        window.alert('暂无可导出的误差数据（请先计算误差）。');
+        return;
+      }
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const safeLine = String(lineKey).replace(/[^\w\u4e00-\u9fa5-]+/g, '_');
+      const header = ['测点ID', '坐标x', '坐标y', '实测值(m)', '实测归一化', 'ODI', '误差'];
+
+      const esc = (v) => {
+        const s = String(v ?? '');
+        if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+
+      const rows = [header.join(',')];
+      for (const r of data) {
+        const errPct = Number.isFinite(r?.errorRatio) ? (Number(r.errorRatio) * 100) : null;
+        rows.push([
+          esc(r?.id ?? ''),
+          Number.isFinite(r?.x) ? Number(r.x).toFixed(6) : '',
+          Number.isFinite(r?.y) ? Number(r.y).toFixed(6) : '',
+          Number.isFinite(r?.measured) ? Number(r.measured).toFixed(6) : '',
+          Number.isFinite(r?.measuredNorm) ? Number(r.measuredNorm).toFixed(6) : '',
+          Number.isFinite(r?.odiRenorm) ? Number(r.odiRenorm).toFixed(6) : '',
+          errPct != null ? errPct.toFixed(2) : '',
+        ].join(','));
+      }
+
+      downloadTextFile(`误差数据_${safeLine}_${stamp}.csv`, `\uFEFF${rows.join('\n')}\n`, 'text/csv;charset=utf-8');
+    } catch (e) {
+      console.error('exportErrorCsv failed', e);
+    }
+  };
+
+  const handleExportErrorAnalysis = async (mode) => {
+    const lineKey = String(selectedMeasuredLineId ?? '').trim();
+    if (!lineKey) {
+      window.alert('请先选择测线。');
+      return;
+    }
+    if (!errorAnalysisByLineId?.[lineKey]?.data?.length) {
+      window.alert('暂无可导出的误差数据（请先计算误差）。');
+      return;
+    }
+    const m = String(mode ?? '').toLowerCase();
+    if (m === 'csv') {
+      exportErrorCsv(lineKey);
+      return;
+    }
+    if (m === 'png') {
+      await exportErrorChartPng(lineKey);
+      return;
+    }
+    window.alert('请选择导出类型（PNG 或 CSV）。');
   };
 
   const downloadTextFile = (filename, content, mime = 'text/plain;charset=utf-8') => {
@@ -1889,6 +2926,39 @@ const App = () => {
     document.addEventListener('mousedown', onDocDown);
     return () => document.removeEventListener('mousedown', onDocDown);
   }, [showMainMapExportMenu]);
+
+  useEffect(() => {
+    if (!showMainMapLabelsMenu) return;
+    const onDocDown = (e) => {
+      const root = mainMapContainerRef.current;
+      if (!root) {
+        setShowMainMapLabelsMenu(false);
+        return;
+      }
+      const menu = root.querySelector('[data-main-map-labels-menu]');
+      const btn = root.querySelector('[data-main-map-labels-button]');
+      const t = e.target;
+      if (menu && menu.contains(t)) return;
+      if (btn && btn.contains(t)) return;
+      setShowMainMapLabelsMenu(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [showMainMapLabelsMenu]);
+
+  useEffect(() => {
+    if (!showErrorExportMenu) return;
+    const onDocDown = (e) => {
+      const menu = errorExportMenuRef.current;
+      const btn = errorExportButtonRef.current;
+      const t = e.target;
+      if (menu && menu.contains(t)) return;
+      if (btn && btn.contains(t)) return;
+      setShowErrorExportMenu(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [showErrorExportMenu]);
 
   const handleToggleMainMapFullscreen = async () => {
     try {
@@ -2060,6 +3130,7 @@ const App = () => {
     if (!paramExtractionResult?.points?.length) return;
     const ts = new Date();
     const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}_${String(ts.getHours()).padStart(2, '0')}${String(ts.getMinutes()).padStart(2, '0')}${String(ts.getSeconds()).padStart(2, '0')}`;
+    const modeTag = lastParamExtractionMode === 'geo' ? '地质插值' : '全参插值';
 
     const rows = [];
     rows.push(toCsvRow([
@@ -2086,7 +3157,7 @@ const App = () => {
         Number.isFinite(p.x) ? p.x : '',
         Number.isFinite(p.y) ? p.y : '',
         Number.isFinite(p.Ti) ? p.Ti : '',
-        Number.isFinite(p.Ei) ? p.Ei : 0,
+        Number.isFinite(p.Ei) ? p.Ei : '',
         Number.isFinite(p.Hi) ? p.Hi : '',
         Number.isFinite(p.Di) ? p.Di : '',
         Number.isFinite(p.Mi) ? p.Mi : '',
@@ -2096,7 +3167,74 @@ const App = () => {
       ]));
     }
 
-    downloadTextFile(`评价点全参数_${stamp}.csv`, `\uFEFF${rows.join('\n')}\n`, 'text/csv;charset=utf-8');
+    downloadTextFile(`评价点全参数_${modeTag}_${stamp}.csv`, `\uFEFF${rows.join('\n')}\n`, 'text/csv;charset=utf-8');
+  };
+
+  const exportEvalPointsFullParamsWithOdiCsv = () => {
+    const pts = paramExtractionResult?.points ?? [];
+    if (!pts.length) return;
+
+    const r = computeOdi(pts, scenarioWeights);
+    if (r?.error) {
+      window.alert(String(r.error));
+      return;
+    }
+
+    const ts = new Date();
+    const stamp = `${ts.getFullYear()}${String(ts.getMonth() + 1).padStart(2, '0')}${String(ts.getDate()).padStart(2, '0')}_${String(ts.getHours()).padStart(2, '0')}${String(ts.getMinutes()).padStart(2, '0')}${String(ts.getSeconds()).padStart(2, '0')}`;
+    const modeTag = lastParamExtractionMode === 'geo' ? '地质插值' : '全参插值';
+
+    const keyOf = (p) => `${String(p?.id ?? '').trim()}@@${Number(p?.x).toFixed(6)}@@${Number(p?.y).toFixed(6)}`;
+    const odiByKey = new Map();
+    for (const p of (r?.points ?? [])) {
+      const id = String(p?.id ?? '').trim();
+      if (!id || !Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
+      odiByKey.set(keyOf(p), Number(p?.odiNorm));
+    }
+
+    const rows = [];
+    rows.push(toCsvRow([
+      '钻孔ID',
+      '坐标x',
+      '坐标y',
+      '目标层厚度（Ti）',
+      '目标层弹性模量（Ei）',
+      '煤层与目标层间距（Hi）',
+      '目标层埋深（Di）',
+      '采高（Mi）',
+      '顶板岩层垮落角（δi）',
+      '工作面宽度（lpi）',
+      '区段煤柱（lci）',
+      'ODI',
+    ]));
+
+    const sorted = [...pts]
+      .filter((p) => p && String(p.id ?? '').trim())
+      .sort((a, b) => String(a.id ?? '').localeCompare(String(b.id ?? ''), 'zh'));
+
+    for (const p of sorted) {
+      const id = String(p?.id ?? '').trim();
+      const x = p?.x;
+      const y = p?.y;
+      const odi = (id && Number.isFinite(x) && Number.isFinite(y)) ? odiByKey.get(keyOf(p)) : null;
+
+      rows.push(toCsvRow([
+        id,
+        Number.isFinite(x) ? x : '',
+        Number.isFinite(y) ? y : '',
+        Number.isFinite(p?.Ti) ? p.Ti : '',
+        Number.isFinite(p?.Ei) ? p.Ei : '',
+        Number.isFinite(p?.Hi) ? p.Hi : '',
+        Number.isFinite(p?.Di) ? p.Di : '',
+        Number.isFinite(p?.Mi) ? p.Mi : '',
+        Number.isFinite(p?.delta) ? p.delta : '',
+        Number.isFinite(p?.lpi) ? p.lpi : '',
+        Number.isFinite(p?.lci) ? p.lci : '',
+        Number.isFinite(odi) ? odi : '',
+      ]));
+    }
+
+    downloadTextFile(`评价点全参数_ODI_${modeTag}_${stamp}.csv`, `\uFEFF${rows.join('\n')}\n`, 'text/csv;charset=utf-8');
   };
 
   function computeField(samples, width = 320, height = 220) {
@@ -2113,8 +3251,15 @@ const App = () => {
       if (p.value < minV) minV = p.value;
       if (p.value > maxV) maxV = p.value;
     }
-    if (!Number.isFinite(minV) || !Number.isFinite(maxV) || minV === maxV) {
+    if (!Number.isFinite(minV) || !Number.isFinite(maxV)) {
       return { field: null, min: Number.isFinite(minV) ? minV : null, max: Number.isFinite(maxV) ? maxV : null, gridW: 0, gridH: 0, width, height, points: [], bounds: { minX, maxX, minY, maxY, pad: 14 } };
+    }
+    if (minV === maxV) {
+      const pad = 14;
+      const gridW = 60;
+      const gridH = 42;
+      const field = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => minV));
+      return { field, min: minV, max: maxV, gridW, gridH, width, height, points: [], bounds: { minX, maxX, minY, maxY, pad } };
     }
 
     const pad = 14;
@@ -2155,6 +3300,626 @@ const App = () => {
     }
 
     return { field, min: minV, max: maxV, gridW, gridH, width, height, points: pts, bounds: { minX, maxX, minY, maxY, pad } };
+  }
+
+  function computeFieldBarrierSpline(samples, width = 500, height = 400, barrierPolygon, worldBounds, options) {
+    const opts = options ?? {};
+    const pad = Number.isFinite(opts.pad) ? Number(opts.pad) : 14;
+    const clampRange = opts.clampRange && Number.isFinite(opts.clampRange.min) && Number.isFinite(opts.clampRange.max)
+      ? { min: Number(opts.clampRange.min), max: Number(opts.clampRange.max) }
+      : null;
+
+    if (!samples || samples.length < 3) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+    for (const p of samples) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.value)) continue;
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+      minV = Math.min(minV, p.value);
+      maxV = Math.max(maxV, p.value);
+    }
+
+    if (worldBounds && Number.isFinite(worldBounds.minX) && Number.isFinite(worldBounds.maxX) && Number.isFinite(worldBounds.minY) && Number.isFinite(worldBounds.maxY)) {
+      if (worldBounds.maxX > worldBounds.minX && worldBounds.maxY > worldBounds.minY) {
+        minX = worldBounds.minX;
+        maxX = worldBounds.maxX;
+        minY = worldBounds.minY;
+        maxY = worldBounds.maxY;
+      }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY) || maxX <= minX || maxY <= minY) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    const sx = (x) => pad + ((x - minX) / ((maxX - minX) || 1)) * (width - pad * 2);
+    const sy = (y) => pad + (1 - (y - minY) / ((maxY - minY) || 1)) * (height - pad * 2);
+
+    const pts = samples
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.value))
+      .map((p) => ({ x: sx(p.x), y: sy(p.y), v: clampRange ? clamp(p.value, clampRange.min, clampRange.max) : p.value }));
+
+    const poly = (barrierPolygon ?? [])
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => ({ x: sx(p.x), y: sy(p.y) }));
+
+    const orient = (ax, ay, bx, by, cx, cy) => {
+      return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    };
+    const onSeg = (ax, ay, bx, by, cx, cy) => {
+      return Math.min(ax, bx) - 1e-9 <= cx && cx <= Math.max(ax, bx) + 1e-9 && Math.min(ay, by) - 1e-9 <= cy && cy <= Math.max(ay, by) + 1e-9;
+    };
+    const segIntersects = (a, b, c, d) => {
+      const o1 = orient(a.x, a.y, b.x, b.y, c.x, c.y);
+      const o2 = orient(a.x, a.y, b.x, b.y, d.x, d.y);
+      const o3 = orient(c.x, c.y, d.x, d.y, a.x, a.y);
+      const o4 = orient(c.x, c.y, d.x, d.y, b.x, b.y);
+
+      if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) && (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
+      if (Math.abs(o1) <= 1e-12 && onSeg(a.x, a.y, b.x, b.y, c.x, c.y)) return true;
+      if (Math.abs(o2) <= 1e-12 && onSeg(a.x, a.y, b.x, b.y, d.x, d.y)) return true;
+      if (Math.abs(o3) <= 1e-12 && onSeg(c.x, c.y, d.x, d.y, a.x, a.y)) return true;
+      if (Math.abs(o4) <= 1e-12 && onSeg(c.x, c.y, d.x, d.y, b.x, b.y)) return true;
+      return false;
+    };
+
+    const visible = (a, b) => {
+      if (!poly || poly.length < 3) return true;
+      for (let i = 0; i < poly.length; i++) {
+        const c = poly[i];
+        const d = poly[(i + 1) % poly.length];
+        // 只要连线穿越边界（与任一边相交）即视为被障碍阻断
+        if (segIntersects(a, b, c, d)) return false;
+      }
+      return true;
+    };
+
+    const U = (r2) => {
+      if (r2 <= 1e-18) return 0;
+      const r = Math.sqrt(r2);
+      return r2 * Math.log(r + 1e-12);
+    };
+
+    const solveLinear = (A, b) => {
+      const n = A.length;
+      const M = A.map((row) => row.slice());
+      const x = b.slice();
+      for (let i = 0; i < n; i++) {
+        let pivot = i;
+        let best = Math.abs(M[i][i]);
+        for (let r = i + 1; r < n; r++) {
+          const v = Math.abs(M[r][i]);
+          if (v > best) {
+            best = v;
+            pivot = r;
+          }
+        }
+        if (best <= 1e-12) return null;
+        if (pivot !== i) {
+          const tmpRow = M[i];
+          M[i] = M[pivot];
+          M[pivot] = tmpRow;
+          const tmpV = x[i];
+          x[i] = x[pivot];
+          x[pivot] = tmpV;
+        }
+
+        const diag = M[i][i];
+        for (let c = i; c < n; c++) M[i][c] /= diag;
+        x[i] /= diag;
+
+        for (let r = 0; r < n; r++) {
+          if (r === i) continue;
+          const f = M[r][i];
+          if (Math.abs(f) <= 1e-15) continue;
+          for (let c = i; c < n; c++) M[r][c] -= f * M[i][c];
+          x[r] -= f * x[i];
+        }
+      }
+      return x;
+    };
+
+    const idwAt = (x, y, neigh) => {
+      const p = 2;
+      const eps = 1e-6;
+      let num = 0;
+      let den = 0;
+      for (const pt of neigh) {
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < eps) return pt.v;
+        const w = 1 / Math.pow(d2, p / 2);
+        num += w * pt.v;
+        den += w;
+      }
+      return num / (den || 1);
+    };
+
+    const selectKNearestVisible = (x, y, k) => {
+      const a = { x, y };
+      const best = [];
+      let worstD2 = -Infinity;
+      let worstIdx = -1;
+      for (const pt of pts) {
+        if (!visible(a, pt)) continue;
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (best.length < k) {
+          best.push({ ...pt, d2 });
+          if (d2 > worstD2) {
+            worstD2 = d2;
+            worstIdx = best.length - 1;
+          }
+        } else if (d2 < worstD2) {
+          best[worstIdx] = { ...pt, d2 };
+          worstD2 = -Infinity;
+          worstIdx = -1;
+          for (let i = 0; i < best.length; i++) {
+            if (best[i].d2 > worstD2) {
+              worstD2 = best[i].d2;
+              worstIdx = i;
+            }
+          }
+        }
+      }
+      best.sort((m, n) => m.d2 - n.d2);
+      return best;
+    };
+
+    const tpsAt = (x, y, neigh) => {
+      const n = neigh.length;
+      if (n < 3) return null;
+
+      const size = n + 3;
+      const A = Array.from({ length: size }, () => Array.from({ length: size }, () => 0));
+      const b = Array.from({ length: size }, () => 0);
+      const lambda = 1e-10;
+
+      for (let i = 0; i < n; i++) {
+        const xi = neigh[i].x;
+        const yi = neigh[i].y;
+        b[i] = neigh[i].v;
+        for (let j = 0; j < n; j++) {
+          const dx = xi - neigh[j].x;
+          const dy = yi - neigh[j].y;
+          const r2 = dx * dx + dy * dy;
+          A[i][j] = U(r2);
+        }
+        A[i][i] += lambda;
+        A[i][n] = 1;
+        A[i][n + 1] = xi;
+        A[i][n + 2] = yi;
+      }
+
+      for (let j = 0; j < n; j++) {
+        const xj = neigh[j].x;
+        const yj = neigh[j].y;
+        A[n][j] = 1;
+        A[n + 1][j] = xj;
+        A[n + 2][j] = yj;
+      }
+      // 右下角 3x3 为 0，b 的最后三项也为 0
+
+      const sol = solveLinear(A, b);
+      if (!sol) return null;
+      const w = sol.slice(0, n);
+      const a0 = sol[n];
+      const a1 = sol[n + 1];
+      const a2 = sol[n + 2];
+
+      let f = a0 + a1 * x + a2 * y;
+      for (let i = 0; i < n; i++) {
+        const dx = x - neigh[i].x;
+        const dy = y - neigh[i].y;
+        f += w[i] * U(dx * dx + dy * dy);
+      }
+      return Number.isFinite(f) ? f : null;
+    };
+
+    const gridW = 80;
+    const gridH = 56;
+    const field = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => 0));
+    const k = 18;
+
+    for (let gy = 0; gy < gridH; gy++) {
+      const y = (gy / (gridH - 1)) * height;
+      for (let gx = 0; gx < gridW; gx++) {
+        const x = (gx / (gridW - 1)) * width;
+        const neigh = selectKNearestVisible(x, y, k);
+        let v = null;
+        if (neigh.length >= 6) {
+          v = tpsAt(x, y, neigh);
+        }
+        if (!Number.isFinite(v)) {
+          // TPS 点不足或求解失败：退化到可见邻域 IDW
+          v = idwAt(x, y, neigh.length ? neigh : pts);
+        }
+        if (clampRange) v = clamp(v, clampRange.min, clampRange.max);
+        field[gy][gx] = v;
+      }
+    }
+
+    return {
+      field,
+      min: Number.isFinite(minV) ? minV : null,
+      max: Number.isFinite(maxV) ? maxV : null,
+      gridW,
+      gridH,
+      width,
+      height,
+      points: pts,
+      bounds: { minX, maxX, minY, maxY, pad },
+    };
+  }
+
+  function computeFieldNaturalNeighbor(samples, width = 500, height = 400, barrierPolygon, worldBounds, options) {
+    const opts = options ?? {};
+    const pad = Number.isFinite(opts.pad) ? Number(opts.pad) : 14;
+    const clampRange = opts.clampRange && Number.isFinite(opts.clampRange.min) && Number.isFinite(opts.clampRange.max)
+      ? { min: Number(opts.clampRange.min), max: Number(opts.clampRange.max) }
+      : null;
+    const kNearest = Number.isFinite(opts.kNearest) ? Math.max(6, Math.min(64, Math.round(opts.kNearest))) : 24;
+    const smoothPasses = Number.isFinite(opts.smoothPasses) ? Math.max(0, Math.min(6, Math.round(opts.smoothPasses))) : 0;
+
+    if (!samples || samples.length < 3) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+    for (const p of samples) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.value)) continue;
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+      minV = Math.min(minV, p.value);
+      maxV = Math.max(maxV, p.value);
+    }
+
+    if (worldBounds && Number.isFinite(worldBounds.minX) && Number.isFinite(worldBounds.maxX) && Number.isFinite(worldBounds.minY) && Number.isFinite(worldBounds.maxY)) {
+      if (worldBounds.maxX > worldBounds.minX && worldBounds.maxY > worldBounds.minY) {
+        minX = worldBounds.minX;
+        maxX = worldBounds.maxX;
+        minY = worldBounds.minY;
+        maxY = worldBounds.maxY;
+      }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY) || maxX <= minX || maxY <= minY) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    const sx = (x) => pad + ((x - minX) / ((maxX - minX) || 1)) * (width - pad * 2);
+    const sy = (y) => pad + (1 - (y - minY) / ((maxY - minY) || 1)) * (height - pad * 2);
+
+    const pts = samples
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.value))
+      .map((p) => ({
+        x: sx(p.x),
+        y: sy(p.y),
+        v: clampRange ? clamp(p.value, clampRange.min, clampRange.max) : p.value,
+      }));
+
+    const idwAt = (x, y, neigh) => {
+      const p = 2;
+      const eps = 1e-6;
+      let num = 0;
+      let den = 0;
+      for (const pt of neigh) {
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < eps) return pt.v;
+        const w = 1 / Math.pow(d2, p / 2);
+        num += w * pt.v;
+        den += w;
+      }
+      return num / (den || 1);
+    };
+
+    // 共享边长度：通过“同一对顶点”的边匹配（d3-delaunay 的 Voronoi 单元会共享完全相同的边顶点）
+    const sharedEdgeLength = (polyA, polyB) => {
+      if (!Array.isArray(polyA) || !Array.isArray(polyB) || polyA.length < 2 || polyB.length < 2) return 0;
+      const keyPt = (p) => `${Number(p[0]).toFixed(4)},${Number(p[1]).toFixed(4)}`;
+      const edgeKey = (p, q) => {
+        const a = keyPt(p);
+        const b = keyPt(q);
+        return a < b ? `${a}|${b}` : `${b}|${a}`;
+      };
+      const edgeMap = new Map();
+      for (let i = 0; i < polyA.length - 1; i++) {
+        const p = polyA[i];
+        const q = polyA[i + 1];
+        const dx = q[0] - p[0];
+        const dy = q[1] - p[1];
+        const len = Math.hypot(dx, dy);
+        if (!(len > 1e-9)) continue;
+        edgeMap.set(edgeKey(p, q), len);
+      }
+      let sum = 0;
+      for (let i = 0; i < polyB.length - 1; i++) {
+        const p = polyB[i];
+        const q = polyB[i + 1];
+        const k = edgeKey(p, q);
+        const len = edgeMap.get(k);
+        if (len) sum += len;
+      }
+      return sum;
+    };
+
+    const selectKNearest = (x, y, k) => {
+      const best = [];
+      let worstD2 = -Infinity;
+      let worstIdx = -1;
+      for (const pt of pts) {
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (best.length < k) {
+          best.push({ ...pt, d2 });
+          if (d2 > worstD2) {
+            worstD2 = d2;
+            worstIdx = best.length - 1;
+          }
+        } else if (d2 < worstD2) {
+          best[worstIdx] = { ...pt, d2 };
+          worstD2 = -Infinity;
+          worstIdx = -1;
+          for (let i = 0; i < best.length; i++) {
+            if (best[i].d2 > worstD2) {
+              worstD2 = best[i].d2;
+              worstIdx = i;
+            }
+          }
+        }
+      }
+      best.sort((a, b) => a.d2 - b.d2);
+      return best;
+    };
+
+    const naturalNeighborAt = (x, y) => {
+      const neigh = selectKNearest(x, y, kNearest);
+      if (neigh.length < 3) return idwAt(x, y, pts);
+
+      // 命中采样点：直接返回
+      if (neigh[0]?.d2 != null && neigh[0].d2 < 1e-8) return neigh[0].v;
+
+      const local = [...neigh.map((p) => ({ x: p.x, y: p.y, v: p.v })), { x, y, v: null }];
+      const qi = local.length - 1;
+
+      let delaunay;
+      try {
+        delaunay = Delaunay.from(local, (p) => p.x, (p) => p.y);
+      } catch {
+        return idwAt(x, y, neigh);
+      }
+
+      const vor = delaunay.voronoi([0, 0, width, height]);
+      const polyQ = vor.cellPolygon(qi);
+      if (!polyQ) return idwAt(x, y, neigh);
+
+      let sumW = 0;
+      let sumWV = 0;
+      const eps = 1e-9;
+      for (const j of delaunay.neighbors(qi)) {
+        const pj = local[j];
+        if (!pj) continue;
+        const dist = Math.hypot(x - pj.x, y - pj.y);
+        if (!(dist > eps)) {
+          return pj.v;
+        }
+        const polyJ = vor.cellPolygon(j);
+        const L = sharedEdgeLength(polyQ, polyJ);
+        if (!(L > 1e-9)) continue;
+        const w = L / dist;
+        sumW += w;
+        sumWV += w * pj.v;
+      }
+
+      if (!(sumW > 1e-12)) return idwAt(x, y, neigh);
+      return sumWV / sumW;
+    };
+
+    const gridW = 80;
+    const gridH = 56;
+    const field = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => 0));
+
+    for (let gy = 0; gy < gridH; gy++) {
+      const y = (gy / (gridH - 1)) * height;
+      for (let gx = 0; gx < gridW; gx++) {
+        const x = (gx / (gridW - 1)) * width;
+        let v = naturalNeighborAt(x, y);
+        if (clampRange) v = clamp(v, clampRange.min, clampRange.max);
+        field[gy][gx] = v;
+      }
+    }
+
+    const smoothOnce = (src) => {
+      const dst = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => 0));
+      // 近似高斯核：[[1,2,1],[2,4,2],[1,2,1]] / 16
+      const w00 = 1, w01 = 2, w02 = 1;
+      const w10 = 2, w11 = 4, w12 = 2;
+      const w20 = 1, w21 = 2, w22 = 1;
+      const denom = 16;
+
+      for (let y = 0; y < gridH; y++) {
+        const y0 = Math.max(0, y - 1);
+        const y1 = y;
+        const y2 = Math.min(gridH - 1, y + 1);
+        for (let x = 0; x < gridW; x++) {
+          const x0 = Math.max(0, x - 1);
+          const x1 = x;
+          const x2 = Math.min(gridW - 1, x + 1);
+          const v00 = src[y0][x0];
+          const v01 = src[y0][x1];
+          const v02 = src[y0][x2];
+          const v10 = src[y1][x0];
+          const v11 = src[y1][x1];
+          const v12 = src[y1][x2];
+          const v20 = src[y2][x0];
+          const v21 = src[y2][x1];
+          const v22 = src[y2][x2];
+
+          let s = 0;
+          s += w00 * v00 + w01 * v01 + w02 * v02;
+          s += w10 * v10 + w11 * v11 + w12 * v12;
+          s += w20 * v20 + w21 * v21 + w22 * v22;
+          let out = s / denom;
+          if (clampRange) out = clamp(out, clampRange.min, clampRange.max);
+          dst[y][x] = out;
+        }
+      }
+      return dst;
+    };
+
+    let smoothedField = field;
+    for (let pass = 0; pass < smoothPasses; pass++) {
+      smoothedField = smoothOnce(smoothedField);
+    }
+
+    return {
+      field: smoothedField,
+      min: Number.isFinite(minV) ? minV : null,
+      max: Number.isFinite(maxV) ? maxV : null,
+      gridW,
+      gridH,
+      width,
+      height,
+      points: pts,
+      bounds: { minX, maxX, minY, maxY, pad },
+    };
+  }
+
+  function computeFieldIdwWorld(samples, width = 500, height = 400, worldBounds, options) {
+    const opts = options ?? {};
+    const pad = Number.isFinite(opts.pad) ? Number(opts.pad) : 14;
+    const clampRange = opts.clampRange && Number.isFinite(opts.clampRange.min) && Number.isFinite(opts.clampRange.max)
+      ? { min: Number(opts.clampRange.min), max: Number(opts.clampRange.max) }
+      : null;
+    const kNearest = Number.isFinite(opts.kNearest) ? Math.max(4, Math.min(64, Math.round(opts.kNearest))) : 24;
+
+    if (!samples || samples.length < 3) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let minV = Infinity, maxV = -Infinity;
+    for (const p of samples) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.value)) continue;
+      minX = Math.min(minX, p.x);
+      maxX = Math.max(maxX, p.x);
+      minY = Math.min(minY, p.y);
+      maxY = Math.max(maxY, p.y);
+      minV = Math.min(minV, p.value);
+      maxV = Math.max(maxV, p.value);
+    }
+
+    if (worldBounds && Number.isFinite(worldBounds.minX) && Number.isFinite(worldBounds.maxX) && Number.isFinite(worldBounds.minY) && Number.isFinite(worldBounds.maxY)) {
+      if (worldBounds.maxX > worldBounds.minX && worldBounds.maxY > worldBounds.minY) {
+        minX = worldBounds.minX;
+        maxX = worldBounds.maxX;
+        minY = worldBounds.minY;
+        maxY = worldBounds.maxY;
+      }
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY) || maxX <= minX || maxY <= minY) {
+      return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
+    }
+
+    const sx = (x) => pad + ((x - minX) / ((maxX - minX) || 1)) * (width - pad * 2);
+    const sy = (y) => pad + (1 - (y - minY) / ((maxY - minY) || 1)) * (height - pad * 2);
+
+    const pts = samples
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.value))
+      .map((p) => ({
+        x: sx(p.x),
+        y: sy(p.y),
+        v: clampRange ? clamp(p.value, clampRange.min, clampRange.max) : p.value,
+      }));
+
+    const idwAt = (x, y, neigh) => {
+      const p = 2;
+      const eps = 1e-6;
+      let num = 0;
+      let den = 0;
+      for (const pt of neigh) {
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < eps) return pt.v;
+        const w = 1 / Math.pow(d2, p / 2);
+        num += w * pt.v;
+        den += w;
+      }
+      return num / (den || 1);
+    };
+
+    const selectKNearest = (x, y, k) => {
+      const best = [];
+      let worstD2 = -Infinity;
+      let worstIdx = -1;
+      for (const pt of pts) {
+        const dx = x - pt.x;
+        const dy = y - pt.y;
+        const d2 = dx * dx + dy * dy;
+        if (best.length < k) {
+          best.push({ ...pt, d2 });
+          if (d2 > worstD2) {
+            worstD2 = d2;
+            worstIdx = best.length - 1;
+          }
+        } else if (d2 < worstD2) {
+          best[worstIdx] = { ...pt, d2 };
+          worstD2 = -Infinity;
+          worstIdx = -1;
+          for (let i = 0; i < best.length; i++) {
+            if (best[i].d2 > worstD2) {
+              worstD2 = best[i].d2;
+              worstIdx = i;
+            }
+          }
+        }
+      }
+      best.sort((a, b) => a.d2 - b.d2);
+      return best;
+    };
+
+    const gridW = 80;
+    const gridH = 56;
+    const field = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => 0));
+
+    for (let gy = 0; gy < gridH; gy++) {
+      const y = (gy / (gridH - 1)) * height;
+      for (let gx = 0; gx < gridW; gx++) {
+        const x = (gx / (gridW - 1)) * width;
+        const neigh = selectKNearest(x, y, kNearest);
+        let v = idwAt(x, y, neigh.length ? neigh : pts);
+        if (clampRange) v = clamp(v, clampRange.min, clampRange.max);
+        field[gy][gx] = v;
+      }
+    }
+
+    return {
+      field,
+      min: Number.isFinite(minV) ? minV : null,
+      max: Number.isFinite(maxV) ? maxV : null,
+      gridW,
+      gridH,
+      width,
+      height,
+      points: pts,
+      bounds: { minX, maxX, minY, maxY, pad },
+    };
   }
 
   const sampleFieldAtWorldXY = (fieldPack, worldX, worldY) => {
@@ -2198,6 +3963,7 @@ const App = () => {
   const contourData = useMemo(() => {
     return {
       Ti: computeField(boreholeParamSamples.Ti),
+      Ei: computeField(boreholeParamSamples.Ei),
       Hi: computeField(boreholeParamSamples.Hi),
       Di: computeField(boreholeParamSamples.Di),
       Mi: computeField(boreholeParamSamples.Mi),
@@ -2207,6 +3973,97 @@ const App = () => {
   const coalThicknessField = useMemo(() => {
     return computeField(boreholeParamSamples.CoalThk);
   }, [boreholeParamSamples]);
+
+  const handleExtractGeologyInterpolatedParams = () => {
+    // “地质插值提取”：边界点 + 采区坐标点
+    // - Ti/Ei/Hi/Di：由钻孔分层数据生成的插值场提取
+    // - Mi：插值提取目标煤层厚度（煤厚）
+    if (!(drillholeData?.length >= 3) || Object.keys(drillholeLayersById ?? {}).length === 0) {
+      window.alert('请先导入“钻孔坐标数据”和“钻孔分层数据”。');
+      return;
+    }
+    if (!(boundaryData?.length >= 1)) {
+      window.alert('请先导入“采区边界坐标”。');
+      return;
+    }
+    if (!(boreholeParamSamples?.Ti?.length >= 3) || !(boreholeParamSamples?.Di?.length >= 3) || !(boreholeParamSamples?.Ei?.length >= 3)) {
+      window.alert('地质插值提取需要足够的钻孔样本（Ti/Di/Ei 至少 3 个有效点）。');
+      return;
+    }
+    if (!(boreholeParamSamples?.CoalThk?.length >= 3)) {
+      window.alert('地质插值提取需要“目标煤层厚度（煤厚）”样本：请先确认已选择目标煤层且钻孔分层中含该煤层。');
+      return;
+    }
+
+    const ts = new Date();
+    const stamp = ts.toISOString();
+
+    const boundaryPts = computeEvalBoundaryRectFromDrillholes(drillholeData)
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p, idx) => ({ ...p, id: `BND-${idx + 1}`, __cat: 'gray' }));
+
+    const areaPts = (boundaryData ?? [])
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p, idx) => ({ ...p, id: String(p?.id ?? `AREA-${idx + 1}`), __cat: 'blue' }));
+
+    const geologyPts = (drillholeData ?? [])
+      .filter((p) => p && String(p.id ?? '').trim() && Number.isFinite(p.x) && Number.isFinite(p.y))
+      .map((p) => ({ ...p, id: String(p.id ?? '').trim(), __cat: 'geo' }));
+
+    const uniq = new Map();
+    for (const p of [...geologyPts, ...boundaryPts, ...areaPts]) {
+      const id = String(p?.id ?? '').trim();
+      if (!id) continue;
+      const k = `${id}@@${Number(p.x).toFixed(6)}@@${Number(p.y).toFixed(6)}`;
+      if (!uniq.has(k)) uniq.set(k, p);
+    }
+    const pts = Array.from(uniq.values());
+
+    const extracted = pts.map((p) => {
+      const Ti = sampleFieldAtWorldXY(contourData.Ti, p.x, p.y);
+      const Ei = sampleFieldAtWorldXY(contourData.Ei, p.x, p.y);
+      const Hi = sampleFieldAtWorldXY(contourData.Hi, p.x, p.y);
+      const Di = sampleFieldAtWorldXY(contourData.Di, p.x, p.y);
+      const Mi = sampleFieldAtWorldXY(coalThicknessField, p.x, p.y);
+      return {
+        id: String(p.id ?? ''),
+        cat: p.__cat,
+        faceIndex: null,
+        x: p.x,
+        y: p.y,
+        Ti,
+        Ei: Number.isFinite(Ei) ? Ei : null,
+        Hi,
+        Di,
+        Mi: Number.isFinite(Mi) ? Mi : null,
+        delta: 0,
+        lpi: 0,
+        lci: 0,
+        trueCoalThk: Number.isFinite(Mi) ? Mi : null,
+        inWorkface: false,
+        onWorkfaceEdge: false,
+      };
+    });
+
+    setLastParamExtractionMode('geo');
+    setParamExtractionResult({
+      doneAt: stamp,
+      points: extracted,
+      geology: {
+        boundaryCtrl: extracted.filter((p) => p.cat === 'blue'),
+        workfaceCtrl: [],
+      },
+      mining: {
+        evalPoints: [],
+      },
+      summary: {
+        geologyEvalCount: extracted.filter((p) => p.cat === 'geo').length,
+        generatedEvalCount: extracted.filter((p) => p.cat !== 'geo').length,
+        evalPointCount: extracted.length,
+      },
+    });
+    setOdiResult(null);
+  };
 
   const handleExtractHighPrecisionParams = () => {
     if (!generatedPoints) return;
@@ -2218,18 +4075,127 @@ const App = () => {
     const faces = (generatedPoints?.faces ?? []).filter((f) => f?.corners?.length === 4);
     const faceByIndex = new Map(faces.map((f) => [f.faceIndex, f]));
 
+    const pointHitsFace = (p, f, eps = 1e-6) => {
+      // 面内 or 在边界线上：都认为“在工作面中”
+      if (!f?.corners?.length) return false;
+      if (polygonContainsPoint(f.corners, p)) return true;
+      const d = minDistToPolyEdges(p, f.corners);
+      return Number.isFinite(d) && d <= eps;
+    };
+
+    const findHitFace = (p) => {
+      for (const f of faces) {
+        if (pointHitsFace(p, f, 1e-6)) return f;
+      }
+      return null;
+    };
+
+    const getMineHeightForFace = (faceIndex) => {
+      // 按工作面编号取采高：三个场景都支持；若未设置则回退到全局输入
+      if (Number.isFinite(Number(faceIndex)) && Number(faceIndex) >= 1) {
+        const i = Math.round(Number(faceIndex)) - 1;
+        const byFace = activeTab === 'surface'
+          ? surfaceMineHeightByFace
+          : (activeTab === 'upward' ? upwardMineHeightByFace : aquiferMineHeightByFace);
+        const v = Number(byFace?.[i]);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      const v = Number(mineActualHeightM);
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    };
+
+    const getRoofCavingAngleForFace = (faceIndex) => {
+      // 按工作面编号取 δ：三个场景都支持；若未设置则回退到全局输入
+      if (Number.isFinite(Number(faceIndex)) && Number(faceIndex) >= 1) {
+        const i = Math.round(Number(faceIndex)) - 1;
+        const byFace = activeTab === 'surface'
+          ? surfaceRoofCavingAngleByFace
+          : (activeTab === 'upward' ? upwardRoofCavingAngleByFace : aquiferRoofCavingAngleByFace);
+        const v = Number(byFace?.[i]);
+        if (Number.isFinite(v)) return v;
+      }
+      const v = Number(roofCavingAngleDeg);
+      return Number.isFinite(v) ? v : 0;
+    };
+
+    // lci（区段煤柱）提取规则（3 个场景一致）：
+    // - 仅 1 个工作面：所有点 lci=0
+    // - >=2 个工作面：相邻工作面之间的间距 = “短边中线（长轴中心线）的垂直距离 - 两工作面宽度(短边长度)之和”
+    //   仅对“工作面中心点”赋值（每个工作面选取其 -ZX 点中离质心最近的 1 个作为中心点），其它点均为 0
+
+    const getLineMidAndDir = (corners) => {
+      const cl = getWorkfaceCenterline(corners);
+      if (!cl?.a || !cl?.b) return null;
+      const dRaw = sub(cl.b, cl.a);
+      const dLen = Math.sqrt(dRaw.x * dRaw.x + dRaw.y * dRaw.y);
+      if (!Number.isFinite(dLen) || dLen <= 1e-9) return null;
+      const dir = { x: dRaw.x / dLen, y: dRaw.y / dLen };
+      const mid = { x: (cl.a.x + cl.b.x) / 2, y: (cl.a.y + cl.b.y) / 2 };
+      return { mid, dir };
+    };
+
+    const getPerpDistBetweenCenterlines = (f, g) => {
+      const lf = getLineMidAndDir(f?.corners);
+      const lg = getLineMidAndDir(g?.corners);
+      if (!lf || !lg) return null;
+      // 用两条中心线方向的“平均方向”作为共同法向，减少导入点顺序差异导致的抖动
+      let avgDir = add(lf.dir, lg.dir);
+      const avgLen = Math.sqrt(avgDir.x * avgDir.x + avgDir.y * avgDir.y);
+      if (!Number.isFinite(avgLen) || avgLen <= 1e-9) avgDir = lf.dir;
+      else avgDir = { x: avgDir.x / avgLen, y: avgDir.y / avgLen };
+      const n = { x: -avgDir.y, y: avgDir.x }; // 法向
+      const v = sub(lg.mid, lf.mid);
+      const d = Math.abs(dot(v, n));
+      return Number.isFinite(d) ? d : null;
+    };
+
+    const isZXCenterPoint = (p) => String(p?.id ?? '').includes('ZX');
+
     const faceLci = new Map();
     if (faces.length <= 1) {
+      // 只有一个工作面：所有点均为 0（这里仍写入 map 便于统一读取）
       if (faces[0]) faceLci.set(faces[0].faceIndex, 0);
     } else {
-      for (const f of faces) {
-        let best = Infinity;
-        for (const g of faces) {
-          if (g.faceIndex === f.faceIndex) continue;
-          const d = dist(f.centroid, g.centroid);
-          if (Number.isFinite(d)) best = Math.min(best, d);
+      const sortedFaces = [...faces].sort((a, b) => Number(a.faceIndex) - Number(b.faceIndex));
+      const pairGap = new Map(); // key: "i-j" => gap
+      const key = (i, j) => `${i}-${j}`;
+      for (let i = 0; i < sortedFaces.length - 1; i++) {
+        const f = sortedFaces[i];
+        const g = sortedFaces[i + 1];
+        const fi = Math.round(Number(f.faceIndex));
+        const gi = Math.round(Number(g.faceIndex));
+        const d = getPerpDistBetweenCenterlines(f, g);
+        // “短边中线垂直距离 - 工作面宽度(短边长度)”：这里按几何口径用“半宽之和”扣除
+        // 也就是 gap = d - (Wf/2 + Wg/2) = d - (Wf + Wg)/2
+        const widthHalfSum = (Number(f.shortLen) + Number(g.shortLen)) / 2;
+        let gap = null;
+        if (Number.isFinite(d) && Number.isFinite(widthHalfSum)) {
+          gap = d - widthHalfSum;
+          if (!Number.isFinite(gap)) gap = null;
         }
-        faceLci.set(f.faceIndex, Number.isFinite(best) ? best : 0);
+        // 按要求：若计算失败/为负则按 0 处理
+        gap = Number.isFinite(gap) && gap > 0 ? gap : 0;
+        pairGap.set(key(fi, gi), gap);
+      }
+
+      for (let idx = 0; idx < sortedFaces.length; idx++) {
+        const f = sortedFaces[idx];
+        const fi = Math.round(Number(f.faceIndex));
+        let left = null;
+        let right = null;
+        if (idx - 1 >= 0) {
+          const li = Math.round(Number(sortedFaces[idx - 1].faceIndex));
+          left = pairGap.get(key(li, fi));
+        }
+        if (idx + 1 < sortedFaces.length) {
+          const ri = Math.round(Number(sortedFaces[idx + 1].faceIndex));
+          right = pairGap.get(key(fi, ri));
+        }
+        let v = 0;
+        if (Number.isFinite(left) && Number.isFinite(right)) v = Math.min(left, right);
+        else if (Number.isFinite(left)) v = left;
+        else if (Number.isFinite(right)) v = right;
+        faceLci.set(fi, Number.isFinite(v) ? v : 0);
       }
     }
 
@@ -2239,8 +4205,7 @@ const App = () => {
       for (const p of arr) evalPoints.push({ ...p, __cat: k });
     }
 
-    const M = Number(mineActualHeightM);
-    const delta = Number(roofCavingAngleDeg);
+    // δ：对 aquifer 按工作面匹配；其它场景为全局常量
 
     const computeLpiForPoint = (p, hitFace, isCenterlineGenerated) => {
       if (!hitFace) return 0;
@@ -2250,20 +4215,13 @@ const App = () => {
     };
 
     const miningAtEvalPoints = evalPoints.map((p) => {
-      const isOnEdge = p.__cat === 'green' || p.__cat === 'pink';
-      let hitFace = null;
-      for (const f of faces) {
-        if (polygonContainsPoint(f.corners, p)) {
-          hitFace = f;
-          break;
-        }
-      }
+      const hitFace = findHitFace(p);
       const inWorkface = Boolean(hitFace);
       const trueCoalThk = sampleFieldAtWorldXY(coalThicknessField, p.x, p.y);
+      const M = getMineHeightForFace(hitFace?.faceIndex ?? null);
+      const delta = getRoofCavingAngleForFace(hitFace?.faceIndex ?? null);
       let MiPoint = 0;
-      if (isOnEdge) {
-        MiPoint = 0;
-      } else if (inWorkface) {
+      if (inWorkface) {
         const t = Number(trueCoalThk);
         if (Number.isFinite(t) && t > 0 && Number.isFinite(M) && M > 0) {
           MiPoint = t > M ? M : t;
@@ -2280,7 +4238,7 @@ const App = () => {
       const faceIndex = hitFace?.faceIndex ?? null;
       const isCenterlineGenerated = p.__cat === 'red' || String(p.id ?? '').includes('-ZX');
       const lpi = computeLpiForPoint(p, hitFace, isCenterlineGenerated);
-      const lci = hitFace ? (faceLci.get(hitFace.faceIndex) ?? 0) : 0;
+      const lci = (hitFace && isZXCenterPoint(p)) ? (faceLci.get(hitFace.faceIndex) ?? 0) : 0;
 
       // 地质参数：对所有评价点统一插值
       const Ti = sampleFieldAtWorldXY(contourData.Ti, p.x, p.y);
@@ -2303,7 +4261,7 @@ const App = () => {
         lci,
         trueCoalThk: Number.isFinite(trueCoalThk) ? trueCoalThk : null,
         inWorkface,
-        onWorkfaceEdge: isOnEdge,
+        onWorkfaceEdge: inWorkface ? (Number.isFinite(minDistToPolyEdges(p, hitFace?.corners ?? [])) && minDistToPolyEdges(p, hitFace?.corners ?? []) <= 1e-6) : false,
       };
     });
 
@@ -2311,17 +4269,12 @@ const App = () => {
     const geologyEvalPoints = (drillholeData ?? [])
       .filter((p) => p && String(p.id ?? '').trim() && Number.isFinite(p.x) && Number.isFinite(p.y))
       .map((p) => {
-        let hitFace = null;
-        for (const f of faces) {
-          if (polygonContainsPoint(f.corners, p)) {
-            hitFace = f;
-            break;
-          }
-        }
+        const hitFace = findHitFace(p);
         const inWorkface = Boolean(hitFace);
         const trueCoalThk = sampleFieldAtWorldXY(coalThicknessField, p.x, p.y);
 
-        const M = Number(mineActualHeightM);
+        const M = getMineHeightForFace(hitFace?.faceIndex ?? null);
+        const delta = getRoofCavingAngleForFace(hitFace?.faceIndex ?? null);
         let MiPoint = 0;
         if (inWorkface) {
           const t = Number(trueCoalThk);
@@ -2338,7 +4291,7 @@ const App = () => {
 
         const faceIndex = hitFace?.faceIndex ?? null;
         const lpi = computeLpiForPoint(p, hitFace, false);
-        const lci = hitFace ? (faceLci.get(hitFace.faceIndex) ?? 0) : 0;
+        const lci = (hitFace && isZXCenterPoint(p)) ? (faceLci.get(hitFace.faceIndex) ?? 0) : 0;
 
         const Ti = sampleFieldAtWorldXY(contourData.Ti, p.x, p.y);
         const Hi = sampleFieldAtWorldXY(contourData.Hi, p.x, p.y);
@@ -2360,7 +4313,7 @@ const App = () => {
           lci,
           trueCoalThk: Number.isFinite(trueCoalThk) ? trueCoalThk : null,
           inWorkface,
-          onWorkfaceEdge: false,
+          onWorkfaceEdge: inWorkface ? (Number.isFinite(minDistToPolyEdges(p, hitFace?.corners ?? [])) && minDistToPolyEdges(p, hitFace?.corners ?? []) <= 1e-6) : false,
         };
       });
 
@@ -2386,6 +4339,7 @@ const App = () => {
         evalPointCount: allPoints.length,
       },
     });
+    setLastParamExtractionMode('full');
     setOdiResult(null);
   };
 
@@ -2551,7 +4505,8 @@ const App = () => {
   };
 
   const normalizeCoords = (points, boundsPoints = points) => {
-    const rect = { left: 150, top: 50, width: 500, height: 400 };
+    // 主图绘图区：尽量铺满 viewBox（800×500），横向更宽；并略向上移动
+    const rect = { left: 10, top: 10, width: 780, height: 470 };
     const padding = 18;
     const x0 = rect.left + padding;
     const x1 = rect.left + rect.width - padding;
@@ -2591,9 +4546,9 @@ const App = () => {
   const hasDrillholeData = drillholeData.length > 0;
   const hasWorkingFaceData = (workingFaceData?.length ?? 0) > 0;
   const hasMeasuredConstraintData = (measuredConstraintData?.length ?? 0) > 0;
-  const hasSpatialData = hasBoundaryData || hasDrillholeData || hasWorkingFaceData;
+  const hasSpatialData = hasBoundaryData || hasDrillholeData || hasWorkingFaceData || hasMeasuredConstraintData;
   const combinedPointsForBounds = hasSpatialData
-    ? [...boundaryData, ...drillholeData, ...(workingFaceData ?? [])]
+    ? [...boundaryData, ...drillholeData, ...(workingFaceDataTagged ?? []), ...(measuredConstraintData ?? [])]
     : [];
 
   const spatialBounds = useMemo(() => {
@@ -2613,7 +4568,7 @@ const App = () => {
     return { minX, maxX, minY, maxY, rangeX: (maxX - minX) || 1, rangeY: (maxY - minY) || 1 };
   }, [combinedPointsForBounds]);
 
-  const MAIN_MAP_RECT = useMemo(() => ({ left: 150, top: 50, width: 500, height: 400, padding: 18 }), []);
+  const MAIN_MAP_RECT = useMemo(() => ({ left: 10, top: 10, width: 780, height: 470, padding: 18 }), []);
 
   const getSvgCoordsFromMouseEvent = (evt) => {
     const svg = mainMapSvgRef.current;
@@ -2653,9 +4608,7 @@ const App = () => {
     const wy = spatialBounds.minY + ((y1 - sy) / ((y1 - y0) || 1)) * spatialBounds.rangeY;
 
     const odiNorm = sampleFieldAtWorldXY(odiFieldPack, wx, wy);
-    const Ti = sampleFieldAtWorldXY(contourData.Ti, wx, wy);
-    const Hi = sampleFieldAtWorldXY(contourData.Hi, wx, wy);
-    const Di = sampleFieldAtWorldXY(contourData.Di, wx, wy);
+    const Mi = sampleFieldAtWorldXY(coalThicknessField, wx, wy);
 
     setCrosshair({
       active: true,
@@ -2663,19 +4616,1285 @@ const App = () => {
       sy,
       wx,
       wy,
-      values: { odiNorm, Ti, Hi, Di },
+      values: { odiNorm, Mi },
     });
   };
 
   const handleMainMapMouseLeave = () => {
     setCrosshair((p) => (p.active ? { ...p, active: false } : p));
   };
+
+  const handleMainMapClick = (evt) => {
+    if (!measureEnabled) return;
+    const pos = getSvgCoordsFromMouseEvent(evt);
+    if (!pos || !spatialBounds) return;
+
+    const { sx, sy } = pos;
+    const x0 = MAIN_MAP_RECT.left + MAIN_MAP_RECT.padding;
+    const x1 = MAIN_MAP_RECT.left + MAIN_MAP_RECT.width - MAIN_MAP_RECT.padding;
+    const y0 = MAIN_MAP_RECT.top + MAIN_MAP_RECT.padding;
+    const y1 = MAIN_MAP_RECT.top + MAIN_MAP_RECT.height - MAIN_MAP_RECT.padding;
+
+    const inside = sx >= x0 && sx <= x1 && sy >= y0 && sy <= y1;
+    if (!inside) return;
+
+    const wx = spatialBounds.minX + ((sx - x0) / ((x1 - x0) || 1)) * spatialBounds.rangeX;
+    const wy = spatialBounds.minY + ((y1 - sy) / ((y1 - y0) || 1)) * spatialBounds.rangeY;
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
+
+    const nextPoint = { sx, sy, wx, wy };
+    setMeasurePoints((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      if (arr.length >= 2) return [nextPoint];
+      return [...arr, nextPoint];
+    });
+  };
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setMeasureEnabled(false);
+        setMeasurePoints([]);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
   const normalizedBoundaryData = hasBoundaryData ? normalizeCoords(boundaryData, combinedPointsForBounds) : [];
   const normalizedDrillholeData = hasDrillholeData ? normalizeCoords(drillholeData, combinedPointsForBounds) : [];
-  const normalizedWorkingFaceData = hasWorkingFaceData ? normalizeCoords(workingFaceData, combinedPointsForBounds) : [];
+  const normalizedWorkingFaceData = hasWorkingFaceData ? normalizeCoords(workingFaceDataTagged, combinedPointsForBounds) : [];
   const normalizedMeasuredConstraintData = (hasMeasuredConstraintData && combinedPointsForBounds.length)
     ? normalizeCoords(measuredConstraintData, combinedPointsForBounds)
     : [];
+
+  const computeNonSelfIntersectingLoop = (points, getX, getY) => {
+    const raw = (points ?? [])
+      .map((p) => ({ x: Number(getX(p)), y: Number(getY(p)) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    const uniq = new Map();
+    for (const p of raw) {
+      const k = `${p.x.toFixed(4)},${p.y.toFixed(4)}`;
+      if (!uniq.has(k)) uniq.set(k, p);
+    }
+    const pts = Array.from(uniq.values());
+    if (pts.length <= 2) return pts;
+
+    const c = pts.reduce(
+      (acc, p) => ({ x: acc.x + p.x / pts.length, y: acc.y + p.y / pts.length }),
+      { x: 0, y: 0 }
+    );
+    pts.sort((a, b) => Math.atan2(a.y - c.y, a.x - c.x) - Math.atan2(b.y - c.y, b.x - c.x));
+
+    const segIntersects = (a, b, c2, d) => {
+      const orient = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+      const onSeg = (p, q, r) => (
+        Math.min(p.x, r.x) - 1e-9 <= q.x && q.x <= Math.max(p.x, r.x) + 1e-9 &&
+        Math.min(p.y, r.y) - 1e-9 <= q.y && q.y <= Math.max(p.y, r.y) + 1e-9
+      );
+      const o1 = orient(a, b, c2);
+      const o2 = orient(a, b, d);
+      const o3 = orient(c2, d, a);
+      const o4 = orient(c2, d, b);
+      if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) && (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
+      if (Math.abs(o1) < 1e-9 && onSeg(a, c2, b)) return true;
+      if (Math.abs(o2) < 1e-9 && onSeg(a, d, b)) return true;
+      if (Math.abs(o3) < 1e-9 && onSeg(c2, a, d)) return true;
+      if (Math.abs(o4) < 1e-9 && onSeg(c2, b, d)) return true;
+      return false;
+    };
+
+    const n = pts.length;
+    const nextIdx = (i) => (i + 1) % n;
+    let improved = true;
+    let guard = 0;
+    while (improved && guard < 2000) {
+      improved = false;
+      guard++;
+      for (let i = 0; i < n; i++) {
+        const i2 = nextIdx(i);
+        for (let j = i + 2; j < n; j++) {
+          const j2 = nextIdx(j);
+          if (i === j2) continue;
+          const a = pts[i];
+          const b = pts[i2];
+          const c2 = pts[j];
+          const d = pts[j2];
+          if (segIntersects(a, b, c2, d)) {
+            let l = i2;
+            let r = j;
+            while (l < r) {
+              const tmp = pts[l];
+              pts[l] = pts[r];
+              pts[r] = tmp;
+              l++;
+              r--;
+            }
+            improved = true;
+          }
+          if (improved) break;
+        }
+        if (improved) break;
+      }
+    }
+    return pts;
+  };
+
+  const normalizedBoundaryLoop = useMemo(() => {
+    if (!hasBoundaryData || !normalizedBoundaryData?.length) return [];
+    const pts = computeNonSelfIntersectingLoop(normalizedBoundaryData, (p) => p?.nx, (p) => p?.ny);
+    return pts.map((p) => ({ nx: p.x, ny: p.y }));
+  }, [hasBoundaryData, normalizedBoundaryData]);
+
+  const boundaryLoopWorld = useMemo(() => {
+    if (!hasBoundaryData || !boundaryData?.length) return [];
+    return computeNonSelfIntersectingLoop(boundaryData, (p) => p?.x, (p) => p?.y);
+  }, [hasBoundaryData, boundaryData]);
+
+  // 智能规划：粉色覆盖层使用“边界煤柱确定值”对采区边界内缩后的范围
+  const planningBoundaryOverlayLoop = useMemo(() => {
+    if (!showPlanningBoundaryOverlay) return [];
+    if (!hasBoundaryData) return [];
+    if (!boundaryLoopWorld || boundaryLoopWorld.length < 3) return [];
+    if (!combinedPointsForBounds || combinedPointsForBounds.length < 3) return [];
+
+    const parsePositive = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.max(0, n) : null;
+    };
+
+    const target = parsePositive(planningParams?.boundaryPillarTarget);
+    const minV = parsePositive(planningParams?.boundaryPillarMin);
+    const maxV = parsePositive(planningParams?.boundaryPillarMax);
+    const shrinkDist = target ?? (minV != null && maxV != null ? (minV + maxV) / 2 : 0);
+
+    const buildJstsPolygonFromLoop = (loop) => {
+      const pts = (loop ?? [])
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (pts.length < 3) return null;
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      const closed = (first.x === last.x && first.y === last.y) ? pts : [...pts, first];
+      const gf = new GeometryFactory();
+      const coords = closed.map((p) => new Coordinate(p.x, p.y));
+      const ring = gf.createLinearRing(coords);
+      const poly = gf.createPolygon(ring);
+      if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) return null;
+      return poly;
+    };
+
+    const pickLargestPolygon = (geom) => {
+      if (!geom || geom.isEmpty?.()) return null;
+      const type = geom.getGeometryType?.();
+      if (type === 'Polygon') return geom;
+      if (typeof geom.getNumGeometries === 'function') {
+        let best = null;
+        let bestArea = -Infinity;
+        const n = geom.getNumGeometries();
+        for (let i = 0; i < n; i++) {
+          const g = geom.getGeometryN(i);
+          const p = pickLargestPolygon(g);
+          const a = p?.getArea?.();
+          if (p && Number.isFinite(a) && a > bestArea) {
+            best = p;
+            bestArea = a;
+          }
+        }
+        return best;
+      }
+      return null;
+    };
+
+    let basePoly = buildJstsPolygonFromLoop(boundaryLoopWorld);
+    if (!basePoly) return [];
+    try {
+      const fixed = BufferOp.bufferOp(basePoly, 0);
+      const picked = pickLargestPolygon(fixed);
+      if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) basePoly = picked;
+    } catch {
+      // ignore
+    }
+
+    let overlayPoly = basePoly;
+    if (Number.isFinite(shrinkDist) && shrinkDist > 0) {
+      try {
+        const shrunk = BufferOp.bufferOp(basePoly, -shrinkDist);
+        const picked = pickLargestPolygon(shrunk);
+        if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) overlayPoly = picked;
+      } catch {
+        overlayPoly = basePoly;
+      }
+    }
+
+    let coords = [];
+    try {
+      const ring = overlayPoly.getExteriorRing?.();
+      const raw = ring?.getCoordinates?.() ?? [];
+      coords = Array.isArray(raw) ? raw : [];
+    } catch {
+      coords = [];
+    }
+    if (!coords.length) return [];
+
+    const ptsWorld = coords
+      .map((c) => ({ x: Number(c?.x), y: Number(c?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    // JSTS 的 ring 往往首尾重复，这里去掉尾点
+    const loopWorld = (ptsWorld.length >= 2 && ptsWorld[0].x === ptsWorld[ptsWorld.length - 1].x && ptsWorld[0].y === ptsWorld[ptsWorld.length - 1].y)
+      ? ptsWorld.slice(0, -1)
+      : ptsWorld;
+
+    if (loopWorld.length < 3) return [];
+    const normalized = normalizeCoords(loopWorld, combinedPointsForBounds);
+    const pts = computeNonSelfIntersectingLoop(normalized, (p) => p?.nx, (p) => p?.ny);
+    return pts.map((p) => ({ nx: p.x, ny: p.y }));
+  }, [
+    showPlanningBoundaryOverlay,
+    hasBoundaryData,
+    boundaryLoopWorld,
+    combinedPointsForBounds,
+    planningParams?.boundaryPillarTarget,
+    planningParams?.boundaryPillarMin,
+    planningParams?.boundaryPillarMax,
+  ]);
+
+  useEffect(() => {
+    if (isRestoringRef.current) return;
+    setPlannedWorkfaceLoopsWorld([]);
+    setPlanningReverseSolutions([]);
+    setPlanningParams((p) => ({ ...p, faceCountSelected: '', faceWidthMin: '', faceWidthMax: '' }));
+    setShowPlanningBoundaryOverlay(false);
+    setHasInitializedFaceWidthRange(false);
+    setPlanningPreStartSnapshot(null);
+    setMeasureEnabled(false);
+    setMeasurePoints([]);
+  }, [boundaryLoopWorld]);
+
+  const applyPlannedFaceCountSelection = (rawN) => {
+    const targetN = Math.max(1, Math.round(Number(rawN)));
+    if (!boundaryLoopWorld || boundaryLoopWorld.length < 3) return;
+
+    const buildJstsPolygonFromLoop = (loop) => {
+      const pts = (loop ?? []).map((p) => ({ x: Number(p?.x), y: Number(p?.y) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (pts.length < 3) return null;
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      const closed = (first.x === last.x && first.y === last.y) ? pts : [...pts, first];
+      const gf = new GeometryFactory();
+      const coords = closed.map((p) => new Coordinate(p.x, p.y));
+      const ring = gf.createLinearRing(coords);
+      const poly = gf.createPolygon(ring);
+      if (!poly || poly.isEmpty() || !(poly.getArea() > 0)) return null;
+      return poly;
+    };
+
+    const pickLargestPolygon = (geom) => {
+      if (!geom || geom.isEmpty?.()) return null;
+      const type = geom.getGeometryType?.();
+      if (type === 'Polygon') return geom;
+      if (typeof geom.getNumGeometries === 'function') {
+        let best = null;
+        let bestArea = -Infinity;
+        const n = geom.getNumGeometries();
+        for (let i = 0; i < n; i++) {
+          const g = geom.getGeometryN(i);
+          const p = pickLargestPolygon(g);
+          const a = p?.getArea?.();
+          if (p && Number.isFinite(a) && a > bestArea) {
+            best = p;
+            bestArea = a;
+          }
+        }
+        return best;
+      }
+      return null;
+    };
+
+    const buildPlannedFaceLoopsWithinPolygon = ({ innerPoly, axis, N, B, Ws }) => {
+      if (!innerPoly || innerPoly.isEmpty?.()) return [];
+      if (!(Number.isFinite(N) && N >= 1)) return [];
+      if (!(Number.isFinite(B) && B > 0)) return [];
+      if (!(Number.isFinite(Ws) && Ws >= 0)) return [];
+
+      let polyForOps = innerPoly;
+      try {
+        const fixed = BufferOp.bufferOp(innerPoly, 0);
+        const picked = pickLargestPolygon(fixed);
+        if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) polyForOps = picked;
+      } catch {
+        polyForOps = innerPoly;
+      }
+
+      const env = polyForOps.getEnvelopeInternal();
+      const minX = env.getMinX();
+      const maxX = env.getMaxX();
+      const minY = env.getMinY();
+      const maxY = env.getMaxY();
+      if (![minX, maxX, minY, maxY].every(Number.isFinite)) return [];
+
+      const gf = new GeometryFactory();
+      const totalW = N * B + (N - 1) * Ws;
+      const loops = [];
+
+      const toLoopFromPoly = (poly) => {
+        try {
+          const ring = poly?.getExteriorRing?.();
+          const coords = ring?.getCoordinates?.();
+          if (!coords || coords.length < 3) return null;
+          const pts = [];
+          for (const c of coords) {
+            const x = Number(c?.x);
+            const y = Number(c?.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            pts.push({ x, y });
+          }
+          if (pts.length >= 2) {
+            const f = pts[0];
+            const l = pts[pts.length - 1];
+            if (f.x === l.x && f.y === l.y) pts.pop();
+          }
+          return pts.length >= 3 ? pts : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const rectPoly = (x0, y0, x1, y1) => {
+        const coords = [
+          new Coordinate(x0, y0),
+          new Coordinate(x1, y0),
+          new Coordinate(x1, y1),
+          new Coordinate(x0, y1),
+          new Coordinate(x0, y0),
+        ];
+        return gf.createPolygon(gf.createLinearRing(coords));
+      };
+
+      const chooseBestStart = (startMin, startMax, startGuess, buildForStart) => {
+        const out = { loops: [], count: 0, area: 0 };
+        if (!Number.isFinite(startMin) || !Number.isFinite(startMax)) return out;
+        const lo = Math.min(startMin, startMax);
+        const hi = Math.max(startMin, startMax);
+        if (!(hi > lo)) return buildForStart(lo);
+        const steps = 10;
+        const cand = [];
+        cand.push(clamp(startGuess, lo, hi));
+        for (let i = 0; i <= steps; i++) cand.push(lo + (i / steps) * (hi - lo));
+        let best = null;
+        for (const s of cand) {
+          const r = buildForStart(s);
+          if (!best) { best = r; continue; }
+          if (r.count > best.count) best = r;
+          else if (r.count === best.count && r.area > best.area) best = r;
+        }
+        return best || out;
+      };
+
+      let interior = null;
+      try {
+        interior = polyForOps.getInteriorPoint?.()?.getCoordinate?.();
+      } catch {
+        interior = null;
+      }
+      const cx = Number(interior?.x);
+      const cy = Number(interior?.y);
+
+      if (axis === 'x') {
+        const yCenter = Number.isFinite(cy) ? cy : (minY + maxY) / 2;
+        const yStartGuess = yCenter - totalW / 2;
+        const yMin = minY;
+        const yMax = maxY - totalW;
+        const best = chooseBestStart(yMin, yMax, yStartGuess, (yStart) => {
+          const tmp = [];
+          let areaSum = 0;
+          let count = 0;
+          for (let i = 0; i < N; i++) {
+            const y0 = yStart + i * (B + Ws);
+            const y1 = y0 + B;
+            let inter = null;
+            try {
+              inter = polyForOps.intersection(rectPoly(minX, y0, maxX, y1));
+            } catch {
+              inter = null;
+            }
+            const poly = pickLargestPolygon(inter);
+            if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) continue;
+            const loop = toLoopFromPoly(poly);
+            if (!loop) continue;
+            count += 1;
+            const a = poly.getArea?.();
+            if (Number.isFinite(a)) areaSum += a;
+            tmp.push({ faceIndex: i + 1, loop });
+          }
+          return { loops: tmp, count, area: areaSum };
+        });
+        return best?.loops ?? [];
+      }
+
+      const xCenter = Number.isFinite(cx) ? cx : (minX + maxX) / 2;
+      const xStartGuess = xCenter - totalW / 2;
+      const xMin = minX;
+      const xMax = maxX - totalW;
+      const best = chooseBestStart(xMin, xMax, xStartGuess, (xStart) => {
+        const tmp = [];
+        let areaSum = 0;
+        let count = 0;
+        for (let i = 0; i < N; i++) {
+          const x0 = xStart + i * (B + Ws);
+          const x1 = x0 + B;
+          let inter = null;
+          try {
+            inter = polyForOps.intersection(rectPoly(x0, minY, x1, maxY));
+          } catch {
+            inter = null;
+          }
+          const poly = pickLargestPolygon(inter);
+          if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) continue;
+          const loop = toLoopFromPoly(poly);
+          if (!loop) continue;
+          count += 1;
+          const a = poly.getArea?.();
+          if (Number.isFinite(a)) areaSum += a;
+          tmp.push({ faceIndex: i + 1, loop });
+        }
+        return { loops: tmp, count, area: areaSum };
+      });
+      return best?.loops ?? [];
+    };
+
+    // --- 新模式：MATLAB 风格条带圈定（通过 planningReverseSolutions.kind=strip-v1） ---
+    if (planningReverseSolutions && typeof planningReverseSolutions === 'object' && !Array.isArray(planningReverseSolutions) && planningReverseSolutions.kind === 'strip-v1') {
+      const ctx = planningReverseSolutions?.context ?? {};
+      const axis = String(ctx.advanceAxis ?? 'x') === 'y' ? 'y' : 'x';
+      const wbMean = Number(ctx.wbMean);
+      const wsMean = Number(ctx.wsMean);
+      const lMax = Number(ctx.lMax);
+      const qAnnualTons = Number(ctx.qAnnualTons);
+      const seamThickness = Number(ctx.seamThickness);
+      const coalDensity = Number(ctx.coalDensity);
+      const etaMin = Number(ctx.etaMin);
+      const etaMax = Number(ctx.etaMax);
+      const widthEngMin = Number.isFinite(Number(ctx.widthEngMin)) ? Number(ctx.widthEngMin) : 100;
+      const widthEngMax = Number.isFinite(Number(ctx.widthEngMax)) ? Number(ctx.widthEngMax) : 350;
+      const lMinRatio = Number.isFinite(Number(ctx.lMinRatio)) ? Number(ctx.lMinRatio) : 0.6;
+      const lMaxRatio = Number.isFinite(Number(ctx.lMaxRatio)) ? Number(ctx.lMaxRatio) : 1.0;
+      const nMin = Number(ctx.nMin);
+      const nMax = Number(ctx.nMax);
+      const spanMin = Number(ctx.spanMin);
+      const spanMax = Number(ctx.spanMax);
+
+      // 兼容两种上下文：
+      // 1) 旧版：带产量反算（qAnnualTons 等齐全）
+      // 2) 新版：仅几何截面推导（spanMin/spanMax）
+      const hasProdCtx = [qAnnualTons, seamThickness, coalDensity, etaMin, etaMax].every(Number.isFinite)
+        && qAnnualTons > 0 && seamThickness > 0 && coalDensity > 0 && etaMin > 0 && etaMax > 0;
+      const hasSpanCtx = Number.isFinite(spanMin) && Number.isFinite(spanMax) && spanMax > 0;
+      if (![wbMean, wsMean, lMax].every(Number.isFinite)) return;
+      if (!(lMax > 0)) return;
+      if (!(hasProdCtx || hasSpanCtx)) return;
+
+      const lMin = lMax * lMinRatio;
+      const lMaxUse = lMax * lMaxRatio;
+      if (!(lMin > 0 && lMaxUse > 0)) return;
+
+      const clampN = (n) => {
+        const nn = Math.max(1, Math.round(Number(n)));
+        if (Number.isFinite(nMin) && Number.isFinite(nMax) && nMax >= nMin) {
+          return Math.min(Math.max(nn, Math.round(nMin)), Math.round(nMax));
+        }
+        return nn;
+      };
+
+      const pickedN = clampN(targetN);
+      if (pickedN !== targetN) setPlanningParams((p) => ({ ...p, faceCountSelected: String(pickedN) }));
+
+      // 反算工作面宽度范围：读取当前边界煤柱/区段煤柱范围
+      const parseNonNeg = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.max(0, n) : null;
+      };
+
+      const wbTarget = parseNonNeg(planningParams?.boundaryPillarTarget);
+      const wbMinP = parseNonNeg(planningParams?.boundaryPillarMin);
+      const wbMaxP = parseNonNeg(planningParams?.boundaryPillarMax);
+      const wbMeanNow = (wbTarget ?? (wbMinP != null && wbMaxP != null ? (wbMinP + wbMaxP) / 2 : wbMean));
+      const wbRangeMin = (wbMinP != null ? wbMinP : (wbTarget != null ? wbTarget : wbMeanNow));
+      const wbRangeMax = (wbMaxP != null ? wbMaxP : (wbTarget != null ? wbTarget : wbMeanNow));
+
+      const wsTarget = parseNonNeg(planningParams?.coalPillarTarget);
+      const wsMinP = parseNonNeg(planningParams?.coalPillarMin);
+      const wsMaxP = parseNonNeg(planningParams?.coalPillarMax);
+      const wsMeanNow = (wsTarget ?? (wsMinP != null && wsMaxP != null ? (wsMinP + wsMaxP) / 2 : wsMean));
+      const wsRangeMin = (wsMinP != null ? wsMinP : (wsTarget != null ? wsTarget : wsMeanNow));
+      const wsRangeMax = (wsMaxP != null ? wsMaxP : (wsTarget != null ? wsTarget : wsMeanNow));
+
+      const computeSpanMinPerp = (poly, axisLocal) => {
+        const e = poly.getEnvelopeInternal();
+        const ex0 = e.getMinX();
+        const ex1 = e.getMaxX();
+        const ey0 = e.getMinY();
+        const ey1 = e.getMaxY();
+        const eps = 1e-6;
+        const gf = new GeometryFactory();
+        const sampleCount = 25;
+        const lens = [];
+
+        if (axisLocal === 'x') {
+          const dx = ex1 - ex0;
+          if (!(dx > eps)) return Math.max(0, ey1 - ey0);
+          for (let i = 0; i < sampleCount; i++) {
+            const t = (i + 0.5) / sampleCount;
+            const x = ex0 + t * dx;
+            const line = gf.createLineString([
+              new Coordinate(x, ey0 - 1e6),
+              new Coordinate(x, ey1 + 1e6),
+            ]);
+            try {
+              const inter = poly.intersection(line);
+              const len = Number(inter?.getLength?.());
+              if (Number.isFinite(len) && len > 1e-3) lens.push(len);
+            } catch {
+              // ignore
+            }
+          }
+          return lens.length ? Math.min(...lens) : Math.max(0, ey1 - ey0);
+        }
+
+        const dy = ey1 - ey0;
+        if (!(dy > eps)) return Math.max(0, ex1 - ex0);
+        for (let i = 0; i < sampleCount; i++) {
+          const t = (i + 0.5) / sampleCount;
+          const y = ey0 + t * dy;
+          const line = gf.createLineString([
+            new Coordinate(ex0 - 1e6, y),
+            new Coordinate(ex1 + 1e6, y),
+          ]);
+          try {
+            const inter = poly.intersection(line);
+            const len = Number(inter?.getLength?.());
+            if (Number.isFinite(len) && len > 1e-3) lens.push(len);
+          } catch {
+            // ignore
+          }
+        }
+        return lens.length ? Math.min(...lens) : Math.max(0, ex1 - ex0);
+      };
+
+      const spanMinWithWb = (wb) => {
+        const basePoly = buildJstsPolygonFromLoop(boundaryLoopWorld);
+        if (!basePoly) return null;
+        let poly = basePoly;
+        try {
+          const fixed = BufferOp.bufferOp(poly, 0);
+          const picked = pickLargestPolygon(fixed);
+          if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) poly = picked;
+        } catch {
+          // ignore
+        }
+        let buf = null;
+        try {
+          buf = BufferOp.bufferOp(poly, -Math.max(0, Number(wb) || 0));
+        } catch {
+          buf = null;
+        }
+        const inner = pickLargestPolygon(buf);
+        if (!inner || inner.isEmpty?.() || !(inner.getArea?.() > 0)) return null;
+        const m = computeSpanMinPerp(inner, axis);
+        return Number.isFinite(m) && m > 0 ? m : null;
+      };
+
+      const spanMinAtWbMin = spanMinWithWb(wbRangeMin) ?? (hasSpanCtx ? spanMin : null);
+      const spanMinAtWbMax = spanMinWithWb(wbRangeMax) ?? (hasSpanCtx ? spanMin : null);
+
+      // 当前煤柱范围下的可行 N 上限（保证 B_max >= 100）
+      const denomN = (widthEngMin + wsRangeMin);
+      const nMaxFeasibleByWidth = (spanMinAtWbMin != null && denomN > 0)
+        ? Math.max(1, Math.floor((spanMinAtWbMin + wsRangeMin) / denomN))
+        : null;
+
+      let bMin = widthEngMin;
+      let bMax = widthEngMax;
+
+      if (spanMinAtWbMin != null && spanMinAtWbMax != null) {
+        const bMaxByRanges = (spanMinAtWbMin - (pickedN - 1) * wsRangeMin) / pickedN;
+        const bMinByRanges = (spanMinAtWbMax - (pickedN - 1) * wsRangeMax) / pickedN;
+
+        const bLowRaw = Math.min(bMinByRanges, bMaxByRanges);
+        const bHighRaw = Math.max(bMinByRanges, bMaxByRanges);
+        bMin = Math.max(widthEngMin, bLowRaw);
+        bMax = Math.min(widthEngMax, bHighRaw);
+
+        // 若该 N 的反算面宽上限 < 100，剔除该方案：自动回退到可行最大 N
+        if (Number.isFinite(bMax) && bMax < widthEngMin - 1e-9) {
+          const fallbackN = Number.isFinite(nMaxFeasibleByWidth) ? nMaxFeasibleByWidth : null;
+          if (fallbackN != null && fallbackN >= 1 && fallbackN !== pickedN) {
+            setPlanningParams((p) => ({ ...p, faceCountSelected: String(fallbackN) }));
+          }
+          setPlanningParams((p) => ({ ...p, faceWidthMin: '', faceWidthMax: '' }));
+          setPlannedWorkfaceLoopsWorld([]);
+          return;
+        }
+      }
+
+      if (hasProdCtx) {
+        // 旧版：工程约束 + 几何可布置上限 + 产量反算下限（需要 ctx.wZone）
+        const wZone = Number(ctx.wZone);
+        if (!(Number.isFinite(wZone) && wZone > 0)) return;
+        const bGeoMax = (wZone - (pickedN - 1) * wsMean) / pickedN;
+        const bReqMin = qAnnualTons / (pickedN * lMaxUse * seamThickness * coalDensity * etaMax);
+        bMin = Math.max(widthEngMin, Number.isFinite(bReqMin) ? bReqMin : widthEngMin);
+        bMax = Math.min(widthEngMax, Number.isFinite(bGeoMax) ? bGeoMax : widthEngMax);
+      } else {
+        // 新版：工程约束 + 最短截面几何上限（确保最窄处也摆得下）
+        const bGeoMax = (spanMin - (pickedN - 1) * wsMean) / pickedN;
+        bMin = widthEngMin;
+        bMax = Math.min(widthEngMax, Number.isFinite(bGeoMax) ? bGeoMax : widthEngMax);
+      }
+
+      setPlanningParams((p) => ({
+        ...p,
+        faceAdvanceMin: String(lMin.toFixed(1)),
+        faceAdvanceMax: String(lMaxUse.toFixed(1)),
+        faceWidthMin: Number.isFinite(bMin) ? String(bMin.toFixed(1)) : p.faceWidthMin,
+        faceWidthMax: Number.isFinite(bMax) ? String(bMax.toFixed(1)) : p.faceWidthMax,
+      }));
+
+      if (!(Number.isFinite(bMax) && bMax > 0 && Number.isFinite(bMin) && bMax >= bMin)) {
+        setPlannedWorkfaceLoopsWorld([]);
+        return;
+      }
+
+      const bForDraw = clamp((bMin + bMax) / 2, bMin, bMax);
+
+      const basePoly = buildJstsPolygonFromLoop(boundaryLoopWorld);
+      if (!basePoly) return;
+      let buffered = null;
+      try {
+        buffered = BufferOp.bufferOp(basePoly, -wbMean);
+      } catch {
+        buffered = null;
+      }
+      const innerPoly = pickLargestPolygon(buffered);
+      if (!innerPoly || innerPoly.isEmpty?.() || !(innerPoly.getArea?.() > 0)) return;
+
+      const loops = buildPlannedFaceLoopsWithinPolygon({ innerPoly, axis, N: pickedN, B: bForDraw, Ws: wsMean });
+      if (loops.length) {
+        setMainViewMode('planning');
+        setPlannedWorkfaceLoopsWorld(loops);
+        setShowWorkfaceOutline(true);
+      } else {
+        setPlannedWorkfaceLoopsWorld([]);
+      }
+      return;
+    }
+
+    // --- 旧模式：反算可行解集 ---
+    const sols = Array.isArray(planningReverseSolutions) ? planningReverseSolutions : [];
+    if (!sols.length) return;
+
+    const basePoly = buildJstsPolygonFromLoop(boundaryLoopWorld);
+    if (!basePoly) return;
+
+    const sorted = [...sols].sort((a, b) => Number(a.wb) - Number(b.wb));
+    let picked = null;
+    let bestDiff = Infinity;
+
+    for (const s of sorted) {
+      const wb = Number(s?.wb);
+      const wsItems = [...(s.ws ?? [])].sort((a, b) => Number(a.ws) - Number(b.ws));
+      for (const item of wsItems) {
+        const ws = Number(item?.ws);
+        for (const f of (item.feasible ?? [])) {
+          const n = Math.max(1, Math.round(Number(f?.N)));
+          const bu = Number(f?.B_upper);
+          if (!Number.isFinite(n) || !Number.isFinite(bu) || !(bu > 0)) continue;
+          const diff = Math.abs(n - targetN);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            picked = { wb, ws, N: n, B: bu };
+          } else if (diff === bestDiff && picked) {
+            // tie-break: 更小 wb/ws；再更大 B
+            if (wb < picked.wb - 1e-9) picked = { wb, ws, N: n, B: bu };
+            else if (Math.abs(wb - picked.wb) <= 1e-9 && ws < picked.ws - 1e-9) picked = { wb, ws, N: n, B: bu };
+            else if (Math.abs(wb - picked.wb) <= 1e-9 && Math.abs(ws - picked.ws) <= 1e-9 && bu > picked.B + 1e-9) picked = { wb, ws, N: n, B: bu };
+          }
+          if (bestDiff === 0) break;
+        }
+        if (bestDiff === 0) break;
+      }
+      if (bestDiff === 0) break;
+    }
+
+    if (!picked || !(picked.N >= 1) || !(picked.B > 0) || !(picked.wb >= 0) || !(picked.ws >= 0)) return;
+
+    // 若目标 N 不可行，自动回退到最近可行 N，并同步 UI
+    if (picked.N !== targetN) {
+      setPlanningParams((p) => ({ ...p, faceCountSelected: String(picked.N) }));
+    }
+
+    let buffered = null;
+    try {
+      buffered = BufferOp.bufferOp(basePoly, -picked.wb);
+    } catch {
+      buffered = null;
+    }
+    const innerPoly = pickLargestPolygon(buffered);
+    if (!innerPoly || innerPoly.isEmpty?.() || !(innerPoly.getArea?.() > 0)) return;
+
+    const loops = buildPlannedFaceLoopsWithinPolygon({ innerPoly, axis: planningAdvanceAxis, N: picked.N, B: picked.B, Ws: picked.ws });
+    if (loops.length) {
+      setMainViewMode('planning');
+      setPlannedWorkfaceLoopsWorld(loops);
+      setShowWorkfaceOutline(true);
+    }
+  };
+
+  const handleStartIntelligentPlanning = () => {
+    try {
+      // 记录“点击前”的规划快照，用于清空时回退
+      setPlanningPreStartSnapshot({
+        planningParams: cloneJson(planningParams),
+        planningReverseSolutions: cloneJson(planningReverseSolutions),
+        planningAdvanceAxis,
+        plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+        showPlanningBoundaryOverlay,
+        hasInitializedFaceWidthRange,
+      });
+
+      // 切换到规划视图并清空旧结果
+      switchMainViewModeWithRightPanel('planning');
+      setPlannedWorkfaceLoopsWorld([]);
+
+      if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
+        window.alert('请先导入采区边界坐标数据。');
+        return;
+      }
+
+      setShowPlanningBoundaryOverlay(true);
+
+      // 工程约束：工作面宽度默认范围（按需求先固定）
+      const faceWidthEngMin = 100;
+      const faceWidthEngMax = 350;
+      const advanceLenRatioMin = 0.60;
+      const advanceLenRatioMax = 1.00;
+
+      const roadwayDir = String(planningParams.roadwayOrientation ?? 'x');
+      const advanceAxis = roadwayDir === 'y' ? 'y' : 'x';
+
+      // 规划几何输入：优先使用“确定值”，否则回退到 (Min+Max)/2
+      const parseNonNeg = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? Math.max(0, n) : null;
+      };
+
+      const wbTarget = parseNonNeg(planningParams.boundaryPillarTarget);
+      const wbMin = parseNonNeg(planningParams.boundaryPillarMin);
+      const wbMax = parseNonNeg(planningParams.boundaryPillarMax);
+      const wbMean = wbTarget ?? (wbMin != null && wbMax != null ? (wbMin + wbMax) / 2 : 0);
+
+      // 范围用于反算面宽：若 min/max 缺失则回退到 target（或均值）
+      const wbRangeMin = (wbMin != null ? wbMin : (wbTarget != null ? wbTarget : wbMean));
+      const wbRangeMax = (wbMax != null ? wbMax : (wbTarget != null ? wbTarget : wbMean));
+
+      const wsTarget = parseNonNeg(planningParams.coalPillarTarget);
+      const wsMin = parseNonNeg(planningParams.coalPillarMin);
+      const wsMax = parseNonNeg(planningParams.coalPillarMax);
+      const wsMean = wsTarget ?? (wsMin != null && wsMax != null ? (wsMin + wsMax) / 2 : 0);
+
+      const wsRangeMin = (wsMin != null ? wsMin : (wsTarget != null ? wsTarget : wsMean));
+      const wsRangeMax = (wsMax != null ? wsMax : (wsTarget != null ? wsTarget : wsMean));
+
+      if (!(Number.isFinite(wbMean) && wbMean >= 0 && Number.isFinite(wsMean) && wsMean >= 0)) {
+        window.alert('煤柱范围无效：请检查 Min/Max。');
+        return;
+      }
+
+      const buildJstsPolygonFromLoop = (loop) => {
+        const pts = (loop ?? []).map((p) => ({ x: Number(p?.x), y: Number(p?.y) })).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (pts.length < 3) return null;
+        const first = pts[0];
+        const last = pts[pts.length - 1];
+        const closed = (first.x === last.x && first.y === last.y) ? pts : [...pts, first];
+        const gf = new GeometryFactory();
+        const coords = closed.map((p) => new Coordinate(p.x, p.y));
+        const ring = gf.createLinearRing(coords);
+        const poly = gf.createPolygon(ring);
+        if (!poly || poly.isEmpty() || !(poly.getArea() > 0)) return null;
+        return poly;
+      };
+
+      const pickLargestPolygon = (geom) => {
+        if (!geom || geom.isEmpty?.()) return null;
+        const type = geom.getGeometryType?.();
+        if (type === 'Polygon') return geom;
+        if (typeof geom.getNumGeometries === 'function') {
+          let best = null;
+          let bestArea = -Infinity;
+          const n = geom.getNumGeometries();
+          for (let i = 0; i < n; i++) {
+            const g = geom.getGeometryN(i);
+            const p = pickLargestPolygon(g);
+            const a = p?.getArea?.();
+            if (p && Number.isFinite(a) && a > bestArea) {
+              best = p;
+              bestArea = a;
+            }
+          }
+          return best;
+        }
+        return null;
+      };
+
+      const basePoly = buildJstsPolygonFromLoop(boundaryLoopWorld);
+      if (!basePoly) {
+        window.alert('采区边界多边形无效：请检查边界是否闭合、是否自相交。');
+        return;
+      }
+
+      let buffered = null;
+      try {
+        buffered = BufferOp.bufferOp(basePoly, -wbMean);
+      } catch (e) {
+        window.alert(`内缩采区边界失败：${String(e?.message ?? e)}`);
+        return;
+      }
+      const innerPoly = pickLargestPolygon(buffered);
+      if (!innerPoly || innerPoly.isEmpty?.() || !(innerPoly.getArea?.() > 0)) {
+        window.alert('内缩后可采区为空：请减小边界煤柱均值或检查边界数据。');
+        return;
+      }
+
+      // 依据“工作面布置方向”：若沿 x 布置，则沿 y 方向求可采区截面长度的最短/最长距离；反之亦然
+      const env = innerPoly.getEnvelopeInternal();
+      const minX = env.getMinX();
+      const maxX = env.getMaxX();
+      const minY = env.getMinY();
+      const maxY = env.getMaxY();
+      const spanX = maxX - minX;
+      const spanY = maxY - minY;
+      const lMax = advanceAxis === 'x' ? spanX : spanY;
+      if (!(Number.isFinite(lMax) && lMax > 0)) {
+        window.alert('可采区几何尺寸无效：请检查边界数据。');
+        return;
+      }
+
+      const computeSpanRangePerpToAdvance = (poly, axis) => {
+        const e = poly.getEnvelopeInternal();
+        const ex0 = e.getMinX();
+        const ex1 = e.getMaxX();
+        const ey0 = e.getMinY();
+        const ey1 = e.getMaxY();
+        const eps = 1e-6;
+        const gf = new GeometryFactory();
+
+        const sampleCount = 25;
+        const lens = [];
+
+        if (axis === 'x') {
+          // 沿 x 前进 -> 用竖线 x=const 求 y 向截长
+          const dx = ex1 - ex0;
+          if (!(dx > eps)) return { min: Math.max(0, ey1 - ey0), max: Math.max(0, ey1 - ey0) };
+          for (let i = 0; i < sampleCount; i++) {
+            const t = (i + 0.5) / sampleCount;
+            const x = ex0 + t * dx;
+            const line = gf.createLineString([
+              new Coordinate(x, ey0 - 1e6),
+              new Coordinate(x, ey1 + 1e6),
+            ]);
+            try {
+              const inter = poly.intersection(line);
+              const len = Number(inter?.getLength?.());
+              if (Number.isFinite(len) && len > 1e-3) lens.push(len);
+            } catch {
+              // ignore
+            }
+          }
+          if (!lens.length) {
+            const fallback = Math.max(0, ey1 - ey0);
+            return { min: fallback, max: fallback };
+          }
+          return { min: Math.min(...lens), max: Math.max(...lens) };
+        }
+
+        // 沿 y 前进 -> 用横线 y=const 求 x 向截长
+        const dy = ey1 - ey0;
+        if (!(dy > eps)) return { min: Math.max(0, ex1 - ex0), max: Math.max(0, ex1 - ex0) };
+        for (let i = 0; i < sampleCount; i++) {
+          const t = (i + 0.5) / sampleCount;
+          const y = ey0 + t * dy;
+          const line = gf.createLineString([
+            new Coordinate(ex0 - 1e6, y),
+            new Coordinate(ex1 + 1e6, y),
+          ]);
+          try {
+            const inter = poly.intersection(line);
+            const len = Number(inter?.getLength?.());
+            if (Number.isFinite(len) && len > 1e-3) lens.push(len);
+          } catch {
+            // ignore
+          }
+        }
+        if (!lens.length) {
+          const fallback = Math.max(0, ex1 - ex0);
+          return { min: fallback, max: fallback };
+        }
+        return { min: Math.min(...lens), max: Math.max(...lens) };
+      };
+
+      const spanRange = computeSpanRangePerpToAdvance(innerPoly, advanceAxis);
+      const spanMin = Number(spanRange?.min);
+      const spanMax = Number(spanRange?.max);
+      if (!(Number.isFinite(spanMin) && Number.isFinite(spanMax) && spanMax > 0)) {
+        window.alert('计算可采区截面距离失败：请检查边界数据。');
+        return;
+      }
+
+      // 面数范围：最短/最长截面 ÷ 面宽最大/最小（后续会再按“反算面宽上限>=100”收紧）
+      const nMin0 = Math.max(1, Math.floor(spanMin / faceWidthEngMax));
+      const nMax0 = Math.max(nMin0, Math.floor(spanMax / faceWidthEngMin));
+      let nMin = nMin0;
+      let nMax = nMax0;
+
+      const lMin = lMax * advanceLenRatioMin;
+      const lMaxUse = lMax * advanceLenRatioMax;
+
+      // 反算工作面宽度范围：读取边界煤柱/区段煤柱范围
+      // - 面宽上限：边界煤柱取最小（区域最大） + 区段煤柱取最小（间距最小）
+      // - 面宽下限：边界煤柱取最大（区域最小） + 区段煤柱取最大（间距最大）
+      const spanMinWithWb = (wb) => {
+        let poly = basePoly;
+        try {
+          const fixed = BufferOp.bufferOp(poly, 0);
+          const picked = pickLargestPolygon(fixed);
+          if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) poly = picked;
+        } catch {
+          // ignore
+        }
+
+        let buf = null;
+        try {
+          buf = BufferOp.bufferOp(poly, -Math.max(0, Number(wb) || 0));
+        } catch {
+          buf = null;
+        }
+        const inner = pickLargestPolygon(buf);
+        if (!inner || inner.isEmpty?.() || !(inner.getArea?.() > 0)) return null;
+        const r = computeSpanRangePerpToAdvance(inner, advanceAxis);
+        const m = Number(r?.min);
+        return Number.isFinite(m) && m > 0 ? m : null;
+      };
+
+      const spanMinAtWbMin = spanMinWithWb(wbRangeMin) ?? spanMin;
+      const spanMinAtWbMax = spanMinWithWb(wbRangeMax) ?? spanMin;
+
+      // 剔除方案：若在“最乐观”条件下（wb最小、ws最小）反算的 B_max 仍 < 100，则该 N 不展示
+      // B_max >= widthEngMin  <=>  N <= (spanMinAtWbMin + wsMin) / (widthEngMin + wsMin)
+      const denomN = (faceWidthEngMin + wsRangeMin);
+      const nMaxFeasibleByWidth = denomN > 0
+        ? Math.max(1, Math.floor((spanMinAtWbMin + wsRangeMin) / denomN))
+        : nMax;
+
+      nMax = Math.min(nMax, nMaxFeasibleByWidth);
+      if (nMax < nMin) {
+        window.alert(
+          '根据煤柱范围反算后：所有可选工作面个数方案的“工作面宽度上限”均小于 100m，已自动剔除。\n' +
+          '建议：减小区段煤柱/边界煤柱，或降低工作面个数后重试。'
+        );
+        setPlanningReverseSolutions([]);
+        setPlanningParams((p) => ({ ...p, faceCountSuggestedMin: '', faceCountSuggestedMax: '', faceCountSelected: '', faceWidthMin: '', faceWidthMax: '' }));
+        setPlannedWorkfaceLoopsWorld([]);
+        return;
+      }
+      // 保持用户选择：再次启动时不重置滑块位置
+      const prevNRaw = Number(planningParams.faceCountSelected);
+      const prevN = Number.isFinite(prevNRaw) ? Math.max(1, Math.round(prevNRaw)) : null;
+      const nDefault = Math.max(1, Math.round((nMin + nMax) / 2));
+      const nSelected = prevN != null ? clamp(prevN, nMin, nMax) : nDefault;
+
+      const bMaxByRanges = (spanMinAtWbMin - (nSelected - 1) * wsRangeMin) / nSelected;
+      const bMinByRanges = (spanMinAtWbMax - (nSelected - 1) * wsRangeMax) / nSelected;
+
+      const bLowRaw = Math.min(bMinByRanges, bMaxByRanges);
+      const bHighRaw = Math.max(bMinByRanges, bMaxByRanges);
+
+      // 显示用范围：下限不低于工程最小；上限不高于工程最大
+      const bMin = Math.max(faceWidthEngMin, bLowRaw);
+      const bMax = Math.min(faceWidthEngMax, bHighRaw);
+
+      setPlanningParams((p) => ({
+        ...p,
+        faceCountSuggestedMin: String(Math.round(nMin)),
+        faceCountSuggestedMax: String(Math.round(nMax)),
+        faceCountSelected: String(nSelected),
+        faceAdvanceMin: String(lMin.toFixed(1)),
+        faceAdvanceMax: String(lMaxUse.toFixed(1)),
+        // 工作面宽度范围只在首次生成时回填；后续保持用户输入不被覆盖
+        faceWidthMin: (!hasInitializedFaceWidthRange && Number.isFinite(bMin)) ? String(bMin.toFixed(1)) : p.faceWidthMin,
+        faceWidthMax: (!hasInitializedFaceWidthRange && Number.isFinite(bMax)) ? String(bMax.toFixed(1)) : p.faceWidthMax,
+      }));
+
+      if (!hasInitializedFaceWidthRange && Number.isFinite(bMin) && Number.isFinite(bMax) && bMax >= faceWidthEngMin && bMax >= bMin) {
+        setHasInitializedFaceWidthRange(true);
+      }
+
+      // 保存上下文：供滑块调节 N 时即时重绘
+      setPlanningReverseSolutions({
+        kind: 'strip-v1',
+        context: {
+          advanceAxis,
+          wbMean,
+          wsMean,
+          lMax,
+          lMinRatio: advanceLenRatioMin,
+          lMaxRatio: advanceLenRatioMax,
+          widthEngMin: faceWidthEngMin,
+          widthEngMax: faceWidthEngMax,
+          nMin,
+          nMax,
+          spanMin,
+          spanMax,
+        }
+      });
+      setPlanningAdvanceAxis(advanceAxis);
+
+      const buildPlannedFaceLoopsWithinPolygon = ({ innerPoly, axis, N, B, Ws }) => {
+        if (!innerPoly || innerPoly.isEmpty?.()) return [];
+        if (!(Number.isFinite(N) && N >= 1)) return [];
+        if (!(Number.isFinite(B) && B > 0)) return [];
+        if (!(Number.isFinite(Ws) && Ws >= 0)) return [];
+
+        // 交叠/裁剪在少数情况下可能抛出拓扑异常；先尝试用 0-buffer 修复几何
+        let polyForOps = innerPoly;
+        try {
+          const fixed = BufferOp.bufferOp(innerPoly, 0);
+          const picked = pickLargestPolygon(fixed);
+          if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) polyForOps = picked;
+        } catch {
+          polyForOps = innerPoly;
+        }
+
+        const env = polyForOps.getEnvelopeInternal();
+        const minX = env.getMinX();
+        const maxX = env.getMaxX();
+        const minY = env.getMinY();
+        const maxY = env.getMaxY();
+        if (![minX, maxX, minY, maxY].every(Number.isFinite)) return [];
+
+        const gf = new GeometryFactory();
+        const totalW = N * B + (N - 1) * Ws;
+        const loops = [];
+
+        const toLoopFromPoly = (poly) => {
+          try {
+            const ring = poly?.getExteriorRing?.();
+            const coords = ring?.getCoordinates?.();
+            if (!coords || coords.length < 3) return null;
+            const pts = [];
+            for (const c of coords) {
+              const x = Number(c?.x);
+              const y = Number(c?.y);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+              pts.push({ x, y });
+            }
+            // 去掉闭合重复点
+            if (pts.length >= 2) {
+              const f = pts[0];
+              const l = pts[pts.length - 1];
+              if (f.x === l.x && f.y === l.y) pts.pop();
+            }
+            return pts.length >= 3 ? pts : null;
+          } catch {
+            return null;
+          }
+        };
+
+        const rectPoly = (x0, y0, x1, y1) => {
+          const coords = [
+            new Coordinate(x0, y0),
+            new Coordinate(x1, y0),
+            new Coordinate(x1, y1),
+            new Coordinate(x0, y1),
+            new Coordinate(x0, y0),
+          ];
+          return gf.createPolygon(gf.createLinearRing(coords));
+        };
+
+        const chooseBestStart = (startMin, startMax, startGuess, buildForStart) => {
+          const out = { loops: [], count: 0, area: 0 };
+          if (!Number.isFinite(startMin) || !Number.isFinite(startMax)) return out;
+
+          // 若范围退化/反转，直接用 startMin
+          const lo = Math.min(startMin, startMax);
+          const hi = Math.max(startMin, startMax);
+          if (!(hi > lo)) {
+            return buildForStart(lo);
+          }
+
+          const steps = 10;
+          const cand = [];
+          cand.push(clamp(startGuess, lo, hi));
+          for (let i = 0; i <= steps; i++) {
+            cand.push(lo + (i / steps) * (hi - lo));
+          }
+
+          let best = null;
+          for (const s of cand) {
+            const r = buildForStart(s);
+            if (!best) {
+              best = r;
+              continue;
+            }
+            // 优先：尽量让所有工作面都有轮廓；其次：相交面积更大
+            if (r.count > best.count) best = r;
+            else if (r.count === best.count && r.area > best.area) best = r;
+          }
+          return best || out;
+        };
+
+        let interior = null;
+        try {
+          interior = polyForOps.getInteriorPoint?.()?.getCoordinate?.();
+        } catch {
+          interior = null;
+        }
+        const cx = Number(interior?.x);
+        const cy = Number(interior?.y);
+
+        if (axis === 'x') {
+          const yCenter = Number.isFinite(cy) ? cy : (minY + maxY) / 2;
+          const yStartGuess = yCenter - totalW / 2;
+          const yMin = minY;
+          const yMax = maxY - totalW;
+
+          const best = chooseBestStart(yMin, yMax, yStartGuess, (yStart) => {
+            const tmp = [];
+            let areaSum = 0;
+            let count = 0;
+            for (let i = 0; i < N; i++) {
+              const y0 = yStart + i * (B + Ws);
+              const y1 = y0 + B;
+              let inter = null;
+              try {
+                inter = polyForOps.intersection(rectPoly(minX, y0, maxX, y1));
+              } catch {
+                inter = null;
+              }
+              const poly = pickLargestPolygon(inter);
+              if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) continue;
+              const loop = toLoopFromPoly(poly);
+              if (!loop) continue;
+              count += 1;
+              const a = poly.getArea?.();
+              if (Number.isFinite(a)) areaSum += a;
+              tmp.push({ faceIndex: i + 1, loop });
+            }
+            return { loops: tmp, count, area: areaSum };
+          });
+
+          return best?.loops ?? [];
+        }
+
+        const xCenter = Number.isFinite(cx) ? cx : (minX + maxX) / 2;
+        const xStartGuess = xCenter - totalW / 2;
+        const xMin = minX;
+        const xMax = maxX - totalW;
+
+        const best = chooseBestStart(xMin, xMax, xStartGuess, (xStart) => {
+          const tmp = [];
+          let areaSum = 0;
+          let count = 0;
+          for (let i = 0; i < N; i++) {
+            const x0 = xStart + i * (B + Ws);
+            const x1 = x0 + B;
+            let inter = null;
+            try {
+              inter = polyForOps.intersection(rectPoly(x0, minY, x1, maxY));
+            } catch {
+              inter = null;
+            }
+            const poly = pickLargestPolygon(inter);
+            if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) continue;
+            const loop = toLoopFromPoly(poly);
+            if (!loop) continue;
+            count += 1;
+            const a = poly.getArea?.();
+            if (Number.isFinite(a)) areaSum += a;
+            tmp.push({ faceIndex: i + 1, loop });
+          }
+          return { loops: tmp, count, area: areaSum };
+        });
+
+        return best?.loops ?? [];
+      };
+
+      // 绘制：N 取均值；B 优先按几何上限与工程范围取中值
+      if (!(Number.isFinite(bMax) && bMax >= faceWidthEngMin && Number.isFinite(bMin) && bMax >= bMin)) {
+        setPlannedWorkfaceLoopsWorld([]);
+        return;
+      }
+      const userBMin = Number(planningParams.faceWidthMin);
+      const userBMax = Number(planningParams.faceWidthMax);
+      const userBCenter = (Number.isFinite(userBMin) && Number.isFinite(userBMax) && userBMax >= faceWidthEngMin && userBMax >= userBMin)
+        ? (userBMin + userBMax) / 2
+        : null;
+
+      const bForDraw = userBCenter != null
+        ? clamp(userBCenter, bMin, bMax)
+        : clamp((bMin + bMax) / 2, bMin, bMax);
+      const loops = buildPlannedFaceLoopsWithinPolygon({ innerPoly, axis: advanceAxis, N: nSelected, B: bForDraw, Ws: wsMean });
+      if (loops.length) {
+        setPlannedWorkfaceLoopsWorld(loops);
+        setShowWorkfaceOutline(true);
+      } else {
+        setPlannedWorkfaceLoopsWorld([]);
+      }
+    } catch (e) {
+      console.error('handleStartIntelligentPlanning failed', e);
+      window.alert(`启动智能采区规划失败：${String(e?.message ?? e)}`);
+    }
+  };
+
+  const normalizedWorkingFaceDataVisible = useMemo(() => {
+    // “定位点”开关应控制所有工作面定位点的隐藏/显示；因此这里不按选中No过滤。
+    return normalizedWorkingFaceData ?? [];
+  }, [normalizedWorkingFaceData]);
+
+  const normalizedWorkfaceLoops = useMemo(() => {
+    if (!hasWorkingFaceData || !normalizedWorkingFaceDataVisible?.length) return [];
+
+    const byFace = new Map();
+    for (const p of (normalizedWorkingFaceDataVisible ?? [])) {
+      const faceIndex = Number(p?.faceIndex);
+      const k = Number.isFinite(faceIndex) ? faceIndex : 1;
+      if (!byFace.has(k)) byFace.set(k, []);
+      byFace.get(k).push(p);
+    }
+
+    const res = [];
+    const keys = Array.from(byFace.keys()).sort((a, b) => a - b);
+    for (const k of keys) {
+      const ptsRaw = (byFace.get(k) ?? []).filter((p) => Number.isFinite(p?.nx) && Number.isFinite(p?.ny));
+      if (ptsRaw.length < 3) continue;
+      const loop = computeNonSelfIntersectingLoop(ptsRaw, (p) => p?.nx, (p) => p?.ny).map((p) => ({ nx: p.x, ny: p.y }));
+      res.push({ faceIndex: k, loop });
+    }
+    return res;
+  }, [hasWorkingFaceData, normalizedWorkingFaceDataVisible]);
+
+  const normalizedPlannedWorkfaceLoops = useMemo(() => {
+    const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    if (!src.length) return [];
+    return src
+      .map((wf) => {
+        const loopW = (wf?.loop ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+        if (loopW.length < 2) return null;
+        const loopN = normalizeCoords(loopW, combinedPointsForBounds).map((p) => ({ nx: p.nx, ny: p.ny }));
+        return { faceIndex: wf.faceIndex, loop: loopN };
+      })
+      .filter(Boolean);
+  }, [plannedWorkfaceLoopsWorld, combinedPointsForBounds]);
 
   const generatedAllPoints = useMemo(() => {
     if (!generatedPoints) return [];
@@ -2786,6 +6005,8 @@ const App = () => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
 
+    const measuredValueLabel = getMeasuredValueLabelByScenario(activeTab);
+
     const readText = (file) => new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result ?? ''));
@@ -2797,12 +6018,27 @@ const App = () => {
       const entries = await Promise.all(
         files.map(async (file) => {
           const text = await readText(file);
-          const fileId = String(file.name ?? '').replace(/\.[^.]+$/, '').trim();
+          const fileId = safeFileId(String(file.name ?? '').replace(/\.[^.]+$/, '').trim());
           const rows = parseMeasuredConstraintText(text, fileId);
-          return rows;
+          return { fileId, rows };
         })
       );
-      const merged = entries.flat();
+
+      // 按文件保留测线（用于误差分析）
+      const lines = entries
+        .filter((it) => it?.rows?.length)
+        .map((it, idx) => ({
+          lineId: String(it.fileId || `LINE-${idx + 1}`),
+          label: String(it.fileId || `测线${idx + 1}`),
+          points: it.rows,
+        }));
+      setMeasuredConstraintLines(lines);
+      // 导入后：默认选中第一条测线（若当前未选中）
+      if (!selectedMeasuredLineId && lines.length) setSelectedMeasuredLineId(lines[0].lineId);
+      // 导入新数据后：旧误差结果作废
+      setErrorAnalysisByLineId({});
+
+      const merged = entries.flatMap((it) => it.rows ?? []);
       // 合并同 ID：以后读到的覆盖以前的
       const byId = new Map();
       for (const r of merged) {
@@ -2811,14 +6047,22 @@ const App = () => {
         const y = Number(r?.y);
         const measured = Number(r?.measured);
         if (!id || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(measured)) continue;
-        byId.set(id, { id, x, y, measured });
+        byId.set(id, { id, x, y, measured, fileId: String(r?.fileId ?? '') });
       }
       const next = Array.from(byId.values());
       setMeasuredConstraintData(next);
       setMeasuredZoningResultTracked(null);
+      // 确保导入后立即显示在主图
+      setShowLayerEvalPoints(true);
+      setShowEvalBoundaryPoints(true);
+      setShowEvalWorkfaceLocPoints(true);
+      setShowEvalEdgeCtrlPoints(true);
+      setShowEvalCenterCtrlPoints(true);
+      setShowMeasuredPoints(true);
+      setShowMainMap(true);
     } catch (err) {
       console.error('导入实测约束数据失败', err);
-      window.alert('导入实测约束数据失败：请检查文件格式（测点ID, x, y, 实测值）。');
+      window.alert(`导入实测约束数据失败：请检查文件格式（测点ID, x, y, ${measuredValueLabel}）。`);
     } finally {
       e.target.value = '';
     }
@@ -2986,17 +6230,18 @@ const App = () => {
     );
   };
 
-  const geologyParamOptions = useMemo(
-    () => [
+  const geologyParamOptions = useMemo(() => {
+    const miLabel = '目标层煤层厚度（Mi）';
+    return [
       { key: 'Ti', label: '目标层厚度（Ti）' },
-      { key: 'Mi', label: '目标煤层埋深（Mi）' },
+      { key: 'Mi', label: miLabel },
       { key: 'Hi', label: '煤层与目标层间距（Hi）' },
       { key: 'Di', label: '目标层埋深（Di）' },
-    ],
-    []
-  );
+    ];
+  }, []);
 
   const geologyPanelsByKey = useMemo(() => {
+    const miTitle = '目标层煤层厚度 (Mi)';
     return {
       Ti: {
         title: '目标层厚度 (Ti)',
@@ -3005,7 +6250,7 @@ const App = () => {
         subtitleOverride: undefined,
       },
       Mi: {
-        title: '目标煤层埋深 (Mi)',
+        title: miTitle,
         key: 'Mi',
         unit: 'm',
         subtitleOverride: selectedCoal ? `煤层：${selectedCoal}` : '煤层：未选择',
@@ -3026,15 +6271,14 @@ const App = () => {
   }, [selectedCoal]);
 
   return (
-    <div className="flex h-screen bg-slate-100 font-sans text-slate-900 overflow-hidden">
+    <div className="flex h-screen bg-slate-100 font-sans text-slate-900 overflow-hidden text-[17px]">
       {/* 左侧控制栏 - 数据上传与输入 */}
       <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-xl z-10 shrink-0">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-2 mb-1">
             <Activity className="text-blue-600" size={20} />
-            <h1 className="text-base font-bold text-slate-800 tracking-tight">覆岩扰动定量表征系统</h1>
+            <h1 className="text-base font-bold text-slate-800 tracking-tight">基于覆岩扰动约束的采区多目标智能规划系统</h1>
           </div>
-          <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">定量评价与预测平台</p>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
@@ -3179,21 +6423,43 @@ const App = () => {
                   )}
                 </select>
               </div>
-              <div>
-                <div className="text-[11px] text-slate-500 mb-2 font-bold">识别目标评价层（最上层基岩）</div>
-                <div className={`flex items-start gap-2 rounded border p-3 ${identifiedTarget.name ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-                  {identifiedTarget.name ? (
-                    <CheckCircle2 size={16} className="text-emerald-600 mt-0.5" />
-                  ) : (
-                    <AlertTriangle size={16} className="text-amber-600 mt-0.5" />
-                  )}
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold text-slate-800 truncate">{identifiedTarget.name || '未识别'}</div>
-                    <div className="text-[10px] text-slate-600 mt-1 leading-4">{identifiedTarget.reason}</div>
-                  </div>
-                </div>
 
-                <div className="mt-3">
+              {activeTab === 'aquifer' && (
+                <div>
+                  <div className="text-[11px] text-slate-500 mb-2 font-bold">含水层选择</div>
+                  <select
+                    className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-sm text-slate-700"
+                    value={selectedAquiferType}
+                    onChange={(e) => setSelectedAquiferType(e.target.value)}
+                    disabled={aquiferTypeOptions.length === 0}
+                  >
+                    {aquiferTypeOptions.length === 0 ? (
+                      <option value="">请先导入钻孔分层数据（含“含水层标记”列）</option>
+                    ) : (
+                      aquiferTypeOptions.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))
+                    )}
+                  </select>
+                </div>
+              )}
+              <div>
+                <div className="text-[11px] text-slate-500 mb-2 font-bold">{activeTab === 'aquifer' ? '识别目标评价层（目标含水层下关键层）' : '识别目标评价层（最上层基岩）'}</div>
+                {activeTab !== 'aquifer' && (
+                  <div className={`flex items-start gap-2 rounded border p-3 ${identifiedTarget.name ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
+                    {identifiedTarget.name ? (
+                      <CheckCircle2 size={16} className="text-emerald-600 mt-0.5" />
+                    ) : (
+                      <AlertTriangle size={16} className="text-amber-600 mt-0.5" />
+                    )}
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-slate-800 truncate">{identifiedTarget.name || '未识别'}</div>
+                      <div className="text-[10px] text-slate-600 mt-1 leading-4">{identifiedTarget.reason}</div>
+                    </div>
+                  </div>
+                )}
+
+                <div className={activeTab === 'aquifer' ? '' : 'mt-3'}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-[11px] text-slate-500 font-bold">各钻孔识别结果</div>
                     <div className="text-[10px] text-slate-400">{perBoreholeTargetList.length} 个</div>
@@ -3206,7 +6472,7 @@ const App = () => {
                         <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
                           <tr>
                             <th className="text-left px-3 py-2 text-slate-500 font-bold">钻孔</th>
-                            <th className="text-left px-3 py-2 text-slate-500 font-bold">最上层基岩岩性</th>
+                            <th className="text-left px-3 py-2 text-slate-500 font-bold">{activeTab === 'aquifer' ? '目标含水层下关键层岩性' : '最上层基岩岩性'}</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3226,12 +6492,6 @@ const App = () => {
           </section>
 
         </div>
-
-        <div className="p-4 border-t border-slate-100 bg-slate-50 text-center">
-          <button className="w-full bg-slate-800 text-white py-3 rounded-md text-sm font-bold hover:bg-slate-700 transition-all flex items-center justify-center gap-2 shadow-lg shadow-slate-200 uppercase tracking-widest">
-            启动计算引擎
-          </button>
-        </div>
       </aside>
 
       {/* 中间区域 - 分布图(上) + 误差分析(下) */}
@@ -3240,7 +6500,7 @@ const App = () => {
           <div className="inline-flex bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
             <button
               className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'odi' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-              onClick={() => setMainViewMode('odi')}
+              onClick={() => switchMainViewModeWithRightPanel('odi')}
             >
               综合扰动结果
             </button>
@@ -3249,6 +6509,12 @@ const App = () => {
               onClick={() => setMainViewMode('geology')}
             >
               地质参数分析
+            </button>
+            <button
+              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'planning' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => switchMainViewModeWithRightPanel('planning')}
+            >
+              智能规划
             </button>
           </div>
 
@@ -3272,7 +6538,7 @@ const App = () => {
             <button
               className="p-2 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-50"
               onClick={handleClearAll}
-              title="清空所有场景的输入数据与参数设置（可撤回）"
+              title="清空当前场景的输入数据与参数设置（可撤回）"
             >
               <Trash2 size={16} />
             </button>
@@ -3425,7 +6691,7 @@ const App = () => {
             <div className="p-4 border-b border-slate-50 flex items-center justify-between bg-white/80 backdrop-blur-sm shrink-0 cursor-pointer hover:bg-slate-50" onClick={() => setShowMainMap(!showMainMap)}>
                <div className="flex items-center gap-4">
                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm">
-                    覆岩扰动 (ODI) 分布图
+                    {mainViewMode === 'planning' ? '采区规划图' : '覆岩扰动 (ODI) 分布图'}
                  </h3>
                  {showMainMap && (
                    <>
@@ -3461,7 +6727,10 @@ const App = () => {
                        <button
                          data-main-map-export-button
                          className="p-1.5 hover:bg-slate-100 rounded text-slate-400 text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3"
-                         onClick={() => setShowMainMapExportMenu((v) => !v)}
+                         onClick={() => {
+                           setShowMainMapLabelsMenu(false);
+                           setShowMainMapExportMenu((v) => !v);
+                         }}
                        >
                          导出
                        </button>
@@ -3480,42 +6749,90 @@ const App = () => {
                              导出 PNG
                            </button>
                            <button
-                             className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${odiFieldPack?.field ? 'text-slate-700' : 'text-slate-400 cursor-not-allowed'}`}
-                             disabled={!odiFieldPack?.field}
-                             title={odiFieldPack?.field ? '导出 CSV：钻孔ID,x,y,ODI' : '请先完成 ODI 计算'}
+                             className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${paramExtractionResult?.points?.length ? 'text-slate-700' : 'text-slate-400 cursor-not-allowed'}`}
+                             disabled={!paramExtractionResult?.points?.length}
+                             title={paramExtractionResult?.points?.length ? '导出 CSV：评价点全参数 + ODI' : '请先完成“全参插值提取 / 地质插值提取”'}
                              onClick={() => {
                                setShowMainMapExportMenu(false);
-                               exportOdiCsvByDrillholes();
+                               exportEvalPointsFullParamsWithOdiCsv();
                              }}
                            >
-                             导出 CSV（钻孔ODI）
+                             导出 CSV（全参数+ODI）
                            </button>
                          </div>
                        )}
                      </div>
-                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                       <button
-                         className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                           showBoundaryLabels
-                             ? 'bg-slate-900 text-white'
-                             : 'bg-white text-slate-600 hover:bg-slate-50'
-                         }`}
-                         onClick={() => setShowBoundaryLabels((v) => !v)}
-                         title="采区边界标签开关"
-                       >
-                         采区边界标签
-                       </button>
-                       <button
-                         className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                           showDrillholeLabels
-                             ? 'bg-slate-900 text-white'
-                             : 'bg-white text-slate-600 hover:bg-slate-50'
-                         }`}
-                         onClick={() => setShowDrillholeLabels((v) => !v)}
-                         title="地质钻孔标签开关"
-                       >
-                         地质钻孔标签
-                       </button>
+
+                      <button
+                        className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                          hasWorkingFaceData
+                            ? (showWorkfaceOutline ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50')
+                            : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!hasWorkingFaceData) return;
+                          setShowMainMapExportMenu(false);
+                          setShowMainMapLabelsMenu(false);
+                          setShowWorkfaceOutline((v) => !v);
+                        }}
+                        disabled={!hasWorkingFaceData}
+                        title={hasWorkingFaceData ? `工作面虚线圈定开关（已识别 ${workfaceCount} 个工作面）` : '请先导入工作面坐标数据'}
+                        type="button"
+                      >
+                        工作面标记
+                      </button>
+
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="relative" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          data-main-map-labels-button
+                          className="p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors bg-white text-slate-600 hover:bg-slate-50"
+                          onClick={() => {
+                            setShowMainMapExportMenu(false);
+                            setShowMainMapLabelsMenu((v) => !v);
+                          }}
+                          title="标签显示/隐藏"
+                          type="button"
+                        >
+                          标签
+                        </button>
+                        {showMainMapLabelsMenu && (
+                          <div
+                            data-main-map-labels-menu
+                            className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                          >
+                            <button
+                              className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
+                              onClick={() => setShowBoundaryLabels((v) => !v)}
+                              type="button"
+                            >
+                              <span>采区边界标签</span>
+                              <span className="text-[10px] text-slate-400">{showBoundaryLabels ? '显示' : '隐藏'}</span>
+                            </button>
+                            <button
+                              className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
+                              onClick={() => setShowDrillholeLabels((v) => !v)}
+                              type="button"
+                            >
+                              <span>地质钻孔标签</span>
+                              <span className="text-[10px] text-slate-400">{showDrillholeLabels ? '显示' : '隐藏'}</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                          showMeasuredPoints
+                            ? 'bg-slate-900 text-white'
+                            : 'bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                        onClick={() => setShowMeasuredPoints((v) => !v)}
+                        title="实测点显示/隐藏"
+                      >
+                        实测点
+                      </button>
 
                        {/* 图层开关：紧挨标签按钮 */}
                        <div className="flex items-center gap-1 ml-1">
@@ -3542,7 +6859,17 @@ const App = () => {
                              className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
                                showLayerEvalPoints ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
                              }`}
-                             onClick={() => setShowLayerEvalPoints((v) => !v)}
+                                 onClick={() =>
+                                   setShowLayerEvalPoints((v) => {
+                                     const next = !v;
+                                     // “评价点”=四类评价点总开关：边界点/定位点/边线点/中心点
+                                     setShowEvalBoundaryPoints(next);
+                                     setShowEvalWorkfaceLocPoints(next);
+                                     setShowEvalEdgeCtrlPoints(next);
+                                     setShowEvalCenterCtrlPoints(next);
+                                     return next;
+                                   })
+                                 }
                              title="工作面评价点图层开关"
                            >
                              评价点
@@ -3601,9 +6928,8 @@ const App = () => {
             {/* 上部横向动态可视化配置模块（放在本图模块内） */}
             {showMainMap && (
               <div className="px-4 py-3 border-b border-slate-100 bg-white" onClick={(e) => e.stopPropagation()}>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                   <div className="flex items-center gap-2">
-                    <div className="text-[11px] text-slate-500 font-bold">色带</div>
                     <select
                       className="bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
                       value={odiVizPalette}
@@ -3627,10 +6953,10 @@ const App = () => {
                       step={1}
                       value={odiVizSteps}
                       onChange={(e) => setOdiVizSteps(Number(e.target.value))}
-                      className="w-40"
+                      className="w-28"
                       title="颜色分级数量（3~10）"
                     />
-                    <div className="text-[11px] text-slate-600 font-mono w-8 text-right">{odiVizSteps}</div>
+                    <div className="text-[11px] text-slate-600 font-mono w-7 text-right">{odiVizSteps}</div>
                   </div>
 
                   <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
@@ -3665,6 +6991,27 @@ const App = () => {
 
                   <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
 
+                  {activeTab === 'aquifer' && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <div className="text-[11px] text-slate-500 font-bold">平滑度</div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={6}
+                          step={1}
+                          value={aquiferOdiSmoothPasses}
+                          onChange={(e) => setAquiferOdiSmoothPasses(Number(e.target.value))}
+                          className="w-24"
+                          title="含水层场景：ODI 自然邻域插值平滑度（0=不平滑，越大越丝滑）"
+                        />
+                        <div className="text-[11px] text-slate-600 font-mono w-7 text-right">{aquiferOdiSmoothPasses}</div>
+                      </div>
+
+                      <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
+                    </>
+                  )}
+
                   <button
                     className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
                       showMainMapCoordinates ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
@@ -3674,6 +7021,57 @@ const App = () => {
                   >
                     {showMainMapCoordinates ? '隐藏坐标' : '显示坐标'}
                   </button>
+
+                  <button
+                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                      (!hasSpatialData || !spatialBounds)
+                        ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                        : (measureEnabled ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50')
+                    }`}
+                    onClick={() => {
+                      if (!hasSpatialData || !spatialBounds) return;
+                      setMeasurePoints([]);
+                      setMeasureEnabled((v) => !v);
+                    }}
+                    disabled={!hasSpatialData || !spatialBounds}
+                    title={(!hasSpatialData || !spatialBounds) ? '请先导入空间数据（边界/钻孔/工作面/实测）' : (measureEnabled ? '关闭测量（Esc）' : '开启测量：在图上点击两点')}
+                    type="button"
+                  >
+                    测量
+                  </button>
+
+                  {measureEnabled && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                          measureAxis === 'h' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                        onClick={() => setMeasureAxis('h')}
+                        title="显示水平距离（ΔX）"
+                        type="button"
+                      >
+                        水平
+                      </button>
+                      <button
+                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                          measureAxis === 'v' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
+                        }`}
+                        onClick={() => setMeasureAxis('v')}
+                        title="显示垂直距离（ΔY）"
+                        type="button"
+                      >
+                        垂直
+                      </button>
+                      <button
+                        className="px-2 py-1 rounded text-[10px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        onClick={() => setMeasurePoints([])}
+                        title="清空已选点"
+                        type="button"
+                      >
+                        重置
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -3686,17 +7084,26 @@ const App = () => {
                   className="w-full h-full drop-shadow-2xl transition-transform duration-700 group-hover:scale-[1.01]"
                   onMouseMove={handleMainMapMouseMove}
                   onMouseLeave={handleMainMapMouseLeave}
+                  onClick={handleMainMapClick}
+                  style={measureEnabled ? { cursor: 'crosshair' } : undefined}
                 >
+                  <defs>
+                    <radialGradient id="planning-boundary-overlay" cx="50%" cy="50%" r="0.85">
+                      <stop offset="0%" stopColor="#f472b6" stopOpacity="0.35" />
+                      <stop offset="60%" stopColor="#f472b6" stopOpacity="0.18" />
+                      <stop offset="100%" stopColor="#f472b6" stopOpacity="0.08" />
+                    </radialGradient>
+                  </defs>
                   {/* 采区外框矩形（仅未导入数据时显示占位外框） */}
                   {!hasSpatialData && (
-                    <rect x="150" y="50" width="500" height="400" fill="none" stroke="#e2e8f0" strokeWidth="2" strokeDasharray="10 5" />
+                    <rect x={MAIN_MAP_RECT.left} y={MAIN_MAP_RECT.top} width={MAIN_MAP_RECT.width} height={MAIN_MAP_RECT.height} fill="none" stroke="#e2e8f0" strokeWidth="2" strokeDasharray="10 5" />
                   )}
 
                   {/* 坐标刻度网格（工业风：主图坐标尺） */}
                   {showMainMapCoordinates && hasSpatialData && spatialBounds && (
                     <g pointerEvents="none">
                       {(() => {
-                        const rect = { left: 150, top: 50, width: 500, height: 400, padding: 18 };
+                        const rect = MAIN_MAP_RECT;
                         const x0 = rect.left + rect.padding;
                         const x1 = rect.left + rect.width - rect.padding;
                         const y0 = rect.top + rect.padding;
@@ -3770,10 +7177,90 @@ const App = () => {
 
                   {/* 计算得到的 ODI 归一化等值分布（热力） */}
                   {odiHeatmapHref && showLayerInterpolation && (
-                    <image href={odiHeatmapHref} x="150" y="50" width="500" height="400" preserveAspectRatio="none" opacity="0.92" />
+                    <image href={odiHeatmapHref} x={MAIN_MAP_RECT.left} y={MAIN_MAP_RECT.top} width={MAIN_MAP_RECT.width} height={MAIN_MAP_RECT.height} preserveAspectRatio="none" opacity="0.92" />
                   )}
                   {hasSpatialData ? (
                     <g>
+                      {showPlanningBoundaryOverlay && mainViewMode === 'planning' && hasBoundaryData && planningBoundaryOverlayLoop.length >= 3 && (
+                        (() => {
+                          const pathD = planningBoundaryOverlayLoop
+                            .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`)
+                            .join(' ');
+                          return (
+                            <path
+                              d={`${pathD} Z`}
+                              fill="url(#planning-boundary-overlay)"
+                              opacity="0.85"
+                              stroke="none"
+                              pointerEvents="none"
+                            />
+                          );
+                        })()
+                      )}
+                      {/* 采区边界虚线（连接全部边界点；自动消除相交） */}
+                      {hasBoundaryData && normalizedBoundaryLoop.length >= 2 && (
+                        (() => {
+                          const pts = normalizedBoundaryLoop.map((p) => `${p.nx},${p.ny}`);
+                          const closedPts = normalizedBoundaryLoop.length >= 3 ? [...pts, pts[0]] : pts;
+                          return (
+                            <polyline
+                              points={closedPts.join(' ')}
+                              fill="none"
+                              stroke="#2563eb"
+                              strokeWidth="2"
+                              strokeOpacity="0.65"
+                              strokeDasharray="8 6"
+                            />
+                          );
+                        })()
+                      )}
+
+                      {/* 工作面虚线圈定（按 4 点一组判别工作面；自动消除相交） */}
+                      {showWorkfaceOutline && hasWorkingFaceData && normalizedWorkfaceLoops.length > 0 && (
+                        <g>
+                          {normalizedWorkfaceLoops.map((wf) => {
+                            const loop = wf?.loop ?? [];
+                            if (loop.length < 2) return null;
+                            const pts = loop.map((p) => `${p.nx},${p.ny}`);
+                            const closedPts = loop.length >= 3 ? [...pts, pts[0]] : pts;
+                            return (
+                              <polyline
+                                key={`wf-outline-${wf.faceIndex}`}
+                                points={closedPts.join(' ')}
+                                fill="none"
+                                stroke="#ec4899"
+                                strokeWidth="2"
+                                strokeOpacity="0.65"
+                                strokeDasharray="7 6"
+                              />
+                            );
+                          })}
+                        </g>
+                      )}
+
+                      {/* 规划工作面虚线圈定（智能规划生成） */}
+                      {mainViewMode === 'planning' && normalizedPlannedWorkfaceLoops.length > 0 && (
+                        <g>
+                          {normalizedPlannedWorkfaceLoops.map((wf) => {
+                            const loop = wf?.loop ?? [];
+                            if (loop.length < 2) return null;
+                            const pts = loop.map((p) => `${p.nx},${p.ny}`);
+                            const closedPts = loop.length >= 3 ? [...pts, pts[0]] : pts;
+                            return (
+                              <polygon
+                                key={`wf-plan-${wf.faceIndex}`}
+                                points={closedPts.join(' ')}
+                                fill="#3b82f6"
+                                fillOpacity="0.22"
+                                stroke="#2563eb"
+                                strokeWidth="2"
+                                strokeOpacity="0.7"
+                              />
+                            );
+                          })}
+                        </g>
+                      )}
+
                       {/* 采区边界坐标控制点（蓝色） */}
                       {hasBoundaryData && normalizedBoundaryData.map((p) => (
                         <g key={`b-${p.id}-${p.x}-${p.y}`}>
@@ -3787,9 +7274,17 @@ const App = () => {
                       ))}
 
                       {/* 工作面坐标点（导入后立即显示，粉色；受“评价点-定位点”开关控制） */}
-                      {hasWorkingFaceData && showEvalWorkfaceLocPoints && normalizedWorkingFaceData.map((p) => (
+                      {hasWorkingFaceData && showEvalWorkfaceLocPoints && normalizedWorkingFaceDataVisible.map((p) => (
                         <g key={`wf-raw-${p.id}-${p.x}-${p.y}`}>
-                          <circle cx={p.nx} cy={p.ny} r="4" fill="#ec4899" opacity="0.9" />
+                          <circle
+                            cx={p.nx}
+                            cy={p.ny}
+                            r="4"
+                            fill={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? '#ffffff' : '#ec4899'}
+                            stroke={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? '#ec4899' : 'none'}
+                            strokeWidth={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? 1.8 : 0}
+                            opacity="0.9"
+                          />
                         </g>
                       ))}
 
@@ -3813,8 +7308,19 @@ const App = () => {
                             <circle key={`gen-gray-${p.id}-${p.x}-${p.y}`} cx={p.nx} cy={p.ny} r="4" fill="#94a3b8" opacity="0.9" />
                           ))}
                           {/* 工作面定位控制点：粉色 */}
-                          {showEvalWorkfaceLocPoints && generatedByCat.pink.map((p) => (
-                            <circle key={`gen-pink-${p.id}-${p.x}-${p.y}`} cx={p.nx} cy={p.ny} r="4.5" fill="#ec4899" opacity="0.95" />
+                          {showEvalWorkfaceLocPoints && (
+                            generatedByCat.pink
+                          ).map((p) => (
+                            <circle
+                              key={`gen-pink-${p.id}-${p.x}-${p.y}`}
+                              cx={p.nx}
+                              cy={p.ny}
+                              r="4.5"
+                              fill={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? '#ffffff' : '#ec4899'}
+                              stroke={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? '#ec4899' : 'none'}
+                              strokeWidth={Number(p.faceIndex) === Number(activeSelectedFaceNo) ? 1.8 : 0}
+                              opacity="0.95"
+                            />
                           ))}
                           {/* 边线控制点：绿色 */}
                           {showEvalEdgeCtrlPoints && generatedByCat.green.map((p) => (
@@ -3828,7 +7334,7 @@ const App = () => {
                       )}
 
                       {/* 实测点（叠加显示） */}
-                      {normalizedMeasuredConstraintData.length > 0 && showLayerEvalPoints && (
+                      {normalizedMeasuredConstraintData.length > 0 && showMeasuredPoints && (
                         <g>
                           {normalizedMeasuredConstraintData.map((p) => (
                             <circle
@@ -3850,7 +7356,7 @@ const App = () => {
                       {showMainMapCoordinates && crosshair.active && (
                         <g pointerEvents="none">
                           {(() => {
-                            const rect = { left: 150, top: 50, width: 500, height: 400, padding: 18 };
+                            const rect = MAIN_MAP_RECT;
                             const x0 = rect.left + rect.padding;
                             const x1 = rect.left + rect.width - rect.padding;
                             const y0 = rect.top + rect.padding;
@@ -3862,6 +7368,60 @@ const App = () => {
                                 <line x1={sx} y1={y0} x2={sx} y2={y1} stroke="#0f172a" strokeOpacity="0.35" strokeWidth="1" strokeDasharray="4 3" />
                                 <line x1={x0} y1={sy} x2={x1} y2={sy} stroke="#0f172a" strokeOpacity="0.35" strokeWidth="1" strokeDasharray="4 3" />
                                 <circle cx={sx} cy={sy} r="3" fill="#0f172a" fillOpacity="0.65" />
+                              </>
+                            );
+                          })()}
+                        </g>
+                      )}
+
+                      {/* 测量工具：两点距离（水平/垂直） */}
+                      {measureEnabled && spatialBounds && (
+                        <g pointerEvents="none">
+                          {(() => {
+                            const pts = Array.isArray(measurePoints) ? measurePoints : [];
+                            const p1 = pts[0];
+                            const p2 = pts[1] ?? (pts.length === 1 && crosshair.active && Number.isFinite(crosshair.wx) && Number.isFinite(crosshair.wy)
+                              ? { sx: crosshair.sx, sy: crosshair.sy, wx: crosshair.wx, wy: crosshair.wy }
+                              : null);
+                            if (!p1) return null;
+
+                            const has2 = Boolean(p2);
+                            const dx = has2 ? Math.abs(Number(p2.wx) - Number(p1.wx)) : null;
+                            const dy = has2 ? Math.abs(Number(p2.wy) - Number(p1.wy)) : null;
+                            const dist = has2 ? (measureAxis === 'v' ? dy : dx) : null;
+                            const label = (has2 && Number.isFinite(dist))
+                              ? `${measureAxis === 'v' ? '垂直' : '水平'}距离：${dist.toFixed(2)}`
+                              : '点击选择第 2 个点';
+
+                            const midX = has2 ? (p1.sx + p2.sx) / 2 : p1.sx;
+                            const midY = has2 ? (p1.sy + p2.sy) / 2 : p1.sy;
+
+                            return (
+                              <>
+                                {/* 点标记 */}
+                                <circle cx={p1.sx} cy={p1.sy} r="5" fill="#10b981" fillOpacity="0.95" stroke="#064e3b" strokeWidth="1.2" />
+                                {has2 && (
+                                  <circle cx={p2.sx} cy={p2.sy} r="5" fill="#f59e0b" fillOpacity="0.95" stroke="#78350f" strokeWidth="1.2" />
+                                )}
+
+                                {/* 连线 */}
+                                {has2 && (
+                                  <line x1={p1.sx} y1={p1.sy} x2={p2.sx} y2={p2.sy} stroke="#0f172a" strokeOpacity="0.55" strokeWidth="2" strokeDasharray="6 5" />
+                                )}
+
+                                {/* 标签（描边提升可读性） */}
+                                <text
+                                  x={midX + 10}
+                                  y={midY - 10}
+                                  fontSize="12"
+                                  fill="#0f172a"
+                                  fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace"
+                                  stroke="#ffffff"
+                                  strokeWidth="3"
+                                  paintOrder="stroke"
+                                >
+                                  {label}
+                                </text>
                               </>
                             );
                           })()}
@@ -3884,7 +7444,7 @@ const App = () => {
                   if (hasDrillholeData && showLayerDrillholes) items.push({ key: 'geo', label: '地质坐标点', color: '#000000' });
                   if (generatedPoints?.gray?.length && showLayerEvalPoints && showEvalBoundaryPoints) items.push({ key: 'bnd', label: '边界点', color: '#94a3b8' });
                   if (hasBoundaryData) items.push({ key: 'area', label: '采区边界控制点', color: '#2563eb' });
-                  if (normalizedMeasuredConstraintData.length > 0 && showLayerEvalPoints) items.push({ key: 'measured', label: '实测点', color: '#ef4444' });
+                  if (normalizedMeasuredConstraintData.length > 0 && showMeasuredPoints) items.push({ key: 'measured', label: '实测点', color: '#ef4444' });
                   if (generatedPoints?.pink?.length && showLayerEvalPoints && showEvalWorkfaceLocPoints) {
                     items.push({ key: 'wfLoc', label: '工作面定位点', color: '#ec4899' });
                   } else if (hasWorkingFaceData && showEvalWorkfaceLocPoints) {
@@ -3916,10 +7476,8 @@ const App = () => {
                       <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-slate-700 font-mono">
                         <div>Y: {Number.isFinite(crosshair.wy) ? crosshair.wy.toFixed(2) : '-'}</div>
                         <div>X: {Number.isFinite(crosshair.wx) ? crosshair.wx.toFixed(2) : '-'}</div>
+                        <div>Mi: {Number.isFinite(crosshair.values?.Mi) ? crosshair.values.Mi.toFixed(3) : '-'}</div>
                         <div>ODI: {Number.isFinite(crosshair.values?.odiNorm) ? crosshair.values.odiNorm.toFixed(3) : '-'}</div>
-                        <div>Ti: {Number.isFinite(crosshair.values?.Ti) ? crosshair.values.Ti.toFixed(3) : '-'}</div>
-                        <div>Hi: {Number.isFinite(crosshair.values?.Hi) ? crosshair.values.Hi.toFixed(3) : '-'}</div>
-                        <div>Di: {Number.isFinite(crosshair.values?.Di) ? crosshair.values.Di.toFixed(3) : '-'}</div>
                       </div>
                       <div className="mt-1 text-[10px] text-slate-400">移动鼠标：实时坐标 + 即时插值</div>
                     </div>
@@ -3930,134 +7488,274 @@ const App = () => {
             )}
 
           </div>
-
-          {/* 实测分级对应分析（主图 ↔ 误差趋势之间，可折叠） */}
-          <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${showMeasuredMapping ? 'h-auto' : 'h-14 overflow-hidden'}`}>
-            <div
-              className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50"
-              onClick={() => setShowMeasuredMapping((v) => !v)}
-            >
-              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                <ClipboardCheck size={14} className="text-emerald-500" /> 实测分级对应分析
-              </h3>
-              <div className="flex items-center gap-3">
+            </>
+          )}
+          {mainViewMode === 'odi' && (
+            <>
+              {/* 实测分级对应分析（主图 ↔ 误差趋势之间，可折叠） */}
+              <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${showMeasuredMapping ? 'h-auto' : 'h-14 overflow-hidden'}`}>
+                <div
+                  className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50"
+                  onClick={() => setShowMeasuredMapping((v) => !v)}
+                >
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <ClipboardCheck size={14} className="text-emerald-500" /> 实测分级对应分析
+                  </h3>
+                  <div className="flex items-center gap-3">
+                    {showMeasuredMapping && (
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        {(activeTab === 'surface' || activeTab === 'aquifer')
+                          ? ((measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5)
+                            ? '已分级'
+                            : (measuredConstraintData?.length ? '待分区' : '未导入'))
+                          : '待实现'}
+                      </div>
+                    )}
+                    <button className="p-1 hover:bg-slate-200 rounded transition-colors" type="button">
+                      {showMeasuredMapping ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
+                    </button>
+                  </div>
+                </div>
                 {showMeasuredMapping && (
-                  <div className="text-[10px] text-slate-400 font-mono">
-                    {activeTab === 'surface'
-                      ? (measuredZoningResult?.bins?.length === 5 ? '已分级' : (measuredConstraintData?.length ? '待分区' : '未导入'))
-                      : '待实现'}
+                  <div className="p-4">
+                    {activeTab === 'aquifer' ? (
+                      <div className="w-full overflow-x-auto">
+                        <table className="w-full table-fixed text-[11px]">
+                          <thead className="sticky top-0 bg-white border-b border-slate-100">
+                            <tr>
+                              <th className="w-1/3 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">扰动等级</th>
+                              <th className="w-1/3 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">ODI区间</th>
+                              <th className="w-1/3 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">工程含义</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[
+                              {
+                                lv: 'Ⅰ 轻微扰动',
+                                odi: '0.00 ≤ ODI < 0.40',
+                                meaning: '覆岩结构整体稳定，采动扰动影响有限',
+                              },
+                              {
+                                lv: 'Ⅱ 较弱扰动',
+                                odi: '0.40 ≤ ODI < 0.65',
+                                meaning: '覆岩产生一定扰动响应，破坏程度较低',
+                              },
+                              {
+                                lv: 'Ⅲ 中等扰动',
+                                odi: '0.65 ≤ ODI < 0.85',
+                                meaning: '覆岩扰动显著，裂隙发育逐步增强',
+                              },
+                              {
+                                lv: 'Ⅳ 较强扰动',
+                                odi: '0.85 ≤ ODI < 0.90',
+                                meaning: '对应实测覆岩严重破坏高度约50~55 m',
+                              },
+                              {
+                                lv: 'Ⅴ 强扰动',
+                                odi: 'ODI ≥ 0.90',
+                                meaning: '对应实测覆岩严重破坏高度大于55 m',
+                              },
+                            ].map((r) => (
+                              <tr key={r.lv} className="border-b border-slate-50 last:border-b-0">
+                                <td className="w-1/3 py-2 px-3 text-center text-slate-700 font-bold whitespace-nowrap">{r.lv}</td>
+                                <td className="w-1/3 py-2 px-3 text-center text-slate-700 font-mono whitespace-nowrap">{r.odi}</td>
+                                <td className="w-1/3 py-2 px-3 text-center text-slate-700 whitespace-normal break-words">{r.meaning}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (activeTab === 'surface') ? (
+                      (measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5) ? (
+                        <div className="w-full overflow-x-auto">
+                          <table className="w-full table-fixed text-[11px]">
+                            <thead className="sticky top-0 bg-white border-b border-slate-100">
+                              <tr>
+                                <th className="w-1/6 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">扰动等级</th>
+                                {['I 级', 'II 级', 'III 级', 'IV 级', 'V 级'].map((lv) => (
+                                  <th key={lv} className="w-1/6 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">{lv}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(() => {
+                                const bins = measuredZoningResult?.bins ?? [];
+                                const fmtOdi = (v) => (Number.isFinite(v) ? Number(v).toFixed(3) : '--');
+                                const fmtS = (v) => (Number.isFinite(v) ? Number(v).toFixed(2) : '--');
+                                const odiCell = (idx) => {
+                                  const b = bins[idx];
+                                  const lo = Number(b?.odiLo);
+                                  const hi = Number(b?.odiHi);
+                                  if (idx === 0) return `${fmtOdi(lo)} ≤ ODI < ${fmtOdi(hi)}`;
+                                  if (idx === 4) return `ODI ≥ ${fmtOdi(lo)}`;
+                                  return `${fmtOdi(lo)} ≤ ODI < ${fmtOdi(hi)}`;
+                                };
+                                const sCell = (idx) => {
+                                  const b = bins[idx];
+                                  const lo = Number(b?.measuredMin);
+                                  const hi = Number(b?.measuredMax);
+                                  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi >= lo)) return '--';
+                                  if (idx === 4) return `≥ ${fmtS(lo)}`;
+                                  return `${fmtS(lo)}~${fmtS(hi)}`;
+                                };
+
+                                const measuredRowLabel = '对应地表下沉量范围（m）';
+
+                                return (
+                                  <>
+                                    <tr className="border-b border-slate-50">
+                                      <td className="w-1/6 py-2 px-3 text-center text-slate-700 font-bold whitespace-nowrap">ODI</td>
+                                      {[0, 1, 2, 3, 4].map((i) => (
+                                        <td key={`odi-${i}`} className="w-1/6 py-2 px-3 text-center text-slate-700 font-mono whitespace-nowrap">{odiCell(i)}</td>
+                                      ))}
+                                    </tr>
+                                    <tr className="border-b border-slate-50 last:border-b-0">
+                                      <td className="w-1/6 py-2 px-3 text-center text-slate-700 font-bold whitespace-normal break-words">{measuredRowLabel}</td>
+                                      {[0, 1, 2, 3, 4].map((i) => (
+                                        <td key={`s-${i}`} className="w-1/6 py-2 px-3 text-center text-slate-700 font-mono whitespace-nowrap">{sCell(i)}</td>
+                                      ))}
+                                    </tr>
+                                  </>
+                                );
+                              })()}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-500 leading-5">
+                          {measuredConstraintData?.length
+                            ? '已导入实测约束数据，请在右侧“分级响应详情”中点击“启动实测约束分区”。'
+                            : '请先在左侧导入“实测约束数据”，再点击“启动实测约束分区”。'}
+                        </div>
+                      )
+                    ) : (
+                      <div className="text-[11px] text-slate-500 leading-5">
+                        该场景的实测分级对应分析后续再优化（界面功能保持一致）。
+                      </div>
+                    )}
                   </div>
                 )}
-                <button className="p-1 hover:bg-slate-200 rounded transition-colors" type="button">
-                  {showMeasuredMapping ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
-                </button>
-              </div>
-            </div>
-            {showMeasuredMapping && (
-              <div className="p-4">
-                {activeTab === 'surface' ? (
-                  measuredZoningResult?.bins?.length === 5 ? (
-                    <table className="w-full text-[11px]">
-                      <thead className="sticky top-0 bg-white border-b border-slate-100">
-                        <tr>
-                          <th className="text-left py-2 pr-3 text-slate-500 font-bold whitespace-nowrap">扰动等级</th>
-                          {['I 级', 'II 级', 'III 级', 'IV 级', 'V 级'].map((lv) => (
-                            <th key={lv} className="text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">{lv}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(() => {
-                          const bins = measuredZoningResult?.bins ?? [];
-                          const fmtOdi = (v) => (Number.isFinite(v) ? Number(v).toFixed(3) : '--');
-                          const fmtS = (v) => (Number.isFinite(v) ? Number(v).toFixed(2) : '--');
-                          const odiCell = (idx) => {
-                            const b = bins[idx];
-                            const lo = Number(b?.odiLo);
-                            const hi = Number(b?.odiHi);
-                            if (idx === 0) return `≤ ${fmtOdi(hi)}`;
-                            if (idx === 4) return `${fmtOdi(lo)}<`;
-                            return `${fmtOdi(lo)}~${fmtOdi(hi)}`;
-                          };
-                          const sCell = (idx) => {
-                            const b = bins[idx];
-                            const lo = Number(b?.measuredMin);
-                            const hi = Number(b?.measuredMax);
-                            if (idx === 0) return `≤ ${fmtS(hi)}`;
-                            if (idx === 4) return `${fmtS(lo)}<`;
-                            return `${fmtS(lo)}~${fmtS(hi)}`;
-                          };
+              </section>
 
+              {/* 误差分析趋势模块 - 可折叠 */}
+              <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${showErrorAnalysis ? 'h-64' : 'h-14'}`}>
+                <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50" onClick={() => setShowErrorAnalysis(!showErrorAnalysis)}>
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <BarChart3 size={14} className="text-emerald-500" /> 评估结果误差分析趋势
+                  </h3>
+                  <div className="flex items-center gap-3">
+                    {showErrorAnalysis && (
+                      <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                        {(() => {
+                          const measuredLabel = getMeasuredValueLabelByScenario(activeTab);
                           return (
-                            <>
-                              <tr className="border-b border-slate-50">
-                                <td className="py-2 pr-3 text-slate-700 font-bold whitespace-nowrap">ODI</td>
-                                {[0, 1, 2, 3, 4].map((i) => (
-                                  <td key={`odi-${i}`} className="py-2 px-2 text-center text-slate-700 font-mono whitespace-nowrap">{odiCell(i)}</td>
-                                ))}
-                              </tr>
-                              <tr className="border-b border-slate-50 last:border-b-0">
-                                <td className="py-2 pr-3 text-slate-700 font-bold whitespace-nowrap">对应地表下沉量范围（m）</td>
-                                {[0, 1, 2, 3, 4].map((i) => (
-                                  <td key={`s-${i}`} className="py-2 px-2 text-center text-slate-700 font-mono whitespace-nowrap">{sCell(i)}</td>
-                                ))}
-                              </tr>
-                            </>
+                        <div className="flex items-center gap-3 text-[10px] text-slate-400 font-medium">
+                          <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-blue-500"></span> ODI</div>
+                          <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 border-b border-dashed border-red-500"></span> {measuredLabel}(m)</div>
+                          <div className="flex items-center gap-1.5"><span className="w-3 h-2 bg-slate-300 rounded-sm"></span> 误差</div>
+                        </div>
                           );
                         })()}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="text-[11px] text-slate-500 leading-5">
-                      {measuredConstraintData?.length
-                        ? '已导入实测约束数据，请在右侧“分级响应详情”中点击“”。'
-                        : '请先在左侧导入“实测约束数据”，再。'}
-                    </div>
-                  )
-                ) : (
-                  <div className="text-[11px] text-slate-500 leading-5">
-                    该场景的实测分级对应分析后续再优化（界面功能保持一致）。
+                        <div className="h-4 w-px bg-slate-200"></div>
+                        <select
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-bold text-slate-700"
+                          value={selectedMeasuredLineId || ''}
+                          onChange={(e) => setSelectedMeasuredLineId(e.target.value)}
+                          title="测线选择（按导入文件分组）"
+                        >
+                          {measuredConstraintLines?.length ? (
+                            measuredConstraintLines.map((l) => (
+                              <option key={l.lineId} value={l.lineId}>{l.label || l.lineId}</option>
+                            ))
+                          ) : (
+                            <option value="">未导入测线</option>
+                          )}
+                        </select>
+                      </div>
+                    )}
+                    <button className="p-1 hover:bg-slate-200 rounded transition-colors">
+                      {showErrorAnalysis ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
+                    </button>
                   </div>
-                )}
-              </div>
-            )}
-          </section>
-
-          {/* 误差分析趋势模块 - 可折叠 */}
-          <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${showErrorAnalysis ? 'h-64' : 'h-14'}`}>
-            <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50" onClick={() => setShowErrorAnalysis(!showErrorAnalysis)}>
-              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                <BarChart3 size={14} className="text-emerald-500" /> 评估结果误差分析趋势
-              </h3>
-              <div className="flex items-center gap-3">
+                </div>
                 {showErrorAnalysis && (
-                  <div className="flex items-center gap-4 text-[10px] text-slate-400 font-medium">
-                     <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-blue-500"></span> ODI 预测值</div>
-                     <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 border-b border-dashed border-red-500"></span> 现场实测值</div>
-                  </div>
-                )}
-                <button className="p-1 hover:bg-slate-200 rounded transition-colors">
-                  {showErrorAnalysis ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
-                </button>
-              </div>
-            </div>
-            {showErrorAnalysis && (
-              <div className="flex-1 w-full min-h-0 px-5 pb-5">
-                <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={errorData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="id" tick={{fontSize: 9, fill: '#94a3b8'}} axisLine={false} tickLine={false} />
-                    <YAxis yAxisId="left" tick={{fontSize: 9, fill: '#94a3b8'}} axisLine={false} tickLine={false} />
-                    <YAxis yAxisId="right" orientation="right" tick={{fontSize: 9, fill: '#94a3b8'}} axisLine={false} tickLine={false} />
-                    <Tooltip 
-                      contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '10px' }} 
-                      cursor={{fill: '#f8fafc'}}
-                    />
-                    <Bar yAxisId="left" dataKey="error" fill="#cbd5e1" name="绝对误差" radius={[4, 4, 0, 0]} barSize={20} />
-                    <Line yAxisId="left" type="monotone" dataKey="odi" stroke="#3b82f6" name="ODI 预测" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} />
-                    <Line yAxisId="right" type="monotone" dataKey="measured" stroke="#ef4444" name="实测结果" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3, fill: '#ef4444' }} />
-                  </ComposedChart>
-                </ResponsiveContainer>
+                  <div ref={errorChartContainerRef} className="flex-1 w-full min-h-0 px-5 pb-5">
+                    {(() => {
+                      const lineKey = String(selectedMeasuredLineId ?? '').trim();
+                      const data = errorAnalysisByLineId?.[lineKey]?.data ?? [];
+                      const measuredMaxAbs = errorAnalysisByLineId?.[lineKey]?.stats?.measuredMaxAbs;
+                      const rightMax = Number.isFinite(measuredMaxAbs) ? Math.max(0, measuredMaxAbs) : 0;
+
+                      if (!measuredConstraintLines?.length) {
+                        return <div className="h-full flex items-center justify-center text-[11px] text-slate-500">未导入实测测线数据</div>;
+                      }
+                      if (!data.length) {
+                        return <div className="h-full flex items-center justify-center text-[11px] text-slate-500">暂无误差数据：请在右侧点击“计算误差”</div>;
+                      }
+
+                      return (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <ComposedChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                            <XAxis dataKey="id" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            {/* 左轴1：误差柱状（0→1，自下而上） */}
+                            <YAxis
+                              yAxisId="err"
+                              orientation="left"
+                              domain={[0, 1]}
+                              tick={{ fontSize: 9, fill: '#94a3b8' }}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            {/* 左轴2：ODI 再归一化（1→0，自下而上显示为递减），与误差轴重叠 */}
+                            <YAxis
+                              yAxisId="odi"
+                              orientation="left"
+                              domain={[0, 1]}
+                              reversed
+                              tick={false}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            <YAxis
+                              yAxisId="right"
+                              orientation="right"
+                              domain={[0, Math.max(0.000001, rightMax)]}
+                              reversed
+                              tick={{ fontSize: 9, fill: '#94a3b8' }}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            <Tooltip
+                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '10px' }}
+                              cursor={{ fill: '#f8fafc' }}
+                              formatter={(value, name, props) => {
+                                const row = props?.payload;
+                                const measuredLabel = getMeasuredValueLabelByScenario(activeTab);
+
+                                if (name === 'errorRatioChart' || name === 'errorRatio') {
+                                  const raw = Number(row?.errorRatio);
+                                  const pct = Number.isFinite(raw) ? raw * 100 : null;
+                                  return [pct != null ? `${pct.toFixed(2)}%` : '--', '误差'];
+                                }
+                                if (name === 'odiRenorm') {
+                                  const v = Number(value);
+                                  return [Number.isFinite(v) ? v.toFixed(3) : '--', 'ODI'];
+                                }
+                                if (name === 'measured') {
+                                  const v = Number(value);
+                                  return [Number.isFinite(v) ? `${v.toFixed(3)} m` : '--', measuredLabel];
+                                }
+                                return [value, name];
+                              }}
+                            />
+                        <Bar yAxisId="err" dataKey="errorRatioChart" fill="#cbd5e1" name="误差" radius={[4, 4, 0, 0]} barSize={20} />
+                        <Line yAxisId="odi" type="monotone" dataKey="odiRenorm" stroke="#3b82f6" name="ODI" strokeWidth={2} dot={{ r: 3, fill: '#3b82f6' }} />
+                        <Line yAxisId="right" type="monotone" dataKey="measured" stroke="#ef4444" name={getMeasuredValueLabelByScenario(activeTab)} strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3, fill: '#ef4444' }} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  );
+                })()}
               </div>
             )}
           </section>
@@ -4077,7 +7775,7 @@ const App = () => {
           >
             <div className="flex items-center justify-between gap-3 min-w-0 flex-1">
               <h2 className="text-sm font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
-                <Grid size={16} className="text-blue-500" /> 评估结果响应面板
+                <Grid size={16} className="text-red-500" /> 覆岩扰动综合评价
               </h2>
               <span className="text-[9px] font-mono text-slate-400 bg-white px-2 py-0.5 rounded border border-slate-200 shrink-0">系统就绪: 100%</span>
             </div>
@@ -4093,9 +7791,11 @@ const App = () => {
               <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest">工作面评估点导入</h3>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                      <MapPin size={14} className="text-red-500" /> 工作面评估点导入
+                    </h3>
                     <div className="mt-1 text-[10px] text-slate-400">
-                      2 步向导：先生成评价点，再启动全参插值提取
+                      2 步向导：先生成评价点，再全参插值提取
                     </div>
                   </div>
                   <div className="text-[10px] text-slate-400 font-mono">Step: {stepLength}m</div>
@@ -4180,7 +7880,7 @@ const App = () => {
                   <div className="bg-slate-50 rounded-lg border border-slate-200 p-3">
                     <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">工作面数量</div>
                     <div className="mt-1 text-xl font-mono font-bold text-slate-800">
-                      {generatedPoints?.faceCount ?? 0}
+                      {workfaceCount}
                     </div>
                   </div>
                   <div className="bg-slate-50 rounded-lg border border-slate-200 p-3">
@@ -4194,36 +7894,138 @@ const App = () => {
                 {/* Step 2 */}
                 <div className="pt-2 border-t border-slate-100 space-y-2">
                   <div className="text-[11px] text-slate-500 font-bold">参数提取设置</div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className={`grid gap-2 ${workfaceCount > 0 ? 'grid-cols-1' : 'grid-cols-2'}`}>
                     <div className="bg-slate-50 rounded border border-slate-200 px-3 py-2">
                       <div className="text-[10px] text-slate-500 font-bold">矿井实际采高 M (m)</div>
-                      <input
-                        type="number"
-                        value={mineActualHeightM}
-                        onChange={(e) => setMineActualHeightM(Number(e.target.value))}
-                        className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
-                      />
+                      {workfaceCount > 0 ? (
+                        <div className="mt-1 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <div className="text-[10px] text-slate-400 shrink-0">工作面</div>
+                            <select
+                              className="flex-1 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
+                              value={activeSelectedFaceNo}
+                              onChange={(e) => setActiveSelectedFaceNo(Number(e.target.value))}
+                              title="选择工作面编号（No.1~No.n）"
+                            >
+                              {Array.from({ length: workfaceCount }, (_, i) => i + 1).map((n) => (
+                                <option key={n} value={n}>{`No. ${n}`}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            {Array.from({ length: workfaceCount }, (_, i) => i + 1).map((no) => (
+                              <div key={`mh-${no}`} className={`rounded border px-2 py-1 ${no === activeSelectedFaceNo ? 'border-blue-200 bg-white' : 'border-slate-200 bg-transparent'}`}>
+                                <div className="flex items-center justify-between">
+                                  <div className="text-[10px] text-slate-400 font-bold">{`No. ${no}`}</div>
+                                  {no === activeSelectedFaceNo && (
+                                    <div className="text-[9px] text-blue-600 font-bold">当前</div>
+                                  )}
+                                </div>
+                                <input
+                                  type="number"
+                                  value={Number.isFinite(Number(activeMineHeightByFace?.[no - 1])) ? Number(activeMineHeightByFace?.[no - 1]) : ''}
+                                  onChange={(e) => {
+                                    const v = Number(e.target.value);
+                                    setMineActualHeightM(v);
+                                    setActiveMineHeightByFace((prev) => {
+                                      const arr = Array.isArray(prev) ? [...prev] : [];
+                                      while (arr.length < workfaceCount) arr.push(Number.isFinite(Number(mineActualHeightM)) ? Number(mineActualHeightM) : 4.5);
+                                      arr[no - 1] = v;
+                                      return arr;
+                                    });
+                                  }}
+                                  className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
+                                  title="该工作面的矿井实际采高"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <input
+                          type="number"
+                          value={mineActualHeightM}
+                          onChange={(e) => setMineActualHeightM(Number(e.target.value))}
+                          className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
+                        />
+                      )}
                     </div>
                     <div className="bg-slate-50 rounded border border-slate-200 px-3 py-2">
                       <div className="text-[10px] text-slate-500 font-bold">顶板垮落角 δ (°)</div>
-                      <input
-                        type="number"
-                        value={roofCavingAngleDeg}
-                        onChange={(e) => setRoofCavingAngleDeg(Number(e.target.value))}
-                        className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
-                      />
+                      {workfaceCount > 0 ? (
+                        <div className="mt-1 grid grid-cols-2 gap-2">
+                          {Array.from({ length: workfaceCount }, (_, i) => i + 1).map((no) => (
+                            <div key={`delta-${no}`} className={`rounded border px-2 py-1 ${no === activeSelectedFaceNo ? 'border-blue-200 bg-white' : 'border-slate-200 bg-transparent'}`}>
+                              <div className="flex items-center justify-between">
+                                <div className="text-[10px] text-slate-400 font-bold">{`No. ${no}`}</div>
+                                {no === activeSelectedFaceNo && (
+                                  <div className="text-[9px] text-blue-600 font-bold">当前</div>
+                                )}
+                              </div>
+                              <input
+                                type="number"
+                                value={Number.isFinite(Number(activeRoofAngleByFace?.[no - 1])) ? Number(activeRoofAngleByFace?.[no - 1]) : ''}
+                                onChange={(e) => {
+                                  const v = Number(e.target.value);
+                                  setRoofCavingAngleDeg(v);
+                                  setActiveRoofAngleByFace((prev) => {
+                                    const arr = Array.isArray(prev) ? [...prev] : [];
+                                    while (arr.length < workfaceCount) arr.push(Number.isFinite(Number(roofCavingAngleDeg)) ? Number(roofCavingAngleDeg) : 0);
+                                    arr[no - 1] = v;
+                                    return arr;
+                                  });
+                                }}
+                                className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
+                                title="该工作面的顶板垮落角"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <input
+                          type="number"
+                          value={roofCavingAngleDeg}
+                          onChange={(e) => setRoofCavingAngleDeg(Number(e.target.value))}
+                          className="w-full bg-transparent text-sm font-bold outline-none border-b border-slate-200 focus:border-blue-500"
+                        />
+                      )}
                     </div>
                   </div>
 
-                  <button
-                    className={`w-full rounded text-xs font-bold py-2 border transition-colors ${generatedPoints ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
-                    onClick={handleExtractHighPrecisionParams}
-                    disabled={!generatedPoints}
-                    title={generatedPoints ? '对控制点与评价点进行全参插值提取' : '请先完成“评价点生成”'}
-                    type="button"
-                  >
-                    启动全参插值提取
-                  </button>
+                  {(() => {
+                    const canGeoExtract = (drillholeData?.length >= 3)
+                      && (Object.keys(drillholeLayersById ?? {}).length > 0)
+                      && (boundaryData?.length >= 1)
+                      && (boreholeParamSamples?.Ti?.length >= 3)
+                      && (boreholeParamSamples?.Di?.length >= 3)
+                      && (boreholeParamSamples?.Ei?.length >= 3)
+                      && (boreholeParamSamples?.CoalThk?.length >= 3);
+
+                    return (
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          className={`w-full rounded text-xs font-bold py-2 border transition-colors ${generatedPoints ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                          onClick={handleExtractHighPrecisionParams}
+                          disabled={!generatedPoints}
+                          title={generatedPoints ? '对控制点与评价点进行全参插值提取' : '请先完成“评价点生成”'}
+                          type="button"
+                        >
+                          全参插值提取
+                        </button>
+
+                        <button
+                          className={`w-full rounded text-xs font-bold py-2 border transition-colors ${canGeoExtract ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                          onClick={handleExtractGeologyInterpolatedParams}
+                          disabled={!canGeoExtract}
+                          title={canGeoExtract ? '对边界点与采区坐标点进行地质插值提取（Ti/Ei/Hi/Di/Mi）' : '请先导入：采区边界坐标 + 钻孔坐标 + 钻孔分层，并选择目标煤层'}
+                          type="button"
+                        >
+                          地质插值提取
+                        </button>
+                      </div>
+                    );
+                  })()}
 
                   {!generatedPoints && (
                     <div className="text-[10px] text-slate-400">提示：请先完成 Step①“评价点生成”，再执行 Step②。</div>
@@ -4254,7 +8056,7 @@ const App = () => {
                       className={`rounded text-xs font-bold py-2 border transition-colors ${paramExtractionResult ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
                       onClick={exportEvalPointsFullParamsCsv}
                       disabled={!paramExtractionResult}
-                      title={paramExtractionResult ? '导出全参提取结果（CSV）' : '请先完成“启动全参插值提取”'}
+                      title={paramExtractionResult ? `导出${lastParamExtractionMode === 'geo' ? '地质插值提取' : '全参插值提取'}结果（CSV）` : '请先完成“全参插值提取 / 地质插值提取”'}
                       type="button"
                     >
                       参数导出（CSV）
@@ -4271,19 +8073,44 @@ const App = () => {
               <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2 min-w-0">
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest italic">分级响应详情</h3>
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest italic flex items-center gap-2">
+                      <ListOrdered size={14} className="text-red-500" /> 分级响应详情
+                    </h3>
                     {activeTab === 'surface' && measuredZoningResult?.bins?.length === 5 && (
                       <span className="text-[9px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded font-bold shrink-0">实测分区已启用</span>
                     )}
                   </div>
-                  <Info size={12} className="text-slate-300" />
+                  <div className="relative group shrink-0">
+                    <Info
+                      size={12}
+                      className="text-slate-300 cursor-help"
+                      aria-label="权重取值建议"
+                    />
+                    <div className="pointer-events-none absolute right-0 top-5 z-20 hidden w-72 rounded-lg border border-slate-200 bg-white p-3 text-[10px] text-slate-600 shadow-xl group-hover:block">
+                      <div className="text-[10px] font-bold text-slate-700">权重取值建议</div>
+                      <div className="mt-2 space-y-2">
+                        <div>
+                          <div className="font-bold text-slate-600">沉陷场景：</div>
+                          <div>位移 0.45–0.55｜应力 0.25–0.30｜裂隙 0.20–0.25</div>
+                        </div>
+                        <div>
+                          <div className="font-bold text-slate-600">突水场景：</div>
+                          <div>裂隙 0.55–0.60｜应力 0.25–0.30｜位移 0.15–0.20</div>
+                        </div>
+                        <div>
+                          <div className="font-bold text-slate-600">上行开采：</div>
+                          <div>应力 0.40–0.45｜裂隙 0.30–0.35｜位移 0.20–0.25</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 {/* ODI 计算入口 */}
                 <div className="space-y-2">
                   <div className="grid grid-cols-3 gap-2">
                     <div className="bg-slate-50 rounded border border-slate-200 px-3 py-2">
-                      <div className="text-[10px] text-slate-500 font-bold">位移响应权重 (wd)</div>
+                      <div className="text-[10px] text-slate-500 font-bold">位移权重</div>
                       <input
                         type="number"
                         step="0.01"
@@ -4293,7 +8120,7 @@ const App = () => {
                       />
                     </div>
                     <div className="bg-slate-50 rounded border border-slate-200 px-3 py-2">
-                      <div className="text-[10px] text-slate-500 font-bold">力学响应权重 (wsigma)</div>
+                      <div className="text-[10px] text-slate-500 font-bold">力学权重</div>
                       <input
                         type="number"
                         step="0.01"
@@ -4303,7 +8130,7 @@ const App = () => {
                       />
                     </div>
                     <div className="bg-slate-50 rounded border border-slate-200 px-3 py-2">
-                      <div className="text-[10px] text-slate-500 font-bold">水力响应权重 (wf)</div>
+                      <div className="text-[10px] text-slate-500 font-bold">水力权重</div>
                       <input
                         type="number"
                         step="0.01"
@@ -4314,15 +8141,17 @@ const App = () => {
                     </div>
                   </div>
 
-                  <button
-                    className={`w-full rounded text-xs font-bold py-2 border transition-colors ${paramExtractionResult?.points?.length ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
-                    onClick={handleComputeOdi}
-                    disabled={!paramExtractionResult?.points?.length}
-                    title={paramExtractionResult?.points?.length ? '基于全参提取结果计算 ODI 并生成等值分布' : '请先完成全参插值提取'}
-                    type="button"
-                  >
-                    综合扰动系数计算（ODI）
-                  </button>
+                  <div>
+                    <button
+                      className={`w-full rounded text-xs font-bold py-2 border transition-colors ${paramExtractionResult?.points?.length ? 'bg-white border-slate-200 text-slate-700 hover:border-blue-500 hover:text-blue-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                      onClick={handleComputeOdi}
+                      disabled={!paramExtractionResult?.points?.length}
+                      title={paramExtractionResult?.points?.length ? `基于${lastParamExtractionMode === 'geo' ? '地质插值提取' : '全参插值提取'}结果计算 ODI 并生成等值分布` : '请先完成“全参插值提取 / 地质插值提取”'}
+                      type="button"
+                    >
+                      综合扰动系数计算（ODI）
+                    </button>
+                  </div>
 
                   {(() => {
                     const sum = Number(scenarioWeights.wd) + Number(scenarioWeights.wo) + Number(scenarioWeights.wf);
@@ -4364,10 +8193,6 @@ const App = () => {
                       const cnt = bin.length;
                       const mean = cnt ? (bin.reduce((s, p) => s + p.odiNorm, 0) / cnt) : null;
                       const valLabel = Number.isFinite(lo) && Number.isFinite(hi) ? `${lo.toFixed(3)}-${hi.toFixed(3)}` : '--';
-                      const right = odiResult?.points?.length
-                        ? `${cnt}/${total}${total ? ` (${Math.round((cnt / total) * 100)}%)` : ''}`
-                        : '';
-
                       const active = odiLevelFilter === idx;
 
                       return (
@@ -4382,11 +8207,10 @@ const App = () => {
                           <div>
                             <div className={`text-xs font-bold ${meta.text}`}>{meta.lv} - {meta.msg}</div>
                             <div className="text-[10px] text-slate-500 mt-1 font-mono uppercase tracking-tighter italic">
-                              ODI 区间: {valLabel}{mean != null ? ` / 均值: ${mean.toFixed(3)}` : ''}
+                              ODI 区间: {valLabel}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {right && <div className="text-[10px] text-slate-500 font-mono">{right}</div>}
                             <AlertTriangle size={14} className={`${meta.icon} ${meta.pulse ? 'animate-pulse' : ''}`} />
                           </div>
                         </div>
@@ -4395,7 +8219,7 @@ const App = () => {
                   })()}
                 </div>
 
-                {/* 基于实测约束分区（目前仅地表下沉场景实现） */}
+                {/* 基于实测约束分区 */}
                 <div className="pt-3 border-t border-slate-100 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-[11px] text-slate-500 font-bold uppercase tracking-widest">基于实测约束分区</div>
@@ -4406,7 +8230,11 @@ const App = () => {
 
                   {activeTab === 'surface' ? (
                     <div className="text-[10px] text-slate-500 leading-4">
-                      导入实测地表下沉点后，可按实测值五等分并反推对应 ODI 分区，联动本模块 5 个等级区间。
+                      导入实测地表下沉点后，可按实测值分级并反推对应 ODI 分区，联动本模块 5 个等级区间。
+                    </div>
+                  ) : activeTab === 'aquifer' ? (
+                    <div className="text-[10px] text-slate-500 leading-4">
+                      导入实测破坏高度点后，可按实测值分级并反推对应 ODI 分区，联动本模块 5 个等级区间。
                     </div>
                   ) : (
                     <div className="text-[10px] text-slate-500 leading-4">
@@ -4414,7 +8242,9 @@ const App = () => {
                     </div>
                   )}
 
-                  {activeTab === 'surface' && measuredZoningResult?.bins?.length === 5 && (
+                  {(activeTab === 'surface' || activeTab === 'aquifer') &&
+                    measuredZoningResult?.scenario === activeTab &&
+                    measuredZoningResult?.bins?.length === 5 && (
                     <div className="bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
                       <div className="text-[10px] text-emerald-800 font-bold">分区已生成</div>
                       <div className="text-[10px] text-emerald-700 mt-1">
@@ -4424,61 +8254,103 @@ const App = () => {
                   )}
 
                   {(() => {
-                    const canCompute = activeTab === 'surface' && measuredConstraintData?.length > 0 && !!odiFieldPack?.field;
-                    const title = activeTab !== 'surface'
+                    const canCompute = (activeTab === 'surface' || activeTab === 'aquifer')
+                      && measuredConstraintData?.length > 0
+                      && !!odiFieldPack?.field;
+                    const title = (activeTab !== 'surface' && activeTab !== 'aquifer')
                       ? '该场景暂未实现'
                       : !measuredConstraintData?.length
                         ? '请先导入实测约束数据'
                         : !odiFieldPack?.field
                           ? '请先完成 ODI 计算并生成 ODI 分布场'
-                          : '按实测值五等分并生成 ODI 分区';
+                          : '按实测值分级并生成 ODI 分区';
+
+                    const canComputeError = (activeTab === 'surface' || activeTab === 'aquifer')
+                      && measuredConstraintLines?.length > 0
+                      && !!odiFieldPack?.field;
+                    const canExportError = canComputeError && !!errorAnalysisByLineId?.[selectedMeasuredLineId]?.data?.length;
+                    const errorTitle = (activeTab !== 'surface' && activeTab !== 'aquifer')
+                      ? '该场景暂未实现'
+                      : !measuredConstraintLines?.length
+                        ? '请先导入实测约束数据（多文件=多测线）'
+                        : !odiFieldPack?.field
+                          ? '请先完成 ODI 计算并生成 ODI 分布场'
+                          : '计算误差（实测归一化 vs ODI再归一化）';
 
                     return (
-                      <button
-                        className={`w-full rounded text-xs font-bold py-2 border transition-colors ${canCompute ? 'bg-white border-slate-200 text-slate-700 hover:border-emerald-500 hover:text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
-                        onClick={handleComputeMeasuredZoning}
-                        disabled={!canCompute}
-                        title={title}
-                        type="button"
-                      >
-                        {measuredZoningResult?.bins?.length === 5 ? '重新计算实测分区' : ''}
-                      </button>
+                      <div className="space-y-2">
+                        <button
+                          className={`w-full rounded text-xs font-bold py-2 border transition-colors ${canCompute ? 'bg-white border-slate-200 text-slate-700 hover:border-emerald-500 hover:text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                          onClick={handleComputeMeasuredZoning}
+                          disabled={!canCompute}
+                          title={title}
+                          type="button"
+                        >
+                          {(measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5)
+                            ? '重新计算实测分区'
+                            : '启动实测约束分区'}
+                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            className={`flex-1 rounded text-xs font-bold py-2 border transition-colors ${canComputeError ? 'bg-white border-slate-200 text-slate-700 hover:border-emerald-500 hover:text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                            onClick={handleComputeErrorAnalysis}
+                            disabled={!canComputeError}
+                            title={errorTitle}
+                            type="button"
+                          >
+                            计算误差
+                          </button>
+
+                          <div className="relative flex-1">
+                            <button
+                              ref={errorExportButtonRef}
+                              className={`w-full rounded text-xs font-bold py-2 border transition-colors ${canExportError ? 'bg-white border-slate-200 text-slate-700 hover:border-emerald-500 hover:text-emerald-600' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
+                              onClick={() => {
+                                if (!canExportError) return;
+                                setShowErrorExportMenu((v) => !v);
+                              }}
+                              disabled={!canExportError}
+                              title={canExportError ? '选择导出类型：PNG 或 CSV' : (canComputeError ? '请先计算误差' : errorTitle)}
+                              type="button"
+                            >
+                              误差数据导出
+                            </button>
+
+                            {showErrorExportMenu && canExportError && (
+                              <div
+                                ref={errorExportMenuRef}
+                                className="absolute right-0 mt-2 w-40 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                              >
+                                <button
+                                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
+                                  onClick={() => {
+                                    setShowErrorExportMenu(false);
+                                    handleExportErrorAnalysis('png');
+                                  }}
+                                  type="button"
+                                >
+                                  导出 PNG
+                                </button>
+                                <button
+                                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
+                                  onClick={() => {
+                                    setShowErrorExportMenu(false);
+                                    handleExportErrorAnalysis('csv');
+                                  }}
+                                  type="button"
+                                >
+                                  导出 CSV
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     );
                   })()}
                 </div>
               </section>
-
-              {/* 贯通系数预警面板：仅“含水层扰动场景”显示 */}
-              {activeTab === 'aquifer' && (
-                <section className="bg-white p-6 rounded-2xl text-slate-900 border border-slate-200 shadow-sm relative overflow-hidden group">
-                  {/* 背景大图标修饰 */}
-                  <div className="absolute -right-6 -top-6 opacity-[0.06] group-hover:opacity-[0.10] transition-opacity rotate-12 text-slate-300">
-                    <AlertTriangle size={120} className="text-slate-300" />
-                  </div>
-                  <div className="relative z-10">
-                    <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold mb-3 border-b border-slate-100 pb-2">关键贯通风险预警</div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-4xl font-mono font-bold text-emerald-600 tracking-tighter">K = 0.842</span>
-                      <span className="text-[9px] text-slate-400 uppercase font-mono tracking-widest">贯通系数</span>
-                    </div>
-                    <div className="mt-6 flex flex-col gap-2">
-                      <div className="flex items-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-xs font-bold border border-emerald-200">
-                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></div>
-                        实时监测：评价区域安全
-                      </div>
-                      <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                        <div className="flex justify-between items-center text-[10px]">
-                          <span className="text-slate-500 uppercase tracking-widest">设置富裕系数</span>
-                          <span className="font-mono text-slate-900 underline decoration-emerald-500/50 underline-offset-4">{richFactor}</span>
-                        </div>
-                        <div className="mt-2 h-1 w-full bg-slate-200 rounded-full overflow-hidden">
-                          <div className="h-full bg-emerald-500 w-[84%] opacity-60"></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-              )}
 
               {/* 底部系统自检信息 */}
               <div className="pt-4 border-t border-slate-200">
@@ -4499,10 +8371,10 @@ const App = () => {
             type="button"
           >
             <div className="flex items-center gap-3 min-w-0">
-              <BrainCircuit size={18} className="text-slate-700" />
+              <BrainCircuit size={18} className="text-blue-500" />
               <div className="min-w-0 text-left">
-                <div className="text-sm font-bold text-slate-700 truncate">智能规划建议</div>
-                <div className="text-[10px] text-slate-400 truncate">工作面布局与路径策略提示</div>
+                <div className="text-sm font-bold text-slate-700 truncate">采区参数编辑器</div>
+                <div className="text-[10px] text-slate-400 truncate">采区智能规划参数输入</div>
               </div>
             </div>
             <ChevronDown
@@ -4511,47 +8383,365 @@ const App = () => {
             />
           </button>
 
-          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('planning') ? 'max-h-[500px]' : 'max-h-0'}`}>
-            <div className="px-5 pb-5">
-              <div className="bg-slate-900 text-white rounded-xl border border-slate-900 shadow-sm p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
-                    <DraftingCompass size={16} className="text-white/80" />
-                    智能工作面规划
+          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('planning') ? 'max-h-[calc(100vh-120px)]' : 'max-h-0'}`}>
+            <div className="p-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
+              <div className="space-y-5">
+
+                {/* A: 生产规模 */}
+                <div className="bg-slate-50 p-5 rounded-[2rem] border border-slate-100 transition-all hover:bg-white hover:shadow-md">
+                  <div className="flex items-center gap-2 mb-4">
+                    <ClipboardCheck size={14} className="text-blue-600" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">生产规模配置</span>
                   </div>
-                  <button
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-white/15 bg-white/10 text-[10px] font-bold hover:bg-white/15 transition-colors"
-                    type="button"
-                  >
-                    <Zap size={14} className="text-white/80" /> 启动
-                  </button>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400 uppercase">矿井生产能力（万吨/年）</label>
+                    <input
+                      type="number"
+                      value={planningParams.mineCapacity}
+                      onChange={(e) => setPlanningParams((p) => ({ ...p, mineCapacity: e.target.value }))}
+                      className="w-full bg-white border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 shadow-sm transition-all"
+                    />
+                  </div>
                 </div>
 
-                <div className="mt-4 space-y-3">
-                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                    <div className="flex items-start gap-3">
-                      <ListOrdered size={16} className="text-white/70 mt-0.5" />
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-bold text-white">建议清单</div>
-                        <div className="mt-1 text-[10px] text-white/70 leading-4">
-                          以现有 ODI 分级与空间约束为输入，给出工作面优先级、避让策略与路径规划要点。
-                        </div>
+                {/* B: 回采规模与生产效率 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <BarChart3 size={14} className="text-blue-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">回采规模与生产效率</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">煤层平均厚度（m）</label>
+                      <input
+                        type="number"
+                        value={planningParams.seamThickness}
+                        onChange={(e) => setPlanningParams((p) => ({ ...p, seamThickness: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">煤的容重（t/m³）</label>
+                      <input
+                        type="number"
+                        value={planningParams.coalDensity}
+                        onChange={(e) => setPlanningParams((p) => ({ ...p, coalDensity: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">采出率（0~1）</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最小值</label>
+                        <input
+                          type="number"
+                          value={planningParams.recoveryRateMin}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMin: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Min"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最大值</label>
+                        <input
+                          type="number"
+                          value={planningParams.recoveryRateMax}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMax: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Max"
+                        />
                       </div>
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                    <div className="flex items-start gap-3">
-                      <BrainCircuit size={16} className="text-white/70 mt-0.5" />
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-bold text-white">智能提示</div>
-                        <div className="mt-1 text-[10px] text-white/70 leading-4">
-                          保持浅色工业风框架，关键建议区域使用深色卡片突出科技感。
+                </div>
+
+                {/* B2: 开采方式 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <DraftingCompass size={14} className="text-blue-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">开采方式</span>
+                  </div>
+
+                  {/* 1) 大巷空间位置 */}
+                  <div className="space-y-2">
+                    <div className="text-[12px] font-black text-slate-400">工作面布置方向</div>
+                    <select
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      value={planningParams.roadwayOrientation}
+                      onChange={(e) => setPlanningParams((p) => ({ ...p, roadwayOrientation: String(e.target.value) }))}
+                    >
+                      <option value="x">沿x轴横向布置</option>
+                      <option value="y">沿y轴纵向布置</option>
+                    </select>
+                  </div>
+
+                  <div className="h-px bg-slate-100"></div>
+
+                  {/* 2) 采煤方法选择 */}
+                  <div className="space-y-3">
+                    <div className="text-[12px] font-black text-slate-400">采煤方法选择</div>
+
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">采煤方法</label>
+                      <select
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                        value={planningParams.miningMethod}
+                        onChange={(e) => {
+                          const next = String(e.target.value);
+                          setPlanningParams((p) => {
+                            const n = { ...p, miningMethod: next };
+                            if (next === '综采') {
+                              n.coalPillarMin = '20';
+                              n.coalPillarMax = '30';
+                              n.coalPillarTarget = '25';
+                              n.boundaryPillarMin = '30';
+                              n.boundaryPillarMax = '50';
+                              n.boundaryPillarTarget = '40';
+                            } else {
+                              n.coalPillarMin = '30';
+                              n.coalPillarMax = '50';
+                              n.coalPillarTarget = '40';
+                              n.boundaryPillarMin = '50';
+                              n.boundaryPillarMax = '80';
+                              n.boundaryPillarTarget = '65';
+                            }
+                            return n;
+                          });
+                        }}
+                      >
+                        <option value="综采">综采</option>
+                        <option value="综放">综放</option>
+                      </select>
+                    </div>
+
+                    <div className="h-px bg-slate-100"></div>
+
+                    {/* 3) 煤柱留设约束（合并到本板块底部） */}
+                    <div className="space-y-3">
+                      <div className="text-[12px] font-black text-slate-400">煤柱留设约束</div>
+
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">区段煤柱留设范围（m）</label>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">最小值</label>
+                            <input
+                              type="number"
+                              value={planningParams.coalPillarMin}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, coalPillarMin: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Min"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">最大值</label>
+                            <input
+                              type="number"
+                              value={planningParams.coalPillarMax}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, coalPillarMax: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Max"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">确定值</label>
+                            <input
+                              type="number"
+                              value={planningParams.coalPillarTarget}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, coalPillarTarget: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Target"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">采区边界煤柱留设范围（m）</label>
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">最小值</label>
+                            <input
+                              type="number"
+                              value={planningParams.boundaryPillarMin}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, boundaryPillarMin: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Min"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">最大值</label>
+                            <input
+                              type="number"
+                              value={planningParams.boundaryPillarMax}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, boundaryPillarMax: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Max"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">确定值</label>
+                            <input
+                              type="number"
+                              value={planningParams.boundaryPillarTarget}
+                              onChange={(e) => setPlanningParams((p) => ({ ...p, boundaryPillarTarget: e.target.value }))}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                              placeholder="Target"
+                            />
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
                 </div>
+
+                {/* C: 工作面几何 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Maximize2 size={14} className="text-blue-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">工作面几何参数</span>
+                  </div>
+
+                  {/* 工作面个数：滑块 + 输入编辑框 */}
+                  {(() => {
+                    const nMinRaw = Number(planningParams.faceCountSuggestedMin);
+                    const nMaxRaw = Number(planningParams.faceCountSuggestedMax);
+                    const hasRange = Number.isFinite(nMinRaw) && Number.isFinite(nMaxRaw) && nMaxRaw >= nMinRaw && nMaxRaw >= 1;
+
+                    const minBound = hasRange ? Math.max(1, Math.round(nMinRaw)) : 1;
+                    const maxBound = hasRange ? Math.max(1, Math.round(nMaxRaw)) : 200;
+
+                    const clampN = (v) => {
+                      const n = Math.round(Number(v));
+                      if (!Number.isFinite(n)) return minBound;
+                      return Math.min(maxBound, Math.max(minBound, n));
+                    };
+
+                    const nSel = planningParams.faceCountSelected;
+                    const nSelSafe = (() => {
+                      if (String(nSel ?? '').trim() !== '') return clampN(nSel);
+                      if (hasRange) return clampN((minBound + maxBound) / 2);
+                      return minBound;
+                    })();
+
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[12px] font-black text-slate-400">工作面个数 N（可调）</label>
+                          <span className="text-[10px] text-slate-400 font-bold">范围：{minBound}~{maxBound}，当前：{nSelSafe}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="range"
+                            min={minBound}
+                            max={maxBound}
+                            step={1}
+                            value={nSelSafe}
+                            onChange={(e) => {
+                              const v = clampN(e.target.value);
+                              setPlanningParams((p) => ({ ...p, faceCountSelected: String(v) }));
+                              applyPlannedFaceCountSelection(v);
+                            }}
+                            className="flex-1"
+                          />
+                          <input
+                            type="number"
+                            min={minBound}
+                            max={maxBound}
+                            step={1}
+                            value={nSelSafe}
+                            onChange={(e) => {
+                              const v = clampN(e.target.value);
+                              setPlanningParams((p) => ({ ...p, faceCountSelected: String(v) }));
+                              applyPlannedFaceCountSelection(v);
+                            }}
+                            className="w-20 bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                            title="调节后会自动用可行解集重绘规划工作面"
+                          />
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {hasRange ? '默认方案：N 取可行范围的均值；调节后将自动选取最接近的可行 N 并重绘。' : '提示：尚未生成可行范围时，提供默认范围 1~200 供预设。'}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[12px] font-black text-slate-400">工作面宽度范围（m）</label>
+                      <span className="text-[10px] text-slate-400 font-bold">
+                        工作面个数：{(() => {
+                          const a = String(planningParams.faceCountSuggestedMin ?? '').trim();
+                          const b = String(planningParams.faceCountSuggestedMax ?? '').trim();
+                          if (a && b && a !== b) return `${a}~${b}`;
+                          if (a || b) return `${a || b}`;
+                          return String(workfaceCount ?? 0);
+                        })()}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最小值</label>
+                        <input
+                          type="number"
+                          value={planningParams.faceWidthMin}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, faceWidthMin: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Min"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最大值</label>
+                        <input
+                          type="number"
+                          value={planningParams.faceWidthMax}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, faceWidthMax: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Max"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">工作面推进长度范围（m）</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最小值</label>
+                        <input
+                          type="number"
+                          value={planningParams.faceAdvanceMin}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, faceAdvanceMin: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Min"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最大值</label>
+                        <input
+                          type="number"
+                          value={planningParams.faceAdvanceMax}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, faceAdvanceMax: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Max"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-[2rem] font-bold text-sm shadow-md shadow-blue-200 transition-all active:scale-[0.99] flex items-center justify-center gap-2"
+                  onClick={handleStartIntelligentPlanning}
+                  type="button"
+                >
+                  <Zap size={18} className="text-white/90" /> 启动智能采区规划
+                </button>
               </div>
             </div>
           </div>
@@ -4565,7 +8755,7 @@ const App = () => {
             type="button"
           >
             <div className="flex items-center gap-3 min-w-0">
-              <CalendarClock size={18} className="text-slate-700" />
+              <CalendarClock size={18} className="text-purple-500" />
               <div className="min-w-0 text-left">
                 <div className="text-sm font-bold text-slate-700 truncate">采掘接续计划</div>
                 <div className="text-[10px] text-slate-400 truncate">全周期进度监测</div>
@@ -4614,7 +8804,7 @@ const App = () => {
             type="button"
           >
             <div className="flex items-center gap-3 min-w-0">
-              <CircleDollarSign size={18} className="text-slate-700" />
+              <CircleDollarSign size={18} className="text-amber-500" />
               <div className="min-w-0 text-left">
                 <div className="text-sm font-bold text-slate-700 truncate">工程经济分析</div>
                 <div className="text-[10px] text-slate-400 truncate">产值与成本预估</div>
@@ -4651,7 +8841,7 @@ const App = () => {
                   ].map((row) => (
                     <div key={row.name} className="flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2 text-slate-600">
-                        <CircleDollarSign size={14} className="text-slate-400" />
+                        <CircleDollarSign size={14} className="text-amber-400" />
                         <span>{row.name}</span>
                       </div>
                       <div className="font-mono text-slate-800">{row.value}</div>
