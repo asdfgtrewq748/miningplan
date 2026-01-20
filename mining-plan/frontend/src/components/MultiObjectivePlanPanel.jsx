@@ -65,17 +65,6 @@ export default function MultiObjectivePlanPanel({
         },
       },
       {
-        id: 'disturbance',
-        title: '覆岩扰动优化',
-        subtitle: '优先降低覆岩扰动风险',
-        Icon: ShieldCheck,
-        classes: {
-          active: 'border-emerald-500 bg-emerald-50/30 text-emerald-700 shadow-sm',
-          dot: 'bg-emerald-500',
-          iconActive: 'bg-emerald-500 text-white shadow-md',
-        },
-      },
-      {
         id: 'recovery',
         title: '资源回收最优',
         subtitle: '优先提升资源回收与覆盖率',
@@ -84,6 +73,17 @@ export default function MultiObjectivePlanPanel({
           active: 'border-indigo-500 bg-indigo-50/30 text-indigo-700 shadow-sm',
           dot: 'bg-indigo-500',
           iconActive: 'bg-indigo-500 text-white shadow-md',
+        },
+      },
+      {
+        id: 'disturbance',
+        title: '覆岩扰动优化',
+        subtitle: '优先降低覆岩扰动风险',
+        Icon: ShieldCheck,
+        classes: {
+          active: 'border-emerald-500 bg-emerald-50/30 text-emerald-700 shadow-sm',
+          dot: 'bg-emerald-500',
+          iconActive: 'bg-emerald-500 text-white shadow-md',
         },
       },
       {

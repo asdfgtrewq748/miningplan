@@ -399,6 +399,15 @@ const genPerFaceDeltaGreedy = ({
   const insideThr = requireInside ? (1 - 1e-6) : floor;
   if (!(loops.length === n && omega && !omega.isEmpty?.() && dSet.length)) return null;
 
+  // bbox 剪枝：避免明显不相交时的 expensive overlay。
+  // 当 insideThr<=0 时仍需保留 ratio=0 的候选，只跳过 intersection。
+  let omegaBox = null;
+  try {
+    omegaBox = envToBox(omega.getEnvelopeInternal?.());
+  } catch {
+    omegaBox = null;
+  }
+
   let cumAngleDeg = 0;
   let prevDelta = 0;
   const out = [];
@@ -416,6 +425,14 @@ const genPerFaceDeltaGreedy = ({
       const farA = nearA + d;
       const quad = buildSkewQuadFromRectLoop({ rectLoop, nearAngleDeg: nearA, farAngleDeg: farA });
       if (!quad) continue;
+
+      let bboxDisjoint = false;
+      if (omegaBox) {
+        const quadBox = bboxOfLoop(quad);
+        bboxDisjoint = Boolean(quadBox && !bboxIntersects(quadBox, omegaBox));
+        if (bboxDisjoint && insideThr > 1e-12) continue;
+      }
+
       const facePoly0 = buildJstsPolygonFromLoop(quad);
       if (!facePoly0 || facePoly0.isEmpty?.()) continue;
       let facePoly = facePoly0;
@@ -427,14 +444,18 @@ const genPerFaceDeltaGreedy = ({
       }
       const faceArea = Number(facePoly?.getArea?.());
       if (!(Number.isFinite(faceArea) && faceArea > 1e-9)) continue;
-      let inter = null;
-      try {
-        inter = robustIntersection(omega, facePoly);
-      } catch {
-        inter = null;
+
+      let ia = 0;
+      if (!bboxDisjoint) {
+        let inter = null;
+        try {
+          inter = robustIntersection(omega, facePoly);
+        } catch {
+          inter = null;
+        }
+        const interArea = Number(inter?.getArea?.());
+        ia = (Number.isFinite(interArea) && interArea >= 0) ? interArea : 0;
       }
-      const interArea = Number(inter?.getArea?.());
-      const ia = (Number.isFinite(interArea) && interArea >= 0) ? interArea : 0;
       const ratio = ia > 0 ? (ia / faceArea) : 0;
       if (!(Number.isFinite(ratio) && ratio >= insideThr - 1e-12)) continue;
 
@@ -492,11 +513,40 @@ const genPerFaceDeltaBeam = ({
   const hi = Math.max(Number(deltaMin), Number(deltaMax));
   if (!(loops.length === n && omega && !omega.isEmpty?.() && dSet.length)) return [];
 
-  const evalFace = (rectLoop, nearA, farA) => {
+  // bbox 剪枝 + memo：减少重复 expensive overlay（不改变候选口径/排序）。
+  let omegaBox = null;
+  try {
+    omegaBox = envToBox(omega.getEnvelopeInternal?.());
+  } catch {
+    omegaBox = null;
+  }
+  const evalMemo = new Map();
+
+  const evalFace = (faceIndex, rectLoop, nearA, farA) => {
+    const k = `${String(faceIndex)}|${String(Math.round(Number(nearA) || 0))}|${String(Math.round(Number(farA) || 0))}`;
+    if (evalMemo.has(k)) return evalMemo.get(k);
+
     const quad = buildSkewQuadFromRectLoop({ rectLoop, nearAngleDeg: nearA, farAngleDeg: farA });
-    if (!quad) return null;
+    if (!quad) {
+      evalMemo.set(k, null);
+      return null;
+    }
+
+    let bboxDisjoint = false;
+    if (omegaBox) {
+      const quadBox = bboxOfLoop(quad);
+      bboxDisjoint = Boolean(quadBox && !bboxIntersects(quadBox, omegaBox));
+      if (bboxDisjoint && insideThr > 1e-12) {
+        evalMemo.set(k, null);
+        return null;
+      }
+    }
+
     const facePoly0 = buildJstsPolygonFromLoop(quad);
-    if (!facePoly0 || facePoly0.isEmpty?.()) return null;
+    if (!facePoly0 || facePoly0.isEmpty?.()) {
+      evalMemo.set(k, null);
+      return null;
+    }
     let facePoly = facePoly0;
     try {
       const valid = (typeof facePoly.isValid === 'function') ? Boolean(facePoly.isValid()) : true;
@@ -505,18 +555,31 @@ const genPerFaceDeltaBeam = ({
       // ignore
     }
     const faceArea = Number(facePoly?.getArea?.());
-    if (!(Number.isFinite(faceArea) && faceArea > 1e-9)) return null;
-    let inter = null;
-    try {
-      inter = robustIntersection(omega, facePoly);
-    } catch {
-      inter = null;
+    if (!(Number.isFinite(faceArea) && faceArea > 1e-9)) {
+      evalMemo.set(k, null);
+      return null;
     }
-    const interArea = Number(inter?.getArea?.());
-    const ia = (Number.isFinite(interArea) && interArea >= 0) ? interArea : 0;
+
+    let ia = 0;
+    if (!bboxDisjoint) {
+      let inter = null;
+      try {
+        inter = robustIntersection(omega, facePoly);
+      } catch {
+        inter = null;
+      }
+      const interArea = Number(inter?.getArea?.());
+      ia = (Number.isFinite(interArea) && interArea >= 0) ? interArea : 0;
+    }
     const ratio = ia > 0 ? (ia / faceArea) : 0;
-    if (!(Number.isFinite(ratio) && ratio >= insideThr - 1e-12)) return null;
-    return { ia, ratio, faceArea };
+    if (!(Number.isFinite(ratio) && ratio >= insideThr - 1e-12)) {
+      evalMemo.set(k, null);
+      return null;
+    }
+
+    const out = { ia, ratio, faceArea };
+    evalMemo.set(k, out);
+    return out;
   };
 
   // state fields:
@@ -542,7 +605,7 @@ const genPerFaceDeltaBeam = ({
       for (const d0 of use) {
         const d = clamp(Math.round(Number(d0) || 0), lo, hi);
         const farA = nearA + d;
-        const ev = evalFace(rectLoop, nearA, farA);
+        const ev = evalFace(i, rectLoop, nearA, farA);
         if (!ev) continue;
         const seq = st.seq.concat([d]);
         const sumIa = Number(st.sumIa) + Number(ev.ia);
@@ -1032,12 +1095,110 @@ const ensureValid = (geom, tag, dbg) => {
 
 const robustIntersection = (a, b) => {
   if (!a || !b) return null;
+
+  // 快速早退：空几何 / 包围盒不相交时，intersection 必为空。
+  try {
+    if (a.isEmpty?.() || b.isEmpty?.()) return null;
+  } catch {
+    // ignore
+  }
+  try {
+    const ea = a.getEnvelopeInternal?.();
+    const eb = b.getEnvelopeInternal?.();
+    if (ea && eb) {
+      if (typeof ea.intersects === 'function') {
+        if (!ea.intersects(eb)) return null;
+      } else {
+        const aMinX = Number(ea.getMinX?.());
+        const aMaxX = Number(ea.getMaxX?.());
+        const aMinY = Number(ea.getMinY?.());
+        const aMaxY = Number(ea.getMaxY?.());
+        const bMinX = Number(eb.getMinX?.());
+        const bMaxX = Number(eb.getMaxX?.());
+        const bMinY = Number(eb.getMinY?.());
+        const bMaxY = Number(eb.getMaxY?.());
+        if ([aMinX, aMaxX, aMinY, aMaxY, bMinX, bMaxX, bMinY, bMaxY].every(Number.isFinite)) {
+          if (aMaxX < bMinX || bMaxX < aMinX || aMaxY < bMinY || bMaxY < aMinY) return null;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   try {
     return a.intersection(b);
   } catch {
     // TopologyException 等：走 snap overlay
     try {
       return SnapIfNeededOverlayOp.overlayOp(a, b, OverlayOp.INTERSECTION);
+    } catch {
+      return null;
+    }
+  }
+};
+
+const robustUnion = (a, b) => {
+  if (!a) return b || null;
+  if (!b) return a || null;
+
+  // 空几何短路（等价）
+  try {
+    if (a.isEmpty?.()) return b || null;
+    if (b.isEmpty?.()) return a || null;
+  } catch {
+    // ignore
+  }
+  try {
+    return a.union(b);
+  } catch {
+    try {
+      return SnapIfNeededOverlayOp.overlayOp(a, b, OverlayOp.UNION);
+    } catch {
+      return null;
+    }
+  }
+};
+
+const robustDifference = (a, b) => {
+  if (!a) return null;
+  if (!b) return a;
+
+  // 快速早退：a 为空 -> 空；b 为空 -> a；包围盒不相交 -> a（difference 不变）
+  try {
+    if (a.isEmpty?.()) return null;
+    if (b.isEmpty?.()) return a;
+  } catch {
+    // ignore
+  }
+  try {
+    const ea = a.getEnvelopeInternal?.();
+    const eb = b.getEnvelopeInternal?.();
+    if (ea && eb) {
+      if (typeof ea.intersects === 'function') {
+        if (!ea.intersects(eb)) return a;
+      } else {
+        const aMinX = Number(ea.getMinX?.());
+        const aMaxX = Number(ea.getMaxX?.());
+        const aMinY = Number(ea.getMinY?.());
+        const aMaxY = Number(ea.getMaxY?.());
+        const bMinX = Number(eb.getMinX?.());
+        const bMaxX = Number(eb.getMaxX?.());
+        const bMinY = Number(eb.getMinY?.());
+        const bMaxY = Number(eb.getMaxY?.());
+        if ([aMinX, aMaxX, aMinY, aMaxY, bMinX, bMaxX, bMinY, bMaxY].every(Number.isFinite)) {
+          if (aMaxX < bMinX || bMaxX < aMinX || aMaxY < bMinY || bMaxY < aMinY) return a;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    return a.difference(b);
+  } catch {
+    try {
+      return SnapIfNeededOverlayOp.overlayOp(a, b, OverlayOp.DIFFERENCE);
     } catch {
       return null;
     }
@@ -1153,6 +1314,16 @@ const intersectIntervals = (aList, bList) => {
 
 const isRectInsideOmega = (omega, rect) => {
   if (!omega || !rect) return false;
+
+  // 快速必要条件：包围盒不相交则不可能包含。
+  // 注：仅用于早退，不改变几何口径。
+  try {
+    const ob = envToBox(omega.getEnvelopeInternal?.());
+    const rb = envToBox(rect.getEnvelopeInternal?.());
+    if (ob && rb && !bboxIntersects(ob, rb)) return false;
+  } catch {
+    // ignore
+  }
   try {
     if (typeof omega.covers === 'function' && omega.covers(rect)) return true;
     if (typeof omega.contains === 'function' && omega.contains(rect)) return true;
@@ -2299,6 +2470,10 @@ const compute = (payload) => {
   const forceFullCompute = Boolean(payload?.perFaceTrapezoid) || requestedTopK > 1;
   const fastMode = requestedFast && !forceFullCompute;
 
+  // 可选：严格时间预算（用于需要更快的 UI 响应）。
+  // 默认 false：保持历史口径（含 grace + per-face extra budget）。
+  const STRICT_TIME_BUDGET = Boolean(payload?.strictTimeBudget);
+
   // v1.0：每次 recovery 回包都必须包含 debug.perFace（用于判清 R1/R2/R3）
   const perFaceDebug = {
     enabled: false,
@@ -2345,7 +2520,7 @@ const compute = (payload) => {
       : defaultFullBudgetMs);
   // 宽限：避免轻微超时导致标记 partial（并触发 response.fast=true），同时给收尾/排序留一点空间。
   // 只对 full compute 生效，fastMode 仍保持严格预算。
-  const GRACE_MS = fastMode
+  const GRACE_MS = (fastMode || STRICT_TIME_BUDGET)
     ? 0
     : (Number.isFinite(TIME_BUDGET_MS) ? Math.min(500, Math.max(0, TIME_BUDGET_MS * 0.05)) : 0);
   const deadlineMs = Number.isFinite(TIME_BUDGET_MS) ? (startMs + TIME_BUDGET_MS + GRACE_MS) : Infinity;
@@ -2361,7 +2536,9 @@ const compute = (payload) => {
 
   // per-face refine 额外预算：避免主流程耗尽预算后 per-face 完全不运行（表现为 perFace.generated=0）
   // 默认 260ms，可通过 payload.perFaceExtraBudgetMs 调整。
-  const PER_FACE_EXTRA_BUDGET_MS = clamp(Math.round(Number(toNum(payload?.perFaceExtraBudgetMs) ?? 260)), 0, 2000);
+  const PER_FACE_EXTRA_BUDGET_MS = STRICT_TIME_BUDGET
+    ? 0
+    : clamp(Math.round(Number(toNum(payload?.perFaceExtraBudgetMs) ?? 260)), 0, 2000);
   let perFaceExtraBudgetUsed = false;
   const perFaceTimeExceeded = () => {
     // 主预算未超时：沿用主预算
@@ -2374,6 +2551,15 @@ const compute = (payload) => {
 
   // 资源回收：不设覆盖率硬阈值（仅几何硬约束）。
   const COVERAGE_MIN = 0;
+
+  // v1.2：工程验收口径
+  // - fullCover: 要求“非煤柱区域”达到指定覆盖率
+  // - ignoreCoalPillarsInCoverage: 覆盖/残煤计算时扣除中间煤柱区（默认跟随 fullCover）
+  const FULL_COVER_ENABLED = Boolean(payload?.fullCover);
+  const FULL_COVER_MIN = clamp(Number(toNum(payload?.fullCoverMin) ?? 0.995), 0, 1);
+  const IGNORE_COAL_PILLARS_IN_COVERAGE = Boolean(payload?.ignoreCoalPillarsInCoverage ?? FULL_COVER_ENABLED);
+  const FULL_COVER_PATCH_ENABLED = Boolean(payload?.fullCoverPatch ?? FULL_COVER_ENABLED);
+  const FULL_COVER_PATCH_BUDGET_MS = clamp(Math.round(Number(toNum(payload?.fullCoverPatchMaxTimeMs) ?? 1200)), 100, 8000);
 
   const responseBase = {
     ok: false,
@@ -2411,6 +2597,49 @@ const compute = (payload) => {
     version: SMART_RESOURCE_VERSION,
   };
 
+  // 进度上报：用于前端“计算中…”后显示当前尝试/可行计数。
+  // 必须节流，避免高频 postMessage 拖慢几何计算。
+  let lastProgressMs = nowMs();
+  let lastAttemptedSent = 0;
+  const PROGRESS_THROTTLE_MS = 180;
+  const PROGRESS_MIN_DELTA = 80;
+  const maybePostProgress = (phase) => {
+    try {
+      const attempted = Number(responseBase?.attemptSummary?.attemptedCombos ?? 0);
+      const feasible = Number(responseBase?.attemptSummary?.feasibleCombos ?? 0);
+      const t = nowMs();
+      if ((attempted - lastAttemptedSent) < PROGRESS_MIN_DELTA && (t - lastProgressMs) < PROGRESS_THROTTLE_MS) return;
+      lastAttemptedSent = attempted;
+      lastProgressMs = t;
+
+      const denom = (Number.isFinite(TIME_BUDGET_MS) && TIME_BUDGET_MS < Infinity)
+        ? Math.max(1, Number(TIME_BUDGET_MS) + Number(GRACE_MS || 0))
+        : null;
+      const percent = (denom != null)
+        ? Math.max(0, Math.min(99, Math.floor(((t - startMs) / denom) * 100)))
+        : null;
+
+      self.postMessage({
+        type: 'progress',
+        payload: {
+          mode: 'smart-resource',
+          reqSeq,
+          cacheKey,
+          axis: originalAxis,
+          fast: fastMode,
+          progress: {
+            phase: String(phase ?? ''),
+            percent,
+            attemptedCombos: attempted,
+            feasibleCombos: feasible,
+          },
+        },
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   const bumpFail = (code) => {
     const k = String(code || 'UNKNOWN');
     const cur = Number(responseBase.attemptSummary.failTypes[k] ?? 0);
@@ -2419,6 +2648,7 @@ const compute = (payload) => {
 
   const boundaryLoopWorldRaw = Array.isArray(payload?.boundaryLoopWorld) ? payload.boundaryLoopWorld : [];
   const boundaryLoopWorld = swapXY ? swapXYPoints(boundaryLoopWorldRaw) : boundaryLoopWorldRaw;
+  maybePostProgress('初始化');
   if (boundaryLoopWorldRaw.length < 3) {
     responseBase.failedReason = '采区边界点不足/退化';
     bumpFail('BOUNDARY_TOO_FEW');
@@ -2902,6 +3132,7 @@ const compute = (payload) => {
     let inRatioMinUsed = IN_RATIO_MIN;
 
     const strictOk = built && actualN === N && rectLoopsLocal.length === N && Number.isFinite(rectAreaTotal) && rectAreaTotal > 1e-6;
+    const builtViaStrict = Boolean(strictOk);
     if (!strictOk) {
       const tryList = (() => {
         if (!AUTO_RELAX_INRATIO) return [IN_RATIO_MIN];
@@ -3075,6 +3306,9 @@ const compute = (payload) => {
         loops: omegaLoops,
       },
       render: {
+        // 性能标记：若该候选由严格包含（rect ⊆ omegaSafe）生成，则对展示Ω做裁剪时无需做昂贵 intersection，裁剪结果等于原矩形。
+        // 注意：omegaSafe 是 omega 的轻微收缩子集，因此 rect ⊆ omegaSafe => rect ⊆ omega（展示Ω）。
+        strictInsideOmega: builtViaStrict,
         omegaLoops: omegaLoops,
         rectLoops: (() => {
           const pivot = thetaPivot || { x: 0, y: 0 };
@@ -3817,6 +4051,7 @@ const compute = (payload) => {
               if (timeExceeded()) break;
               responseBase.attemptSummary.attemptedCombos += 1;
               responseBase.attemptSummary.Bsearch.coarseEvaluatedBCount += 1;
+              if ((responseBase.attemptSummary.attemptedCombos % 60) === 0) maybePostProgress('粗搜');
               const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B, thetaDeg, innerPolyTheta, thetaRad, thetaPivot: pivot });
               if (!c) continue;
               responseBase.attemptSummary.feasibleCombos += 1;
@@ -3891,6 +4126,7 @@ const compute = (payload) => {
             if (timeExceeded()) break;
             responseBase.attemptSummary.attemptedCombos += 1;
             responseBase.attemptSummary.Bsearch.coarseEvaluatedBCount += 1;
+            if ((responseBase.attemptSummary.attemptedCombos % 40) === 0) maybePostProgress('粗搜');
             const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B, thetaDeg, innerPolyTheta, thetaRad, thetaPivot: pivot });
             if (!c) continue;
             responseBase.attemptSummary.feasibleCombos += 1;
@@ -3920,6 +4156,7 @@ const compute = (payload) => {
                 if (seenB.has(String(B))) continue;
                 responseBase.attemptSummary.attemptedCombos += 1;
                 responseBase.attemptSummary.Bsearch.fineEvaluatedBCount += 1;
+                if ((responseBase.attemptSummary.attemptedCombos % 40) === 0) maybePostProgress('精修');
                 const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B, thetaDeg, innerPolyTheta, thetaRad, thetaPivot: pivot });
                 if (!c) continue;
                 responseBase.attemptSummary.feasibleCombos += 1;
@@ -4631,12 +4868,922 @@ const compute = (payload) => {
   // v1.0 topK：严格截断（<=topK），不再强行“覆盖全 N”（避免 candidatesCount 波动）
   // fast 预览：只输出 top1（配合 App.jsx 的 fast+refine 链路）
   const wantK = fastMode ? 1 : Math.max(1, Math.round(Number(topK) || 10));
-  const candidates = (rankedAll ?? []).slice(0, wantK);
+  let candidates = (rankedAll ?? []).slice(0, wantK);
+
+  // === v1.1：工程化全覆盖（分段变宽 + 残煤清扫 cleanupResidual）===
+  const segCfg0 = (payload?.segmentWidth && typeof payload.segmentWidth === 'object') ? payload.segmentWidth : {};
+  const cleanCfg0 = (payload?.cleanupResidual && typeof payload.cleanupResidual === 'object') ? payload.cleanupResidual : {};
+  const SEG_ENABLED = Boolean(segCfg0?.enabled);
+  const CLEAN_ENABLED = Boolean(cleanCfg0?.enabled);
+  const SEG_LT_M = clamp(Number(toNum(segCfg0?.LtM) ?? 50), 5, 500);
+  const SEG_GMAX = Math.max(0, Number(toNum(segCfg0?.gmax) ?? 0.4)); // m/m
+  const DB_MAIN = Math.max(0, Number(toNum(segCfg0?.deltaBMaxMainM) ?? 5));
+  const DB_CLEAN = Math.max(DB_MAIN, Number(toNum(segCfg0?.deltaBMaxCleanupM) ?? 10));
+  const DB_STEP = clamp(Number(toNum(segCfg0?.deltaBStepM) ?? 1), 0.5, 10);
+  const SEG_COUNT_MAIN = clamp(Math.round(Number(toNum(segCfg0?.segmentCountMaxMain) ?? 3)), 2, 3);
+  const SEG_COUNT_CLEAN = clamp(Math.round(Number(toNum(segCfg0?.segmentCountMaxCleanup) ?? 3)), 2, 3);
+  const BREAK2 = Array.isArray(segCfg0?.breakRatios2) ? segCfg0.breakRatios2.map((x) => Number(x)).filter((v) => Number.isFinite(v) && v > 0.05 && v < 0.95) : [0.4, 0.5, 0.6];
+  const BREAK3 = Array.isArray(segCfg0?.breakRatios3)
+    ? segCfg0.breakRatios3
+      .map((pair) => (Array.isArray(pair) ? pair.slice(0, 2) : []))
+      .map((pair) => pair.map((x) => Number(x)))
+      .filter((pair) => pair.length === 2 && pair.every((v) => Number.isFinite(v) && v > 0.05 && v < 0.95) && pair[1] > pair[0] + 0.05)
+    : [[0.35, 0.65], [0.4, 0.7], [0.45, 0.75]];
+  const CLEAN_MAX_FACES = clamp(Math.round(Number(toNum(cleanCfg0?.maxFacesToAdjust) ?? 5)), 1, 10);
+  const CLEAN_MAX_REPL = clamp(Math.round(Number(toNum(cleanCfg0?.maxReplacements) ?? 2)), 0, 5);
+  const CLEAN_ALLOW_ADD = Boolean(cleanCfg0?.allowAddShortFace);
+  const CLEAN_MAX_NEW = clamp(Math.round(Number(toNum(cleanCfg0?.maxNewFaces) ?? 1)), 0, 2);
+  const CLEAN_BUDGET_MS = clamp(Math.round(Number(toNum(cleanCfg0?.maxTimeMs) ?? 1500)), 100, 8000);
+
+  // 预先构造展示Ω（world 坐标）
+  let sharedOmegaPoly = null;
+  try {
+    const omegaLoopsWorld0 = Array.isArray(candidates?.[0]?.render?.omegaLoops) ? candidates[0].render.omegaLoops : [];
+    const omegaLoop0 = omegaLoopsWorld0.find((l) => Array.isArray(l) && l.length >= 3) || null;
+    sharedOmegaPoly = omegaLoop0 ? buildJstsPolygonFromLoop(omegaLoop0) : null;
+    if (sharedOmegaPoly && sharedOmegaPoly.isEmpty?.()) sharedOmegaPoly = null;
+  } catch {
+    sharedOmegaPoly = null;
+  }
+
+  // cleanupResidual：只在 full compute 且候选存在时运行，避免拖慢 fast 预览。
+  const cleanupSummary = {
+    enabled: Boolean(SEG_ENABLED && CLEAN_ENABLED && !fastMode && sharedOmegaPoly),
+    ran: false,
+    replacements: 0,
+    addedFaces: 0,
+    residualAreaBefore: null,
+    residualAreaAfter: null,
+    coverageBefore: null,
+    coverageAfter: null,
+    elapsedMs: null,
+    note: '',
+  };
+
+  const buildUnionFromFaceLoops = (facesLoops) => {
+    let u = null;
+    for (const loop of facesLoops ?? []) {
+      const poly = buildJstsPolygonFromLoop(loop);
+      if (!poly || poly.isEmpty?.()) continue;
+      u = u ? (robustUnion(u, poly) || u.union?.(poly) || u) : poly;
+    }
+    return u;
+  };
+
+  const computeCoverageFromFaceLoops = (omegaPoly, facesLoops) => {
+    if (!omegaPoly || omegaPoly.isEmpty?.()) return { coveredArea: 0, coverageRatio: 0, union: null };
+    const u0 = buildUnionFromFaceLoops(facesLoops);
+    if (!u0 || u0.isEmpty?.()) return { coveredArea: 0, coverageRatio: 0, union: u0 };
+    const inter = robustIntersection(omegaPoly, u0);
+    const a = Number(inter?.getArea?.());
+    const coveredArea = Number.isFinite(a) && a > 0 ? a : 0;
+    const denom = (Number.isFinite(omegaAreaForCoverage) && omegaAreaForCoverage > 1e-9) ? omegaAreaForCoverage : 0;
+    const coverageRatio = denom > 1e-12 ? (coveredArea / denom) : 0;
+    return { coveredArea, coverageRatio, union: u0 };
+  };
+
+  const genDeltaList = (maxAbs) => {
+    const m = Math.max(0, Number(maxAbs) || 0);
+    const step = Math.max(0.5, Number(DB_STEP) || 1);
+    const out = [];
+    for (let d = 0; d <= m + 1e-9; d += step) out.push(Math.round(d * 1000) / 1000);
+    return out.length ? out : [0];
+  };
+
+  const buildSegmentedFaceLoop = ({ baseBox, side, breakRatios, widths, wsHard, prevBox, nextBox }) => {
+    if (!baseBox) return null;
+    const x0 = Number(baseBox.minX);
+    const x1 = Number(baseBox.maxX);
+    const y0 = Number(baseBox.minY);
+    const y1 = Number(baseBox.maxY);
+    if (!([x0, x1, y0, y1].every(Number.isFinite)) || !(x1 > x0) || !(y1 > y0)) return null;
+
+    const B0 = y1 - y0;
+    const Bs0 = (Array.isArray(widths) ? widths : []).map((b) => clamp(Number(b) || B0, Number(Bmin), Number(Bmax)));
+    if (!Bs0.length) return null;
+
+    // 坡度/过渡约束：相邻段宽度变化不能超过 gmax*Lt
+    const maxJump = Math.max(0, SEG_GMAX) * Math.max(0, SEG_LT_M);
+    for (let i = 1; i < Bs0.length; i++) {
+      if (Math.abs(Bs0[i] - Bs0[i - 1]) > maxJump + 1e-9) return null;
+    }
+
+    // 邻面煤柱硬约束：不允许把煤柱挤到 wsHard 以下
+    const hard = Math.max(0, Number(wsHard) || 0);
+    let yMinAllowed = -Infinity;
+    let yMaxAllowed = +Infinity;
+    if (prevBox && Number.isFinite(prevBox.maxY)) yMinAllowed = Number(prevBox.maxY) + hard;
+    if (nextBox && Number.isFinite(nextBox.minY)) yMaxAllowed = Number(nextBox.minY) - hard;
+
+    // 控制点：沿 x 方向的宽度 piecewise（在 break 附近做 Lt 过渡）
+    const L = x1 - x0;
+    const breaks = (Array.isArray(breakRatios) ? breakRatios : [])
+      .map((r) => clamp(Number(r), 0.05, 0.95))
+      .map((r) => x0 + r * L)
+      .filter((v) => Number.isFinite(v))
+      .sort((a, b) => a - b);
+    const lt2 = SEG_LT_M / 2;
+
+    const cps = [];
+    cps.push({ x: x0, B: Bs0[0] });
+    for (let i = 0; i < breaks.length && i + 1 < Bs0.length; i++) {
+      const bx = breaks[i];
+      const xl = clamp(bx - lt2, x0, x1);
+      const xr = clamp(bx + lt2, x0, x1);
+      if (xr <= xl + 1e-6) continue;
+      cps.push({ x: xl, B: Bs0[i] });
+      cps.push({ x: xr, B: Bs0[i + 1] });
+    }
+    cps.push({ x: x1, B: Bs0[Bs0.length - 1] });
+
+    // 去重（同 x 取最后一个 B）
+    const cps2 = [];
+    for (const c of cps) {
+      const prev = cps2[cps2.length - 1];
+      if (prev && Math.abs(prev.x - c.x) <= 1e-6) {
+        prev.B = c.B;
+      } else {
+        cps2.push({ x: c.x, B: c.B });
+      }
+    }
+    if (cps2.length < 2) return null;
+
+    // 根据 side 生成外轮廓（工程口径：只向残煤侧变宽，另一侧保持不动）
+    if (String(side) === 'top') {
+      const yBot = y0;
+      // 约束上边界不能超过 yMaxAllowed
+      const tops = cps2.map((c) => ({ x: c.x, y: Math.min(yBot + c.B, yMaxAllowed) }));
+      if (tops.some((t) => !(Number.isFinite(t.y) && t.y > yBot + 1e-6))) return null;
+      const loop = [{ x: x0, y: yBot }, { x: x1, y: yBot }];
+      for (let i = tops.length - 1; i >= 0; i--) loop.push({ x: tops[i].x, y: tops[i].y });
+      loop.push({ x: x0, y: yBot });
+      return loop;
+    }
+
+    if (String(side) === 'bottom') {
+      const yTop = y1;
+      const bots = cps2.map((c) => ({ x: c.x, y: Math.max(yTop - c.B, yMinAllowed) }));
+      if (bots.some((t) => !(Number.isFinite(t.y) && t.y < yTop - 1e-6))) return null;
+      const loop = [{ x: x0, y: yTop }, { x: x1, y: yTop }];
+      for (let i = bots.length - 1; i >= 0; i--) loop.push({ x: bots[i].x, y: bots[i].y });
+      loop.push({ x: x0, y: yTop });
+      return loop;
+    }
+
+    return null;
+  };
+
+  const pickResidualSideForFace = (residualPoly, faceBox) => {
+    if (!residualPoly || residualPoly.isEmpty?.() || !faceBox) return null;
+    const pad = Math.max(1, Math.min(20, (Number(faceBox.maxY) - Number(faceBox.minY)) * 0.2));
+    const win = rectPoly(faceBox.minX - pad, faceBox.minY - pad, faceBox.maxX + pad, faceBox.maxY + pad);
+    const near = robustIntersection(residualPoly, win);
+    const a = Number(near?.getArea?.());
+    if (!(Number.isFinite(a) && a > 1e-6)) return null;
+    let cy = null;
+    try {
+      const c = near.getCentroid?.();
+      const cc = c?.getCoordinate?.();
+      cy = Number(cc?.y);
+    } catch {
+      cy = null;
+    }
+    if (!Number.isFinite(cy)) return null;
+    const yMid = (Number(faceBox.minY) + Number(faceBox.maxY)) / 2;
+    return cy >= yMid ? 'top' : 'bottom';
+  };
+
+  const estimateResidualNearFaceArea = (residualPoly, faceBox) => {
+    if (!residualPoly || residualPoly.isEmpty?.() || !faceBox) return 0;
+    const padX = Math.max(5, Math.min(60, (Number(faceBox.maxX) - Number(faceBox.minX)) * 0.15));
+    const padY = Math.max(5, Math.min(60, (Number(faceBox.maxY) - Number(faceBox.minY)) * 0.3));
+    const win = rectPoly(faceBox.minX - padX, faceBox.minY - padY, faceBox.maxX + padX, faceBox.maxY + padY);
+    const near = robustIntersection(residualPoly, win);
+    const a = Number(near?.getArea?.());
+    return (Number.isFinite(a) && a > 0) ? a : 0;
+  };
+
+  const tryCleanupResidual = () => {
+    if (!cleanupSummary.enabled) return null;
+    if (!candidates?.length) return null;
+    if (!(CLEAN_MAX_REPL >= 1)) return null;
+
+    const base = candidates[0];
+    const baseRectLoops = Array.isArray(base?.render?.rectLoops) ? base.render.rectLoops : [];
+    if (!baseRectLoops.length) return null;
+
+    // 安全门：分段变宽默认按 bbox(x/y) 构造，仅对“轴对齐矩形面”可靠。
+    // 如果出现旋转矩形/斜面（theta!=0 等），直接跳过 cleanup，避免生成错误几何。
+    try {
+      for (let i = 0; i < Math.min(3, baseRectLoops.length); i++) {
+        const poly = buildJstsPolygonFromLoop(baseRectLoops[i]);
+        if (!isAxisAlignedRectanglePolygon(poly)) {
+          cleanupSummary.note = 'skip: non-axis-aligned faces';
+          return null;
+        }
+      }
+    } catch {
+      cleanupSummary.note = 'skip: axis-check failed';
+      return null;
+    }
+
+    const t0 = nowMs();
+    const deadline = t0 + CLEAN_BUDGET_MS;
+    const exceeded = () => nowMs() > deadline;
+
+    const wsHard = Math.max(0, Number(wsMin) || 0);
+    const boxes = baseRectLoops.map((loop) => bboxOfLoop(loop)).map((bb) => bb || null);
+    const baseWidths = boxes.map((bb) => (bb ? (bb.maxY - bb.minY) : null));
+    const b0 = Number.isFinite(Number(base?.B)) ? Number(base.B) : (Number.isFinite(Number(baseWidths?.[0])) ? Number(baseWidths[0]) : null);
+    if (!Number.isFinite(b0)) return null;
+
+    // 初始 coverage/residual
+    const cov0 = computeCoverageFromFaceLoops(sharedOmegaPoly, baseRectLoops);
+    cleanupSummary.coverageBefore = cov0.coverageRatio;
+
+    let union0 = cov0.union;
+    if (!union0 || union0.isEmpty?.()) return null;
+    let residual0 = robustDifference(sharedOmegaPoly, union0);
+    residual0 = residual0 ? ensureValid(residual0, 'residual0') : null;
+    const rA0 = Number(residual0?.getArea?.());
+    cleanupSummary.residualAreaBefore = Number.isFinite(rA0) ? rA0 : null;
+    if (!(Number.isFinite(rA0) && rA0 > 1e-6)) {
+      cleanupSummary.note = 'residual≈0';
+      return null;
+    }
+
+    let curLoops = baseRectLoops.slice();
+    let curUnion = union0;
+    let curResidual = residual0;
+
+    const mkDeltaCandidates = (maxAbs) => {
+      const ds = genDeltaList(maxAbs);
+      // 为控规模：主面用全步长，cleanup 用稍稀疏（仍覆盖 0..max）
+      if (!(maxAbs > 5)) return ds;
+      const out = [];
+      for (const d of ds) {
+        if (d === 0 || Math.abs(d % (DB_STEP * 2)) <= 1e-9 || d >= maxAbs - 1e-9) out.push(d);
+      }
+      return out.length ? out : ds;
+    };
+
+    const buildVariantsForFace = ({ faceIndex, purpose }) => {
+      const idx = faceIndex - 1;
+      const bb = boxes[idx];
+      if (!bb) return [];
+      const side = pickResidualSideForFace(curResidual, bb);
+      if (!side) return [];
+
+      const prevBox = (idx - 1 >= 0) ? boxes[idx - 1] : null;
+      const nextBox = (idx + 1 < boxes.length) ? boxes[idx + 1] : null;
+      const baseB = Number.isFinite(Number(baseWidths[idx])) ? Number(baseWidths[idx]) : (bb.maxY - bb.minY);
+      const maxAbs = (purpose === 'main') ? DB_MAIN : DB_CLEAN;
+      const segMax = (purpose === 'main') ? SEG_COUNT_MAIN : SEG_COUNT_CLEAN;
+      const deltas = mkDeltaCandidates(maxAbs);
+
+      const out = [];
+      // 2 段：前段保持 baseB，后段向残煤侧变宽
+      if (segMax >= 2) {
+        for (const r of BREAK2) {
+          for (const d of deltas) {
+            const widths = [baseB, baseB + d];
+            const loop = buildSegmentedFaceLoop({ baseBox: bb, side, breakRatios: [r], widths, wsHard, prevBox, nextBox });
+            if (loop) out.push({ loop, side, seg: 2, dList: [0, d], breaks: [r] });
+          }
+        }
+      }
+
+      // 3 段：只做两种典型结构，避免组合爆炸
+      if (segMax >= 3) {
+        for (const pair of BREAK3) {
+          const r1 = pair[0];
+          const r2 = pair[1];
+          for (const d of deltas) {
+            // 结构 A：后两段变宽（贴边扫尾）
+            {
+              const widths = [baseB, baseB + d, baseB + d];
+              const loop = buildSegmentedFaceLoop({ baseBox: bb, side, breakRatios: [r1, r2], widths, wsHard, prevBox, nextBox });
+              if (loop) out.push({ loop, side, seg: 3, dList: [0, d, d], breaks: [r1, r2] });
+            }
+            // 结构 B：只最后一段变宽（端头补偿）
+            {
+              const widths = [baseB, baseB, baseB + d];
+              const loop = buildSegmentedFaceLoop({ baseBox: bb, side, breakRatios: [r1, r2], widths, wsHard, prevBox, nextBox });
+              if (loop) out.push({ loop, side, seg: 3, dList: [0, 0, d], breaks: [r1, r2] });
+            }
+          }
+        }
+      }
+
+      return out;
+    };
+
+    const isNonOverlapping = (idxReplace, loopNew) => {
+      const bbNew = bboxOfLoop(loopNew);
+      if (!bbNew) return false;
+      const polyNew = buildJstsPolygonFromLoop(loopNew);
+      if (!polyNew || polyNew.isEmpty?.()) return false;
+      for (let j = 0; j < curLoops.length; j++) {
+        if (j === idxReplace) continue;
+        const loopJ = curLoops[j];
+        const bbJ = bboxOfLoop(loopJ);
+        if (bbJ && !bboxIntersects(
+          { minX: bbNew.minX, maxX: bbNew.maxX, minY: bbNew.minY, maxY: bbNew.maxY },
+          { minX: bbJ.minX, maxX: bbJ.maxX, minY: bbJ.minY, maxY: bbJ.maxY }
+        )) continue;
+        const polyJ = buildJstsPolygonFromLoop(loopJ);
+        if (!polyJ || polyJ.isEmpty?.()) continue;
+        const inter = robustIntersection(polyNew, polyJ);
+        const a = Number(inter?.getArea?.());
+        if (Number.isFinite(a) && a > 1e-6) return false;
+      }
+      return true;
+    };
+
+    const applied = [];
+    for (let rep = 0; rep < CLEAN_MAX_REPL; rep++) {
+      if (exceeded()) break;
+      const rA = Number(curResidual?.getArea?.());
+      if (!(Number.isFinite(rA) && rA > 1e-6)) break;
+
+      // 选取最需要修补的面（与 residual 近邻面积最大）
+      const scores = [];
+      for (let i = 0; i < boxes.length; i++) {
+        const bb = boxes[i];
+        if (!bb) continue;
+        const nearA = estimateResidualNearFaceArea(curResidual, bb);
+        if (nearA > 1e-6) scores.push({ faceIndex: i + 1, nearA });
+      }
+      scores.sort((a, b) => (b.nearA - a.nearA));
+      const targetFaces = scores.slice(0, CLEAN_MAX_FACES);
+      if (!targetFaces.length) break;
+
+      let bestMove = null;
+      for (const tf of targetFaces) {
+        if (exceeded()) break;
+        const idx = tf.faceIndex - 1;
+        // 主面微调优先，再做 cleanup 幅度
+        const purposes = ['main', 'cleanup'];
+        for (const purpose of purposes) {
+          if (exceeded()) break;
+          const variants = buildVariantsForFace({ faceIndex: tf.faceIndex, purpose });
+          for (const v of variants) {
+            if (exceeded()) break;
+            if (!isNonOverlapping(idx, v.loop)) continue;
+            const poly = buildJstsPolygonFromLoop(v.loop);
+            if (!poly || poly.isEmpty?.()) continue;
+            const gainGeom = robustIntersection(curResidual, poly);
+            const gain = Number(gainGeom?.getArea?.());
+            const gainA = (Number.isFinite(gain) && gain > 0) ? gain : 0;
+            // 惩罚：段数 + 变宽幅度（鼓励小改动）
+            const dSum = v.dList.reduce((s, x) => s + Math.abs(Number(x) || 0), 0);
+            const penalty = (v.seg - 1) * 0.2 + dSum * 0.01;
+            const score = gainA - penalty;
+            if (!bestMove || score > bestMove.score + 1e-9) {
+              bestMove = { ...v, faceIndex: tf.faceIndex, idx, gainA, score, purpose };
+            }
+          }
+          if (bestMove && bestMove.gainA > 1e-6) break;
+        }
+      }
+
+      if (!bestMove || !(bestMove.gainA > 1e-6)) break;
+      curLoops[bestMove.idx] = bestMove.loop;
+      applied.push(bestMove);
+      cleanupSummary.replacements = applied.length;
+
+      // 更新 union/residual
+      curUnion = buildUnionFromFaceLoops(curLoops);
+      if (!curUnion || curUnion.isEmpty?.()) break;
+      curResidual = robustDifference(sharedOmegaPoly, curUnion);
+      curResidual = curResidual ? ensureValid(curResidual, 'residual1') : null;
+    }
+
+    // 新增短面（工程兜底）：仅处理“残煤完全在条带组上方/下方”的简单情况。
+    // 更复杂的内凹残煤仍由“替换变宽”去清扫，避免引入重叠/煤柱冲突。
+    if (CLEAN_ALLOW_ADD && CLEAN_MAX_NEW > 0 && !exceeded()) {
+      try {
+        const rA = Number(curResidual?.getArea?.());
+        if (Number.isFinite(rA) && rA > 1e-6) {
+          const env = curResidual.getEnvelopeInternal?.();
+          const rBox = envToBox(env);
+
+          const allMinY = Math.min(...boxes.map((bb) => Number(bb?.minY)).filter((v) => Number.isFinite(v)));
+          const allMaxY = Math.max(...boxes.map((bb) => Number(bb?.maxY)).filter((v) => Number.isFinite(v)));
+          const allMinX = Math.min(...boxes.map((bb) => Number(bb?.minX)).filter((v) => Number.isFinite(v)));
+          const allMaxX = Math.max(...boxes.map((bb) => Number(bb?.maxX)).filter((v) => Number.isFinite(v)));
+
+          const wsHard = Math.max(0, Number(wsMin) || 0);
+
+          // 判断残煤是否整体位于上方/下方
+          const isAbove = Number.isFinite(rBox?.minY) && Number.isFinite(allMaxY) && (rBox.minY >= allMaxY + wsHard + 1e-6);
+          const isBelow = Number.isFinite(rBox?.maxY) && Number.isFinite(allMinY) && (rBox.maxY <= allMinY - wsHard - 1e-6);
+
+          if ((isAbove || isBelow) && Number.isFinite(allMinX) && Number.isFinite(allMaxX) && Number.isFinite(rBox?.minX) && Number.isFinite(rBox?.maxX)) {
+            const x0 = clamp(rBox.minX, allMinX, allMaxX);
+            const x1 = clamp(rBox.maxX, allMinX, allMaxX);
+            if (x1 > x0 + 1e-3) {
+              const rH = Number.isFinite(rBox.maxY - rBox.minY) ? (rBox.maxY - rBox.minY) : Number(Bmin);
+              const Bnew = clamp(Math.max(Number(Bmin), rH), Number(Bmin), Number(Bmax));
+              let y0, y1;
+              if (isAbove) {
+                y0 = allMaxY + wsHard;
+                y1 = y0 + Bnew;
+              } else {
+                y1 = allMinY - wsHard;
+                y0 = y1 - Bnew;
+              }
+
+              // 不要越出 Ω 的包络太多（只作为近似短面，最终会被 Ω 裁剪）
+              const newLoop = [
+                { x: x0, y: y0 },
+                { x: x1, y: y0 },
+                { x: x1, y: y1 },
+                { x: x0, y: y1 },
+                { x: x0, y: y0 },
+              ];
+
+              const isNonOverlapAll = (() => {
+                const bbNew = bboxOfLoop(newLoop);
+                const polyNew = buildJstsPolygonFromLoop(newLoop);
+                if (!bbNew || !polyNew || polyNew.isEmpty?.()) return false;
+                for (const loopJ of curLoops) {
+                  const bbJ = bboxOfLoop(loopJ);
+                  if (bbJ && !bboxIntersects(
+                    { minX: bbNew.minX, maxX: bbNew.maxX, minY: bbNew.minY, maxY: bbNew.maxY },
+                    { minX: bbJ.minX, maxX: bbJ.maxX, minY: bbJ.minY, maxY: bbJ.maxY }
+                  )) continue;
+                  const polyJ = buildJstsPolygonFromLoop(loopJ);
+                  if (!polyJ || polyJ.isEmpty?.()) continue;
+                  const inter = robustIntersection(polyNew, polyJ);
+                  const a = Number(inter?.getArea?.());
+                  if (Number.isFinite(a) && a > 1e-6) return false;
+                }
+                return true;
+              })();
+
+              if (isNonOverlapAll) {
+                curLoops = [...curLoops, newLoop];
+                cleanupSummary.addedFaces = 1;
+                curUnion = buildUnionFromFaceLoops(curLoops);
+                curResidual = robustDifference(sharedOmegaPoly, curUnion);
+                curResidual = curResidual ? ensureValid(curResidual, 'residualAdd') : null;
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore add-face failures
+      }
+    }
+
+    const cov1 = computeCoverageFromFaceLoops(sharedOmegaPoly, curLoops);
+    cleanupSummary.coverageAfter = cov1.coverageRatio;
+    const rA1 = Number(curResidual?.getArea?.());
+    cleanupSummary.residualAreaAfter = Number.isFinite(rA1) ? rA1 : null;
+    cleanupSummary.elapsedMs = Math.max(0, nowMs() - t0);
+    cleanupSummary.ran = true;
+
+    if (!(cleanupSummary.coverageAfter > (cleanupSummary.coverageBefore ?? 0) + 1e-6) && !(cleanupSummary.residualAreaAfter < (cleanupSummary.residualAreaBefore ?? Infinity) - 1e-6)) {
+      cleanupSummary.note = 'no improvement';
+      return null;
+    }
+
+    // 生成“清扫后”候选（不改变原搜索闭环，只作为工程验收候选插入 topK）
+    const sigBase = String(base?.signature ?? base?.key ?? '');
+    const sig = sigBase ? `${sigBase}|segW=1|clean=1` : `segW=1|clean=1`;
+    const faceObjs = curLoops.map((loop, i) => ({ faceIndex: i + 1, loop }));
+    const out = {
+      ...base,
+      key: sig,
+      signature: sig,
+      N: curLoops.length,
+      BList: null,
+      abnormalFaceCount: 0,
+      abnormalFaces: [],
+      coverageRatio: cov1.coverageRatio,
+      efficiencyScore: cov1.coverageRatio * 100,
+      coveredArea: cov1.coveredArea,
+      faceAreaTotal: cov1.coveredArea,
+      softScore: base?.softScore,
+      metrics: {
+        ...(base?.metrics && typeof base.metrics === 'object' ? base.metrics : {}),
+        faceAreaTotal: cov1.coveredArea,
+        coverageRatio: cov1.coverageRatio,
+        efficiencyScore: cov1.coverageRatio * 100,
+      },
+      render: {
+        ...(base?.render && typeof base.render === 'object' ? base.render : {}),
+        strictInsideOmega: false,
+        allowNonRectFaces: true,
+        facesLoops: faceObjs,
+        plannedWorkfaceLoopsWorld: faceObjs,
+      },
+    };
+    // 把清扫摘要挂到 debug/metrics 上，便于验收
+    try {
+      out.cleanupResidual = cleanupSummary;
+      if (out.metrics && typeof out.metrics === 'object') out.metrics.cleanupResidual = cleanupSummary;
+    } catch {
+      // ignore
+    }
+    return out;
+  };
+
+  try {
+    const improved = tryCleanupResidual();
+    if (improved) {
+      // 插到第一名参与展示与后续裁剪；仍保持 topK 截断
+      candidates = [improved, ...candidates].slice(0, wantK);
+    }
+  } catch {
+    // ignore cleanup exceptions
+  }
 
   // === 渲染口径（资源回收）：必须裁剪到粉色 Ω 内 ===
   // 性能：只对“返回给前端的 topK 候选”做裁剪几何；全量候选不做。
+  // 缓存：同一个 omegaPoly 下，对相同 rect loop 的裁剪结果复用，避免重复 robustIntersection。
+  // 注意：缓存仅用于 topK 裁剪阶段，不影响候选生成与排序。
+  const clipCacheByOmega = new WeakMap();
+  const sanitizeLoopForRender = (loop) => {
+    const pts0 = Array.isArray(loop) ? loop : [];
+    if (pts0.length < 3) return [];
+
+    const EPS = 1e-4; // 0.1mm（坐标单位为 m 时足够保守）
+    const out = [];
+    for (const p of pts0) {
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const prev = out[out.length - 1];
+      if (prev && Math.abs(prev.x - x) <= EPS && Math.abs(prev.y - y) <= EPS) continue;
+      out.push({ x, y });
+    }
+
+    if (out.length >= 3) {
+      const a = out[0];
+      const b = out[out.length - 1];
+      if (Math.abs(a.x - b.x) <= EPS && Math.abs(a.y - b.y) <= EPS) out.pop();
+    }
+
+    return out.length >= 3 ? out : [];
+  };
+
+  // 轻量消刺/简化：只用于渲染（裁剪后 loop 常出现很多锯齿/毛刺点）
+  // 目标：减少 intersection 带来的微小折线，不影响整体形状。
+  const simplifyLoopForRender = (loop) => {
+    const pts0 = Array.isArray(loop) ? loop : [];
+    if (pts0.length < 4) return pts0;
+
+    const bb = bboxOfLoop(pts0);
+    const diag = (bb && Number.isFinite(bb.maxX) && Number.isFinite(bb.maxY))
+      ? Math.hypot(bb.maxX - bb.minX, bb.maxY - bb.minY)
+      : 0;
+
+    // 自适应容差（坐标单位通常为 m）：2cm ~ 20cm
+    const tol = Math.max(0.02, Math.min(0.2, diag * 1e-4));
+    const tol2 = tol * tol;
+
+    const dist2 = (a, b) => {
+      const dx = (Number(a?.x) - Number(b?.x));
+      const dy = (Number(a?.y) - Number(b?.y));
+      return dx * dx + dy * dy;
+    };
+
+    const removeShortEdges = (pts) => {
+      const out = [];
+      for (const p of pts) {
+        if (!out.length) {
+          out.push(p);
+          continue;
+        }
+        if (dist2(out[out.length - 1], p) <= tol2) continue;
+        out.push(p);
+      }
+      // 首尾也做一次短边合并（loop 不闭合表示）
+      if (out.length >= 3 && dist2(out[0], out[out.length - 1]) <= tol2) out.pop();
+      return out;
+    };
+
+    const removeNearCollinear = (pts) => {
+      if (pts.length < 4) return pts;
+      const out = [];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const prev = pts[(i - 1 + n) % n];
+        const cur = pts[i];
+        const next = pts[(i + 1) % n];
+        const ax = Number(cur.x) - Number(prev.x);
+        const ay = Number(cur.y) - Number(prev.y);
+        const bx = Number(next.x) - Number(cur.x);
+        const by = Number(next.y) - Number(cur.y);
+        const cross = ax * by - ay * bx;
+        const la2 = ax * ax + ay * ay;
+        const lb2 = bx * bx + by * by;
+        if (!(Number.isFinite(cross) && Number.isFinite(la2) && Number.isFinite(lb2))) {
+          out.push(cur);
+          continue;
+        }
+        // 两段都很短：认为是毛刺，删掉中间点
+        if (la2 <= tol2 && lb2 <= tol2) continue;
+        // 近共线：面积（cross）很小且两边长度足够
+        const denom = Math.sqrt(la2) + Math.sqrt(lb2);
+        const areaLike = Math.abs(cross) / (denom || 1);
+        if (areaLike <= tol * 0.25) continue;
+        out.push(cur);
+      }
+      return out.length >= 3 ? out : pts;
+    };
+
+    // Ramer–Douglas–Peucker（对闭合 ring：用“首点固定”的折线近似）
+    const perpDist = (p, a, b) => {
+      const px = Number(p.x);
+      const py = Number(p.y);
+      const ax = Number(a.x);
+      const ay = Number(a.y);
+      const bx = Number(b.x);
+      const by = Number(b.y);
+      const vx = bx - ax;
+      const vy = by - ay;
+      const wx = px - ax;
+      const wy = py - ay;
+      const vv = vx * vx + vy * vy;
+      if (!(Number.isFinite(vv) && vv > 0)) return Math.hypot(wx, wy);
+      const t = (wx * vx + wy * vy) / vv;
+      const tt = Math.max(0, Math.min(1, t));
+      const cx = ax + tt * vx;
+      const cy = ay + tt * vy;
+      return Math.hypot(px - cx, py - cy);
+    };
+
+    const rdp = (pts, eps) => {
+      if (pts.length <= 2) return pts;
+      let maxD = -1;
+      let idx = -1;
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const d = perpDist(pts[i], a, b);
+        if (d > maxD) {
+          maxD = d;
+          idx = i;
+        }
+      }
+      if (maxD > eps && idx > 0) {
+        const left = rdp(pts.slice(0, idx + 1), eps);
+        const right = rdp(pts.slice(idx), eps);
+        return left.slice(0, left.length - 1).concat(right);
+      }
+      return [a, b];
+    };
+
+    let pts = pts0;
+    // 1) 去短边/重复点
+    pts = removeShortEdges(pts);
+    if (pts.length < 4) return pts;
+    // 2) 去近共线（先做一轮能明显消刺）
+    pts = removeNearCollinear(pts);
+    if (pts.length < 4) return pts;
+
+    // 3) RDP 简化（闭合 ring：拆成折线，首点固定）
+    // 选择一个“最稳定”的起点：用 bbox 最左下角附近的点作为起点，减少旋转导致的输出差异
+    const pickStart = () => {
+      if (!bb) return 0;
+      let best = 0;
+      let bestScore = Infinity;
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i];
+        const score = Math.abs(Number(p.x) - bb.minX) + Math.abs(Number(p.y) - bb.minY);
+        if (score < bestScore) {
+          bestScore = score;
+          best = i;
+        }
+      }
+      return best;
+    };
+    const s = pickStart();
+    if (s > 0) pts = pts.slice(s).concat(pts.slice(0, s));
+
+    const polyline = pts.concat([pts[0]]);
+    const simplified = rdp(polyline, tol);
+    // 去掉闭合点
+    let out = simplified.slice(0, Math.max(0, simplified.length - 1));
+    // 再做一轮短边/近共线收尾
+    out = removeShortEdges(out);
+    out = removeNearCollinear(out);
+    return out.length >= 3 ? out : pts0;
+  };
+
+  // union 外轮廓专用：只做“极小尺度”的去短边/去近共线，不做 RDP，避免外轮廓与填充看起来不匹配。
+  // 坐标单位通常为 m：默认只清理毫米~厘米级小刺。
+  const cleanupUnionOutlineLoop = (loop) => {
+    const pts0 = Array.isArray(loop) ? loop : [];
+    if (pts0.length < 4) return pts0;
+    const bb = bboxOfLoop(pts0);
+    const diag = (bb && Number.isFinite(bb.maxX) && Number.isFinite(bb.maxY))
+      ? Math.hypot(bb.maxX - bb.minX, bb.maxY - bb.minY)
+      : 0;
+    // 2mm ~ 2cm
+    const tol = Math.max(0.002, Math.min(0.02, diag * 5e-6));
+    const tol2 = tol * tol;
+
+    const dist2 = (a, b) => {
+      const dx = (Number(a?.x) - Number(b?.x));
+      const dy = (Number(a?.y) - Number(b?.y));
+      return dx * dx + dy * dy;
+    };
+
+    const removeShortEdges = (pts) => {
+      const out = [];
+      for (const p of pts) {
+        if (!out.length) { out.push(p); continue; }
+        if (dist2(out[out.length - 1], p) <= tol2) continue;
+        out.push(p);
+      }
+      if (out.length >= 3 && dist2(out[0], out[out.length - 1]) <= tol2) out.pop();
+      return out;
+    };
+
+    const removeNearCollinear = (pts) => {
+      if (pts.length < 4) return pts;
+      const out = [];
+      const n = pts.length;
+      for (let i = 0; i < n; i++) {
+        const prev = pts[(i - 1 + n) % n];
+        const cur = pts[i];
+        const next = pts[(i + 1) % n];
+        const ax = Number(cur.x) - Number(prev.x);
+        const ay = Number(cur.y) - Number(prev.y);
+        const bx = Number(next.x) - Number(cur.x);
+        const by = Number(next.y) - Number(cur.y);
+        const cross = ax * by - ay * bx;
+        const la2 = ax * ax + ay * ay;
+        const lb2 = bx * bx + by * by;
+        if (!(Number.isFinite(cross) && Number.isFinite(la2) && Number.isFinite(lb2))) { out.push(cur); continue; }
+        if (la2 <= tol2 && lb2 <= tol2) continue;
+        const denom = Math.sqrt(la2) + Math.sqrt(lb2);
+        const areaLike = Math.abs(cross) / (denom || 1);
+        if (areaLike <= tol * 0.2) continue;
+        out.push(cur);
+      }
+      return out.length >= 3 ? out : pts;
+    };
+
+    let pts = pts0;
+    pts = removeShortEdges(pts);
+    pts = removeNearCollinear(pts);
+    pts = removeShortEdges(pts);
+    return pts.length >= 3 ? pts : pts0;
+  };
+
+  // 更稳健的 loopKey：避免不同 loop 在裁剪缓存中发生碰撞，导致“切换候选后面重叠/毛刺”。
+  const loopKeyForCache = (loop) => {
+    const pts = Array.isArray(loop) ? loop : [];
+    const n = pts.length;
+    if (n < 3) return '';
+
+    const bb = bboxOfLoop(pts);
+    const q = (v) => {
+      const x = Number(v);
+      if (!Number.isFinite(x)) return 0;
+      // 量化到 1e-3（≈1mm），兼顾稳定性与区分度
+      return Math.round(x * 1000);
+    };
+
+    let h = 2166136261;
+    const mix = (v) => {
+      h ^= (v | 0);
+      h = Math.imul(h, 16777619);
+    };
+
+    // bbox + 全点哈希（topK 裁剪规模小，允许更强 key 来换正确性）
+    if (bb) {
+      mix(q(bb.minX));
+      mix(q(bb.minY));
+      mix(q(bb.maxX));
+      mix(q(bb.maxY));
+    }
+    mix(n);
+    for (const p of pts) {
+      mix(q(p?.x));
+      mix(q(p?.y));
+    }
+
+    // 转无符号并输出
+    const hu = (h >>> 0).toString(16);
+    return `n=${n}|h=${hu}`;
+  };
+
+  // union 外轮廓去重用：把 loop 规范化为“起点/方向无关”的稳定序列。
+  // 目的：防止相同外轮廓因起点不同/顺逆时针不同被重复绘制，造成边界短线/重线。
+  const canonicalizeLoopForOutline = (loop) => {
+    const pts0 = Array.isArray(loop) ? loop : [];
+    const pts = pts0
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (pts.length < 3) return pts;
+
+    const q = (v) => {
+      const x = Number(v);
+      if (!Number.isFinite(x)) return 0;
+      return Math.round(x * 1000);
+    };
+    const lexLess = (a, b) => {
+      const n = Math.min(a.length, b.length);
+      for (let i = 0; i < n; i++) {
+        const ax = q(a[i].x);
+        const ay = q(a[i].y);
+        const bx = q(b[i].x);
+        const by = q(b[i].y);
+        if (ax !== bx) return ax < bx;
+        if (ay !== by) return ay < by;
+      }
+      return a.length < b.length;
+    };
+
+    const rotateToMin = (arr) => {
+      let best = 0;
+      let bestX = q(arr[0].x);
+      let bestY = q(arr[0].y);
+      for (let i = 1; i < arr.length; i++) {
+        const xi = q(arr[i].x);
+        const yi = q(arr[i].y);
+        if (xi < bestX || (xi === bestX && yi < bestY)) {
+          best = i;
+          bestX = xi;
+          bestY = yi;
+        }
+      }
+      return best > 0 ? arr.slice(best).concat(arr.slice(0, best)) : arr;
+    };
+
+    const fwd = rotateToMin(pts);
+    const rev0 = pts.slice().reverse();
+    const rev = rotateToMin(rev0);
+    return lexLess(fwd, rev) ? fwd : rev;
+  };
+
   const attachClippedFacesLoopsWorld = (cand, sharedOmegaPoly) => {
     if (!cand || !cand.render) return;
+
+    const computeAndAttachUnionOutline = (facesLoopsWorld) => {
+      try {
+        const facesLoops = Array.isArray(facesLoopsWorld) ? facesLoopsWorld : [];
+        if (!facesLoops.length) {
+          cand.render.plannedUnionLoopsWorld = [];
+          return;
+        }
+        const u = buildUnionFromFacesLoopsWorld(facesLoops);
+        if (!u || u.isEmpty?.()) {
+          cand.render.plannedUnionLoopsWorld = [];
+          return;
+        }
+        const loops0 = polygonToLoops(u);
+        const loops = Array.isArray(loops0) ? loops0 : [];
+        // 注意：这里不要做 simplify，否则外轮廓会“改形”，与填充的面边界看起来不匹配。
+        // 只做基础 sanitize（去重复点/去闭合点），保证渲染稳定。
+        const seen = new Set();
+        const out = [];
+        for (const l0 of loops) {
+          const l1 = cleanupUnionOutlineLoop(sanitizeLoopForRender(l0));
+          if (!Array.isArray(l1) || l1.length < 3) continue;
+          const canon = canonicalizeLoopForOutline(l1);
+          if (!Array.isArray(canon) || canon.length < 3) continue;
+          const k = loopKeyForCache(canon);
+          if (k && seen.has(k)) continue;
+          if (k) seen.add(k);
+          out.push(canon);
+        }
+        cand.render.plannedUnionLoopsWorld = out;
+      } catch {
+        // ignore
+      }
+    };
+
+    // 已经有裁剪结果则直接复用（避免重复裁剪）
+    if (Array.isArray(cand?.render?.clippedFacesLoops) && cand.render.clippedFacesLoops.length) {
+      cand.render.plannedWorkfaceLoopsWorld = cand.render.clippedFacesLoops;
+      computeAndAttachUnionOutline(cand.render.clippedFacesLoops);
+      return;
+    }
+
+    // 快速路径：严格包含生成的矩形无需裁剪，直接使用原矩形 loops。
+    // 这能显著减少 topK 裁剪阶段的 JSTS intersection 开销，降低超时概率。
+    if (cand?.render?.strictInsideOmega) {
+      const rectLoops0 = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
+      if (rectLoops0.length) {
+        const clippedFacesLoops0 = rectLoops0
+          .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+          .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+        if (clippedFacesLoops0.length) {
+          cand.render.clippedFacesLoops = clippedFacesLoops0;
+          cand.render.plannedWorkfaceLoopsWorld = clippedFacesLoops0;
+          computeAndAttachUnionOutline(clippedFacesLoops0);
+        }
+      }
+      return;
+    }
+
     const omegaPoly = sharedOmegaPoly || (() => {
       const omegaLoopsWorld = Array.isArray(cand?.render?.omegaLoops) ? cand.render.omegaLoops : [];
       const omegaLoop = omegaLoopsWorld.find((l) => Array.isArray(l) && l.length >= 3) || null;
@@ -4646,48 +5793,118 @@ const compute = (payload) => {
     })();
     if (!omegaPoly) return;
 
+    // bbox 预判：不相交则无需做 overlay
+    let omegaBox = null;
+    try {
+      omegaBox = envToBox(omegaPoly.getEnvelopeInternal());
+    } catch {
+      omegaBox = null;
+    }
+
+    // 统一裁剪输入：优先使用 facesLoops（允许非矩形/分段变宽），否则回退到 rectLoops。
+    const faces0 = Array.isArray(cand?.render?.facesLoops) ? cand.render.facesLoops : null;
     const rectLoops = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
-    if (!rectLoops.length) return;
+    const faces = (Array.isArray(faces0) && faces0.length)
+      ? faces0
+        .map((x, idx) => ({ faceIndex: Number(x?.faceIndex ?? (idx + 1)), loop: x?.loop }))
+        .filter((x) => Number.isFinite(Number(x?.faceIndex)) && Number(x.faceIndex) >= 1 && Array.isArray(x?.loop) && x.loop.length >= 3)
+      : rectLoops
+        .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+    if (!faces.length) return;
+
+    // 获取/创建该 omegaPoly 的子缓存
+    let clipCache = null;
+    try {
+      clipCache = clipCacheByOmega.get(omegaPoly);
+      if (!clipCache) {
+        clipCache = new Map();
+        clipCacheByOmega.set(omegaPoly, clipCache);
+      }
+    } catch {
+      clipCache = null;
+    }
 
     const clippedFacesLoops = [];
-    for (let i = 0; i < rectLoops.length; i++) {
-      const loop = rectLoops[i];
+    for (const face of faces) {
+      const faceIndex = Math.max(1, Math.round(Number(face?.faceIndex) || 1));
+      const loop = face?.loop;
       if (!Array.isArray(loop) || loop.length < 3) continue;
+
+      // 先用点集 bbox 过滤掉明显不相交的情况（省掉 build polygon + intersection）
+      if (omegaBox) {
+        const bb = bboxOfLoop(loop);
+        if (bb && !bboxIntersects(
+          { minX: bb.minX, maxX: bb.maxX, minY: bb.minY, maxY: bb.maxY },
+          { minX: omegaBox.minX, maxX: omegaBox.maxX, minY: omegaBox.minY, maxY: omegaBox.maxY }
+        )) {
+          continue;
+        }
+      }
+
+      // intersection 缓存：同一 omegaPoly 下，相同 loop 直接复用裁剪 loops
+      const lk = clipCache ? loopKeyForCache(loop) : '';
+      if (clipCache && lk && clipCache.has(lk)) {
+        const cachedLoops = clipCache.get(lk);
+        if (Array.isArray(cachedLoops) && cachedLoops.length) {
+          for (const l of cachedLoops) {
+            const sl = simplifyLoopForRender(sanitizeLoopForRender(l));
+            if (sl.length >= 3) clippedFacesLoops.push({ faceIndex, loop: sl });
+          }
+        }
+        continue;
+      }
+
       const facePoly0 = buildJstsPolygonFromLoop(loop);
-      if (!facePoly0 || facePoly0.isEmpty?.()) continue;
+      if (!facePoly0 || facePoly0.isEmpty?.()) {
+        if (clipCache && lk) clipCache.set(lk, []);
+        continue;
+      }
       let inter = null;
       try {
         inter = robustIntersection(omegaPoly, facePoly0);
       } catch {
         inter = null;
       }
-      if (!inter || inter.isEmpty?.()) continue;
+      if (!inter || inter.isEmpty?.()) {
+        if (clipCache && lk) clipCache.set(lk, []);
+        continue;
+      }
       const loops = polygonToLoops(inter);
-      for (const l of loops) {
-        if (Array.isArray(l) && l.length >= 3) clippedFacesLoops.push({ faceIndex: i + 1, loop: l });
+      const loops0 = Array.isArray(loops) ? loops : [];
+      const sanitized = loops0
+        .map((l) => simplifyLoopForRender(sanitizeLoopForRender(l)))
+        .filter((l) => Array.isArray(l) && l.length >= 3);
+      if (clipCache && lk) clipCache.set(lk, sanitized);
+      for (const l of sanitized) {
+        if (Array.isArray(l) && l.length >= 3) clippedFacesLoops.push({ faceIndex, loop: l });
       }
     }
 
     if (clippedFacesLoops.length) {
-      cand.render.clippedFacesLoops = clippedFacesLoops;
+      // 去重：同一 faceIndex 下可能因数值鲁棒性/缓存导致重复 loop（重复绘制会表现为“重叠面/颜色变深”）
+      const seen = new Set();
+      const uniq = [];
+      for (const item of clippedFacesLoops) {
+        const fi = Math.max(1, Math.round(Number(item?.faceIndex) || 1));
+        const l = item?.loop;
+        const lk = loopKeyForCache(l);
+        const k = `${fi}|${lk}`;
+        if (!lk || seen.has(k)) continue;
+        seen.add(k);
+        uniq.push({ faceIndex: fi, loop: l });
+      }
+
+      cand.render.clippedFacesLoops = uniq;
       // 统一：前端绘制优先使用 plannedWorkfaceLoopsWorld
-      cand.render.plannedWorkfaceLoopsWorld = clippedFacesLoops;
+      cand.render.plannedWorkfaceLoopsWorld = uniq;
+      computeAndAttachUnionOutline(uniq);
     }
   };
 
   try {
     // 注意：即使触发 timeBudgetHit，也必须保证“选中/最优候选”有裁剪后的 loops，否则会画出 Ω 外蓝色。
     // v1.0（用户验收口径）：候选表展示必须全部为裁剪后形状，因此这里强制裁剪返回的 topK。
-    let sharedOmegaPoly = null;
-    try {
-      const omegaLoopsWorld0 = Array.isArray(candidates?.[0]?.render?.omegaLoops) ? candidates[0].render.omegaLoops : [];
-      const omegaLoop0 = omegaLoopsWorld0.find((l) => Array.isArray(l) && l.length >= 3) || null;
-      sharedOmegaPoly = omegaLoop0 ? buildJstsPolygonFromLoop(omegaLoop0) : null;
-      if (sharedOmegaPoly && sharedOmegaPoly.isEmpty?.()) sharedOmegaPoly = null;
-    } catch {
-      sharedOmegaPoly = null;
-    }
-
     for (const c of (candidates ?? [])) {
       attachClippedFacesLoopsWorld(c, sharedOmegaPoly);
     }
@@ -4695,10 +5912,544 @@ const compute = (payload) => {
     // ignore
   }
 
-  // 方案稳定性：selectedCandidateKey 必须属于返回候选集合
-  const bestSig0 = String(best?.signature ?? '');
-  const bestInCandidates = Boolean(bestSig0 && candidates.some((c) => String(c?.signature ?? '') === bestSig0));
-  const bestSig = bestInCandidates ? bestSig0 : String(candidates?.[0]?.signature ?? bestSig0);
+  // === 诊断：union/填充 loops 的短边统计（用于排查煤柱边界“短线”）===
+  const computeLoopStatsWorld = (loops, { shortEdgeM = 0.05 } = {}) => {
+    const list = Array.isArray(loops) ? loops : [];
+    let loopCount = 0;
+    let pointCount = 0;
+    let segCount = 0;
+    let shortSegCount = 0;
+    let minSegLen = Infinity;
+    let minSegLenLoop = -1;
+    let nanPointCount = 0;
+
+    const dist = (a, b) => {
+      const dx = Number(a?.x) - Number(b?.x);
+      const dy = Number(a?.y) - Number(b?.y);
+      return Math.hypot(dx, dy);
+    };
+
+    for (let li = 0; li < list.length; li++) {
+      const loop = list[li];
+      const pts = Array.isArray(loop) ? loop : [];
+      const clean = pts
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+        .filter((p) => {
+          const ok = Number.isFinite(p.x) && Number.isFinite(p.y);
+          if (!ok) nanPointCount += 1;
+          return ok;
+        });
+      if (clean.length < 2) continue;
+      loopCount += 1;
+      pointCount += clean.length;
+      for (let i = 0; i < clean.length; i++) {
+        const a = clean[i];
+        const b = clean[(i + 1) % clean.length];
+        const d = dist(a, b);
+        if (!Number.isFinite(d)) continue;
+        segCount += 1;
+        if (d < minSegLen) {
+          minSegLen = d;
+          minSegLenLoop = li;
+        }
+        if (d <= shortEdgeM) shortSegCount += 1;
+      }
+    }
+
+    return {
+      loopCount,
+      pointCount,
+      segCount,
+      shortEdgeM,
+      shortSegCount,
+      minSegLen: Number.isFinite(minSegLen) ? minSegLen : null,
+      minSegLenLoop,
+      nanPointCount,
+    };
+  };
+
+  try {
+    for (const cand of (candidates ?? [])) {
+      if (!cand || !cand.render) continue;
+      // union 外轮廓 loops：[[{x,y}...]]
+      const unionLoops = Array.isArray(cand?.render?.plannedUnionLoopsWorld) ? cand.render.plannedUnionLoopsWorld : [];
+      // fill 面 loops：[{faceIndex, loop:[{x,y}...]}]
+      const faces = Array.isArray(cand?.render?.plannedWorkfaceLoopsWorld) ? cand.render.plannedWorkfaceLoopsWorld : [];
+      const faceLoops = faces
+        .map((f) => f?.loop)
+        .filter((l) => Array.isArray(l) && l.length >= 2);
+
+      // shortEdge 阈值用 5cm（对“煤柱边界短线”足够敏感），同时把 minSegLen 暴露给前端。
+      cand.render.unionOutlineStats = computeLoopStatsWorld(unionLoops, { shortEdgeM: 0.05 });
+      cand.render.fillLoopsStats = computeLoopStatsWorld(faceLoops, { shortEdgeM: 0.05 });
+      cand.render.fillFaceCount = Array.isArray(faces) ? faces.length : 0;
+      cand.render.unionLoopCount = Array.isArray(unionLoops) ? unionLoops.length : 0;
+    }
+  } catch {
+    // ignore
+  }
+
+  function buildUnionFromFacesLoopsWorld(facesLoopsWorld) {
+    let u = null;
+    for (const face of facesLoopsWorld ?? []) {
+      const loop = face?.loop;
+      if (!Array.isArray(loop) || loop.length < 3) continue;
+      const poly = buildJstsPolygonFromLoop(loop);
+      if (!poly || poly.isEmpty?.()) continue;
+      u = u ? (robustUnion(u, poly) || u.union?.(poly) || u) : poly;
+    }
+    return u;
+  }
+
+  const buildCoalPillarMaskWorld = ({ omegaPolyWorld, rectLoopsWorld, wsM, axis, thetaDeg }) => {
+    const omegaPoly = omegaPolyWorld;
+    const rectLoops = Array.isArray(rectLoopsWorld) ? rectLoopsWorld : [];
+    const ws = Math.max(0, Number(wsM) || 0);
+    if (!omegaPoly || omegaPoly.isEmpty?.() || !rectLoops.length || !(ws > 1e-6)) return { mask: null, area: 0, gapCount: 0, gapWidthSum: 0 };
+
+    // 用 Ω 的包络作为“煤柱走廊”的横向范围，避免因为裁剪/端头形变导致煤柱被截断。
+    let omegaBox = null;
+    try {
+      omegaBox = envToBox(omegaPoly.getEnvelopeInternal());
+    } catch {
+      omegaBox = null;
+    }
+    if (!omegaBox) return { mask: null, area: 0, gapCount: 0, gapWidthSum: 0 };
+
+    // 以“相邻面之间的间隙”构造煤柱走廊：
+    // 不能用 axis-aligned bbox 直接比 minY/maxY（有 theta 时 bbox 会重叠，导致煤柱漏遮挡）。
+    // 改为在 (u=推进方向, v=横向方向) 坐标系里做投影：
+    // - 先把每个 face 投影到 v，得到 [minT, maxT]
+    // - 相邻 face 的间隙 (next.minT - prev.maxT) > 0 即视为煤柱区
+    // - 在该 t 区间上构造贯通 strip（沿 u 方向跨越 Ω 包络），再与 Ω 相交。
+    const ax = String(axis || 'x');
+    const th = Number(thetaDeg);
+    const thetaRad = (Number.isFinite(th) ? (th * Math.PI / 180) : 0);
+    const cth = Math.cos(thetaRad);
+    const sth = Math.sin(thetaRad);
+
+    // 基础推进方向：axis=x => (1,0), axis=y => (0,1)
+    const baseUx = (ax === 'y') ? 0 : 1;
+    const baseUy = (ax === 'y') ? 1 : 0;
+    // u = rotate(baseU, theta)
+    const ux = baseUx * cth - baseUy * sth;
+    const uy = baseUx * sth + baseUy * cth;
+    // v = u 左法向（横向）
+    const vx = -uy;
+    const vy = ux;
+
+    const dot = (p, x, y) => (Number(p?.x) * x + Number(p?.y) * y);
+    const mulAdd = (s, t) => ({ x: ux * s + vx * t, y: uy * s + vy * t });
+
+    // 用 Ω 的 axis-aligned 包络 corners 估计 u 投影范围（足够大即可）
+    const corners = [
+      { x: omegaBox.minX, y: omegaBox.minY },
+      { x: omegaBox.minX, y: omegaBox.maxY },
+      { x: omegaBox.maxX, y: omegaBox.minY },
+      { x: omegaBox.maxX, y: omegaBox.maxY },
+    ];
+    let sMin = Infinity;
+    let sMax = -Infinity;
+    for (const p of corners) {
+      const s = dot(p, ux, uy);
+      if (!Number.isFinite(s)) continue;
+      sMin = Math.min(sMin, s);
+      sMax = Math.max(sMax, s);
+    }
+    if (!(Number.isFinite(sMin) && Number.isFinite(sMax) && sMax > sMin + 1e-6)) return { mask: null, area: 0, gapCount: 0, gapWidthSum: 0 };
+
+    const faceBands = [];
+    for (const loop of rectLoops) {
+      if (!Array.isArray(loop) || loop.length < 3) continue;
+      let tMin = Infinity;
+      let tMax = -Infinity;
+      for (const p of loop) {
+        const t = dot(p, vx, vy);
+        if (!Number.isFinite(t)) continue;
+        tMin = Math.min(tMin, t);
+        tMax = Math.max(tMax, t);
+      }
+      if (!(Number.isFinite(tMin) && Number.isFinite(tMax) && tMax > tMin + 1e-6)) continue;
+      faceBands.push({ tMin, tMax });
+    }
+    if (faceBands.length < 2) return { mask: null, area: 0, gapCount: 0, gapWidthSum: 0 };
+    faceBands.sort((a, b) => a.tMin - b.tMin);
+
+    const minGap = Math.max(0.5, ws * 0.2);
+    let gapCount = 0;
+    let gapWidthSum = 0;
+    let uMask = null;
+    for (let i = 0; i < faceBands.length - 1; i++) {
+      const a = faceBands[i];
+      const b = faceBands[i + 1];
+      const t0 = Number(a.tMax);
+      const t1 = Number(b.tMin);
+      if (!(Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0 + minGap)) continue;
+      gapCount += 1;
+      gapWidthSum += Math.max(0, t1 - t0);
+
+      const p1 = mulAdd(sMin, t0);
+      const p2 = mulAdd(sMax, t0);
+      const p3 = mulAdd(sMax, t1);
+      const p4 = mulAdd(sMin, t1);
+      const stripLoop = [p1, p2, p3, p4];
+      const pillarRaw = buildJstsPolygonFromLoop(stripLoop);
+      if (!pillarRaw || pillarRaw.isEmpty?.()) continue;
+      const pillar = ensureValid(pillarRaw, 'pillarMask');
+      const clipped = robustIntersection(omegaPoly, pillar);
+      if (!clipped || clipped.isEmpty?.()) continue;
+      uMask = uMask ? (robustUnion(uMask, clipped) || uMask.union?.(clipped) || uMask) : clipped;
+    }
+
+    if (!uMask || uMask.isEmpty?.()) return { mask: null, area: 0, gapCount, gapWidthSum };
+    const a = Number(uMask.getArea?.());
+    return { mask: uMask, area: (Number.isFinite(a) && a > 0) ? a : 0, gapCount, gapWidthSum };
+  };
+
+  const computeEffectiveCoverage = (cand) => {
+    if (!IGNORE_COAL_PILLARS_IN_COVERAGE) return null;
+    const omegaPoly = sharedOmegaPoly;
+    if (!omegaPoly || omegaPoly.isEmpty?.()) return null;
+
+    const rectLoops = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
+    const facesLoops = Array.isArray(cand?.render?.clippedFacesLoops)
+      ? cand.render.clippedFacesLoops
+      : (Array.isArray(cand?.render?.plannedWorkfaceLoopsWorld) ? cand.render.plannedWorkfaceLoopsWorld : []);
+
+    const ws = Math.max(0, Number(cand?.ws) || 0);
+    const ax = String(cand?.axis ?? cand?.genes?.axis ?? originalAxis ?? 'x');
+    const theta0 = Number(cand?.thetaDeg ?? cand?.metrics?.thetaDeg ?? 0);
+    const { mask: pillarMask, area: pillarArea, gapCount: pillarGapCount, gapWidthSum: pillarGapWidthSum } = buildCoalPillarMaskWorld({ omegaPolyWorld: omegaPoly, rectLoopsWorld: rectLoops, wsM: ws, axis: ax, thetaDeg: theta0 });
+    let omegaEff = omegaPoly;
+    if (pillarMask && !pillarMask.isEmpty?.()) {
+      const diff = robustDifference(omegaPoly, pillarMask);
+      omegaEff = diff ? ensureValid(diff, 'omegaEff') : omegaPoly;
+    }
+
+    const omegaAreaEff0 = Number(omegaEff?.getArea?.());
+    const omegaAreaEff = (Number.isFinite(omegaAreaEff0) && omegaAreaEff0 > 1e-9) ? omegaAreaEff0 : 0;
+    if (!(omegaAreaEff > 1e-9)) {
+      return {
+        omegaAreaEff: 0,
+        pillarArea,
+        coveredAreaEff: 0,
+        coverageRatioEff: 0,
+        residualAreaEff: 0,
+        omegaEff,
+        residualPoly: null,
+      };
+    }
+
+    const unionFaces = buildUnionFromFacesLoopsWorld(facesLoops);
+    const inter = unionFaces ? robustIntersection(omegaEff, unionFaces) : null;
+    const covered0 = Number(inter?.getArea?.());
+    const coveredAreaEff = (Number.isFinite(covered0) && covered0 > 0) ? covered0 : 0;
+    const coverageRatioEff = coveredAreaEff / omegaAreaEff;
+
+    let residualPoly = null;
+    if (unionFaces) {
+      const r0 = robustDifference(omegaEff, unionFaces);
+      residualPoly = r0 ? ensureValid(r0, 'residualEff') : null;
+    } else {
+      residualPoly = omegaEff;
+    }
+    const rA0 = Number(residualPoly?.getArea?.());
+    const residualAreaEff = (Number.isFinite(rA0) && rA0 > 0) ? rA0 : 0;
+
+    return {
+      omegaAreaEff,
+      pillarArea,
+      pillarGapCount,
+      pillarGapWidthSum,
+      coveredAreaEff,
+      coverageRatioEff,
+      residualAreaEff,
+      omegaEff,
+      residualPoly,
+    };
+  };
+
+  // 给返回的 topK 候选补齐“有效Ω/煤柱扣除后的覆盖率”诊断字段
+  try {
+    for (const c of (candidates ?? [])) {
+      if (!c.render || typeof c.render !== 'object') c.render = {};
+
+      const eff = computeEffectiveCoverage(c);
+      if (!eff) continue;
+      c.coverageRatioEff = eff.coverageRatioEff;
+      c.omegaAreaEff = eff.omegaAreaEff;
+      c.pillarArea = eff.pillarArea;
+      c.pillarGapCount = eff.pillarGapCount;
+      c.pillarGapWidthSum = eff.pillarGapWidthSum;
+      c.residualAreaEff = eff.residualAreaEff;
+      c.qualifiedFullCover = FULL_COVER_ENABLED ? Boolean(eff.coverageRatioEff >= FULL_COVER_MIN) : null;
+      if (FULL_COVER_ENABLED) c.qualified = Boolean(eff.coverageRatioEff >= FULL_COVER_MIN);
+
+      // fullCover 口径下：用“有效Ω覆盖率”驱动排序/评分字段（compareByArea/scoreOf 都依赖 coverageRatio/efficiencyScore）
+      if (FULL_COVER_ENABLED) {
+        c.coverageRatio = eff.coverageRatioEff;
+        c.efficiencyScore = eff.coverageRatioEff * 100;
+        c.coveredArea = eff.coveredAreaEff;
+        c.faceAreaTotal = eff.coveredAreaEff;
+        c.innerArea = eff.omegaAreaEff;
+        c.omegaArea = eff.omegaAreaEff;
+        if (c.metrics && typeof c.metrics === 'object') {
+          c.metrics.coverageRatio = eff.coverageRatioEff;
+          c.metrics.efficiencyScore = eff.coverageRatioEff * 100;
+          c.metrics.coveredArea = eff.coveredAreaEff;
+          c.metrics.faceAreaTotal = eff.coveredAreaEff;
+          c.metrics.innerArea = eff.omegaAreaEff;
+          c.metrics.omegaArea = eff.omegaAreaEff;
+        }
+      }
+
+      if (c.metrics && typeof c.metrics === 'object') {
+        c.metrics.coverageRatioEff = eff.coverageRatioEff;
+        c.metrics.omegaAreaEff = eff.omegaAreaEff;
+        c.metrics.pillarArea = eff.pillarArea;
+        c.metrics.pillarGapCount = eff.pillarGapCount;
+        c.metrics.pillarGapWidthSum = eff.pillarGapWidthSum;
+        c.metrics.residualAreaEff = eff.residualAreaEff;
+        c.metrics.qualifiedFullCover = c.qualifiedFullCover;
+        if (FULL_COVER_ENABLED) c.metrics.qualified = Boolean(c.qualified);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // v1.2：fullCover 兜底（补片，不增工作面数量）：把 residual(Ω_eff \ faces) 直接作为“同 faceIndex 的额外 loops”并入。
+  const tryFullCoverPatch = () => {
+    if (!FULL_COVER_ENABLED || !FULL_COVER_PATCH_ENABLED) return null;
+    if (!sharedOmegaPoly || sharedOmegaPoly.isEmpty?.()) return null;
+    if (!candidates?.length) return null;
+
+    const base = candidates[0];
+    const eff0 = computeEffectiveCoverage(base);
+    if (!eff0) return null;
+    if (eff0.coverageRatioEff >= FULL_COVER_MIN) return null;
+    if (!(eff0.residualAreaEff > 1e-6) || !eff0.residualPoly || eff0.residualPoly.isEmpty?.()) return null;
+
+    const t0 = nowMs();
+    const deadline = t0 + FULL_COVER_PATCH_BUDGET_MS;
+    const exceeded = () => nowMs() > deadline;
+
+    const facesLoops0 = Array.isArray(base?.render?.clippedFacesLoops) ? base.render.clippedFacesLoops : [];
+    if (!facesLoops0.length) return null;
+
+    // faceIndex -> 当前面几何（已裁剪到Ω）
+    const faceGeomByIndex = new Map();
+    // faceIndex -> bbox center（用于把补片分配到最近的面）
+    const faceBoxByIndex = new Map();
+    for (const f of facesLoops0) {
+      const fi = Math.max(1, Math.round(Number(f?.faceIndex) || 1));
+      const loop = f?.loop;
+      if (!Array.isArray(loop) || loop.length < 3) continue;
+      const poly = buildJstsPolygonFromLoop(loop);
+      if (!poly || poly.isEmpty?.()) continue;
+
+      const prevG = faceGeomByIndex.get(fi);
+      faceGeomByIndex.set(fi, prevG ? (robustUnion(prevG, poly) || prevG.union?.(poly) || prevG) : poly);
+
+      const bb = bboxOfLoop(loop);
+      if (!bb) continue;
+      const prevB = faceBoxByIndex.get(fi);
+      if (!prevB) {
+        faceBoxByIndex.set(fi, { ...bb });
+      } else {
+        prevB.minX = Math.min(prevB.minX, bb.minX);
+        prevB.maxX = Math.max(prevB.maxX, bb.maxX);
+        prevB.minY = Math.min(prevB.minY, bb.minY);
+        prevB.maxY = Math.max(prevB.maxY, bb.maxY);
+      }
+    }
+
+    const faceIndices = Array.from(faceBoxByIndex.keys()).sort((a, b) => a - b);
+    if (!faceIndices.length) return null;
+
+    const loopsResidual = polygonToLoops(eff0.residualPoly);
+    if (!Array.isArray(loopsResidual) || !loopsResidual.length) return null;
+
+    const patchPolyByFace = new Map();
+    const pickNearestFace = (pt) => {
+      let bestFi = faceIndices[0];
+      let bestD2 = Infinity;
+      for (const fi of faceIndices) {
+        const bb = faceBoxByIndex.get(fi);
+        if (!bb) continue;
+        const cx = (Number(bb.minX) + Number(bb.maxX)) / 2;
+        const cy = (Number(bb.minY) + Number(bb.maxY)) / 2;
+        const dx = Number(pt?.x) - cx;
+        const dy = Number(pt?.y) - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < bestD2) {
+          bestD2 = d2;
+          bestFi = fi;
+        }
+      }
+      return bestFi;
+    };
+
+    // 把 residual 拆分成若干补片 loops
+    for (const loop of loopsResidual) {
+      if (exceeded()) break;
+      if (!Array.isArray(loop) || loop.length < 3) continue;
+      const poly = buildJstsPolygonFromLoop(loop);
+      if (!poly || poly.isEmpty?.()) continue;
+
+      let pt = null;
+      try {
+        const c = poly.getCentroid?.();
+        const cc = c?.getCoordinate?.();
+        if (cc && Number.isFinite(cc.x) && Number.isFinite(cc.y)) pt = { x: Number(cc.x), y: Number(cc.y) };
+      } catch {
+        pt = null;
+      }
+      if (!pt) {
+        const bb = bboxOfLoop(loop);
+        if (bb) pt = { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 };
+      }
+      if (!pt) continue;
+
+      const fi = pickNearestFace(pt);
+      const prev = patchPolyByFace.get(fi);
+      patchPolyByFace.set(fi, prev ? (robustUnion(prev, poly) || prev.union?.(poly) || prev) : poly);
+    }
+
+    // 融合：每个面把“原面几何”与“补片几何”做 union，然后转回 loops。
+    const patchedFacesLoops = [];
+    let patchLoopCount = 0;
+    for (const fi of faceIndices) {
+      const g0 = faceGeomByIndex.get(fi);
+      if (!g0 || g0.isEmpty?.()) continue;
+      const p = patchPolyByFace.get(fi);
+      const g1 = p ? (robustUnion(g0, p) || g0.union?.(p) || g0) : g0;
+      const g = ensureValid(g1, 'faceMerge');
+      const loops = polygonToLoops(g);
+      for (const l of loops ?? []) {
+        if (!Array.isArray(l) || l.length < 3) continue;
+        // 补片与煤柱边界相邻时，union 后常出现微小短边/锯齿；对渲染口径做轻量简化，避免“短线”。
+        // 注意：这里的简化必须与其它裁剪输出一致（sanitize + simplifyLoopForRender），否则 fill/outline 可能再次不一致。
+        const sl = simplifyLoopForRender(sanitizeLoopForRender(l));
+        if (Array.isArray(sl) && sl.length >= 3) {
+          patchedFacesLoops.push({ faceIndex: fi, loop: sl });
+          if (p) patchLoopCount += 1;
+        }
+      }
+    }
+    if (!patchedFacesLoops.length) return null;
+
+    // 关键：补片会改变面集合的外边界；必须同步重算 union 外轮廓用于前端描边。
+    // 否则会继承 base.render.plannedUnionLoopsWorld（旧外轮廓），导致“蓝色外轮廓与填充不匹配”。
+    let plannedUnionLoopsWorldPatched = [];
+    try {
+      const u = buildUnionFromFacesLoopsWorld(patchedFacesLoops);
+      if (u && !u.isEmpty?.()) {
+        const loopsU0 = polygonToLoops(u);
+        const loopsU = Array.isArray(loopsU0) ? loopsU0 : [];
+        const seen = new Set();
+        const out = [];
+        for (const l0 of loopsU) {
+          const l1 = cleanupUnionOutlineLoop(sanitizeLoopForRender(l0));
+          if (!Array.isArray(l1) || l1.length < 3) continue;
+          const canon = canonicalizeLoopForOutline(l1);
+          if (!Array.isArray(canon) || canon.length < 3) continue;
+          const k = loopKeyForCache(canon);
+          if (k && seen.has(k)) continue;
+          if (k) seen.add(k);
+          out.push(canon);
+        }
+        plannedUnionLoopsWorldPatched = out;
+      }
+    } catch {
+      plannedUnionLoopsWorldPatched = [];
+    }
+
+    // 复算 effective coverage
+    const tmp = { ...base, render: { ...(base?.render || {}), clippedFacesLoops: patchedFacesLoops, plannedWorkfaceLoopsWorld: patchedFacesLoops } };
+    const eff1 = computeEffectiveCoverage(tmp);
+    if (!eff1) return null;
+    if (!(eff1.coverageRatioEff > eff0.coverageRatioEff + 1e-9)) return null;
+
+    const sigBase = String(base?.signature ?? base?.key ?? '');
+    const sig = sigBase ? `${sigBase}|patch=1` : 'patch=1';
+    const out = {
+      ...base,
+      key: sig,
+      signature: sig,
+      // 展示/验收：把 coverageRatio 改为“有效Ω口径”的覆盖率
+      coverageRatio: eff1.coverageRatioEff,
+      efficiencyScore: eff1.coverageRatioEff * 100,
+      coveredArea: eff1.coveredAreaEff,
+      faceAreaTotal: eff1.coveredAreaEff,
+      innerArea: eff1.omegaAreaEff,
+      omegaArea: eff1.omegaAreaEff,
+      qualified: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
+      qualifiedFullCover: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
+      coverageRatioEff: eff1.coverageRatioEff,
+      omegaAreaEff: eff1.omegaAreaEff,
+      pillarArea: eff1.pillarArea,
+      pillarGapCount: eff1.pillarGapCount,
+      pillarGapWidthSum: eff1.pillarGapWidthSum,
+      residualAreaEff: eff1.residualAreaEff,
+      render: {
+        ...(base?.render && typeof base.render === 'object' ? base.render : {}),
+        allowNonRectFaces: true,
+        strictInsideOmega: false,
+        clippedFacesLoops: patchedFacesLoops,
+        plannedWorkfaceLoopsWorld: patchedFacesLoops,
+        plannedUnionLoopsWorld: plannedUnionLoopsWorldPatched,
+      },
+      metrics: {
+        ...(base?.metrics && typeof base.metrics === 'object' ? base.metrics : {}),
+        coverageRatio: eff1.coverageRatioEff,
+        efficiencyScore: eff1.coverageRatioEff * 100,
+        coveredArea: eff1.coveredAreaEff,
+        faceAreaTotal: eff1.coveredAreaEff,
+        innerArea: eff1.omegaAreaEff,
+        omegaArea: eff1.omegaAreaEff,
+        coverageRatioEff: eff1.coverageRatioEff,
+        omegaAreaEff: eff1.omegaAreaEff,
+        pillarArea: eff1.pillarArea,
+        pillarGapCount: eff1.pillarGapCount,
+        pillarGapWidthSum: eff1.pillarGapWidthSum,
+        residualAreaEff: eff1.residualAreaEff,
+        qualified: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
+        qualifiedFullCover: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
+        fullCoverPatch: {
+          enabled: true,
+          budgetMs: FULL_COVER_PATCH_BUDGET_MS,
+          elapsedMs: Math.max(0, nowMs() - t0),
+          residualAreaBefore: eff0.residualAreaEff,
+          residualAreaAfter: eff1.residualAreaEff,
+          coverageBefore: eff0.coverageRatioEff,
+          coverageAfter: eff1.coverageRatioEff,
+          patchLoopCount,
+        },
+      },
+    };
+    return out;
+  };
+
+  try {
+    const patched = tryFullCoverPatch();
+    if (patched) {
+      // 插到第一名参与展示；仍保持 topK 截断
+      candidates = [patched, ...candidates].slice(0, Math.max(1, candidates.length));
+    }
+  } catch {
+    // ignore patch exceptions
+  }
+
+  // fullCover/补片/cleanup 可能会改变 coverage/qualified，需要重新评分排序
+  try {
+    candidates = (candidates ?? []).slice().sort(compareMain);
+  } catch {
+    // ignore
+  }
+
+  // bestSignature/bestKey：始终以排序后的 top1 为准（fullCoverPatch/cleanup 可能改变 top1）
+  const bestSig = String(candidates?.[0]?.signature ?? '');
 
   // nRange 仅基于返回候选集
   const nValuesAll = Array.from(new Set(candidates.map((c) => Number(c?.N)).filter((n) => Number.isFinite(n) && n >= 1))).sort((a, b) => a - b);
@@ -4834,7 +6585,24 @@ const compute = (payload) => {
       fallbackMode,
       thicknessReason: thicknessReason || (fallbackMode === 'AREA' ? THICKNESS_REASON.FALLBACK_AREA : ''),
       coverageMin: COVERAGE_MIN,
-      qualified: Boolean((candidates?.[0]?.coverageRatio ?? best?.coverageRatio) >= COVERAGE_MIN),
+      fullCover: FULL_COVER_ENABLED,
+      fullCoverMin: FULL_COVER_MIN,
+      ignoreCoalPillarsInCoverage: IGNORE_COAL_PILLARS_IN_COVERAGE,
+      coverageRatioEff: Number.isFinite(Number(candidates?.[0]?.coverageRatioEff ?? best?.coverageRatioEff))
+        ? Number(candidates?.[0]?.coverageRatioEff ?? best?.coverageRatioEff)
+        : null,
+      omegaAreaEff: Number.isFinite(Number(candidates?.[0]?.omegaAreaEff ?? best?.omegaAreaEff))
+        ? Number(candidates?.[0]?.omegaAreaEff ?? best?.omegaAreaEff)
+        : null,
+      pillarArea: Number.isFinite(Number(candidates?.[0]?.pillarArea ?? best?.pillarArea))
+        ? Number(candidates?.[0]?.pillarArea ?? best?.pillarArea)
+        : null,
+      residualAreaEff: Number.isFinite(Number(candidates?.[0]?.residualAreaEff ?? best?.residualAreaEff))
+        ? Number(candidates?.[0]?.residualAreaEff ?? best?.residualAreaEff)
+        : null,
+      qualified: FULL_COVER_ENABLED
+        ? Boolean((candidates?.[0]?.coverageRatioEff ?? best?.coverageRatioEff ?? 0) >= FULL_COVER_MIN)
+        : Boolean((candidates?.[0]?.coverageRatio ?? best?.coverageRatio) >= COVERAGE_MIN),
     },
     stats: {
       candidateCount: rankedAll.length,
@@ -4846,6 +6614,9 @@ const compute = (payload) => {
       fallbackMode,
       thicknessReason: thicknessReason || (fallbackMode === 'AREA' ? THICKNESS_REASON.FALLBACK_AREA : ''),
       coverageMin: COVERAGE_MIN,
+      fullCover: FULL_COVER_ENABLED,
+      fullCoverMin: FULL_COVER_MIN,
+      ignoreCoalPillarsInCoverage: IGNORE_COAL_PILLARS_IN_COVERAGE,
       qualifiedCount: qualifiedCandidates.length,
       fallbackCount: fallbackCandidates.length,
       usedFallback,
@@ -5158,34 +6929,38 @@ const computePreview = (payload) => {
   };
 };
 
-self.onmessage = (e) => {
-  const data = e?.data ?? {};
-  if (data?.type !== 'compute') return;
-  const payload = data?.payload ?? {};
-  try {
-    const result = compute(payload);
-    self.postMessage({ type: 'result', payload: result });
-  } catch (err) {
-    const msg = String(err?.message ?? err);
-    self.postMessage({
-      type: 'result',
-      payload: {
-        ok: false,
-        reqSeq: payload?.reqSeq,
-        cacheKey: String(payload?.cacheKey ?? ''),
-        mode: 'smart-resource',
-        message: msg,
-        failedReason: msg,
-        omegaRender: null,
-        omegaArea: null,
-        candidates: [],
-        tonnageTotal: 0,
-        attemptSummary: {
-          attemptedCombos: 0,
-          feasibleCombos: 0,
-          failTypes: { EXCEPTION: 1 },
+export { compute };
+
+if (typeof self !== 'undefined') {
+  self.onmessage = (e) => {
+    const data = e?.data ?? {};
+    if (data?.type !== 'compute') return;
+    const payload = data?.payload ?? {};
+    try {
+      const result = compute(payload);
+      self.postMessage({ type: 'result', payload: result });
+    } catch (err) {
+      const msg = String(err?.message ?? err);
+      self.postMessage({
+        type: 'result',
+        payload: {
+          ok: false,
+          reqSeq: payload?.reqSeq,
+          cacheKey: String(payload?.cacheKey ?? ''),
+          mode: 'smart-resource',
+          message: msg,
+          failedReason: msg,
+          omegaRender: null,
+          omegaArea: null,
+          candidates: [],
+          tonnageTotal: 0,
+          attemptSummary: {
+            attemptedCombos: 0,
+            feasibleCombos: 0,
+            failTypes: { EXCEPTION: 1 },
+          },
         },
-      },
-    });
-  }
-};
+      });
+    }
+  };
+}

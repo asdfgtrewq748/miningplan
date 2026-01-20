@@ -73,6 +73,18 @@ const DEFAULT_PLANNING_PARAMS = {
 
 const App = () => {
   const DEBUG_PANEL = import.meta.env.DEV;
+  // Worker 抓包日志：在浏览器控制台执行 localStorage.setItem('mp.debugWorker','1') 并刷新即可开启。
+  // 默认关闭，避免刷屏影响性能。
+  const DEBUG_WORKER_LOG = (() => {
+    try {
+      return String(window?.localStorage?.getItem('mp.debugWorker') ?? '') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  const workerLog = (...args) => { if (DEBUG_WORKER_LOG) console.log(...args); };
+  const workerWarn = (...args) => { if (DEBUG_WORKER_LOG) console.warn(...args); };
+  const workerError = (...args) => { if (DEBUG_WORKER_LOG) console.error(...args); };
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
   const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning'
@@ -102,8 +114,19 @@ const App = () => {
   const [planningEfficiencyBusy, setPlanningEfficiencyBusy] = useState(false);
   const [planningEfficiencyResult, setPlanningEfficiencyResult] = useState(null);
   const [planningEfficiencyCacheKey, setPlanningEfficiencyCacheKey] = useState('');
+  // progress/filter 需要“同步可读”的最新 cacheKey（避免 setState 尚未生效导致丢弃 progress）。
+  const planningEfficiencyCacheKeyRef = useRef('');
   const [planningEfficiencySelectedSig, setPlanningEfficiencySelectedSig] = useState('');
   const [planningInnerOmegaOverrideWb, setPlanningInnerOmegaOverrideWb] = useState(null);
+  const [planningEfficiencyShowAllCandidates, setPlanningEfficiencyShowAllCandidates] = useState(false);
+  const [planningEfficiencyProgress, setPlanningEfficiencyProgress] = useState(null);
+  const planningEfficiencyProgressLastTsRef = useRef(0);
+
+  // 工程效率：计算过程弹窗（用于复制“请求+回包+TopK候选关键字段”给排障用）
+  const efficiencyLastRequestRef = useRef(null);
+  const efficiencyLastResponseRef = useRef(null);
+  const [planningEfficiencyDebugOpen, setPlanningEfficiencyDebugOpen] = useState(false);
+  const [planningEfficiencyDebugText, setPlanningEfficiencyDebugText] = useState('');
 
   // 资源回收最优（复用同一 worker：传 optMode=recovery，按吨位/覆盖率排序）
   const recoveryCacheRef = useRef(new Map());
@@ -115,8 +138,11 @@ const App = () => {
   const [planningRecoveryBusy, setPlanningRecoveryBusy] = useState(false);
   const [planningRecoveryResult, setPlanningRecoveryResult] = useState(null);
   const [planningRecoveryCacheKey, setPlanningRecoveryCacheKey] = useState('');
+  const planningRecoveryCacheKeyRef = useRef('');
   const [planningRecoverySelectedSig, setPlanningRecoverySelectedSig] = useState('');
   const [planningRecoveryShowAllCandidates, setPlanningRecoveryShowAllCandidates] = useState(false);
+  const [planningRecoveryProgress, setPlanningRecoveryProgress] = useState(null);
+  const planningRecoveryProgressLastTsRef = useRef(0);
 
   // 资源回收：调试弹窗（用于复制“请求+回包+TopK候选关键字段”给排障用）
   const recoveryLastRequestRef = useRef(null);
@@ -366,26 +392,40 @@ const App = () => {
     const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
     const fw = getFaceWidthRange();
 
-    // 工程效率最优：wb 固定代表值（默认取均值/或目标值），不做枚举搜索
-    const wbRep = Number.isFinite(Number(wbR?.target))
-      ? Number(wbR.target)
-      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
-        ? (Number(wbR.min) + Number(wbR.max)) / 2
-        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+    // 工程效率最优（更新：2026-01-20）：wb 固定取最小值；ws 在范围内按 1m 步长枚举
+    const wbRep = (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+      ? Math.min(Number(wbR.min), Number(wbR.max))
+      : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
 
     const f3 = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(3) : '0.000');
+
+    // v2 评分口径：用于缓存隔离（避免新旧评分/排序口径混用同一 cacheKey）
+    const effScoreSpec = 'effScore=v2(wN=0.20,wCV=10.0,wShort=5.0,minLRef=100)';
+    const sortSpec = 'sort=coverageFirst(eps=1e-5,tie=NascThenScoreV2)';
+
+    // 工程效率“均衡档近似”（默认启用）：确定性粗到细 + 种子精修
+    // - ws：9 点采样（包含端点 + target）
+    // - B：10m 粗搜 + 局部 1m 精修（win=12m, seed=3）
+    // - Ncap：20
+    const effSearchProfile = 'balanced-v1(ws=9,target=on,Ncap=20,B=10->1,seed=3,win=12)';
+    const wsTarget = parseNonNegOrNull(planningParams?.coalPillarTarget);
     return [
       'eff',
       `axis=${axis}`,
       `bnd=${bHash}`,
       `wb=${f3(wbRep)}`,
       `ws=${f3(wsR.min)}-${f3(wsR.max)}`,
+      `wsTarget=${f3(wsTarget ?? (wsR.min + wsR.max) / 2)}`,
+      'wsEnum=coarse9',
       `B=${f3(fw.min)}-${f3(fw.max)}`,
       `Bdef=${f3(fw.defMin)}-${f3(fw.defMax)}`,
-      // worker 内 B 搜索策略版本（两阶段：粗搜 + 局部 1m 精修）
-      'Bsearch=v2(coarse=25,fine=1,win=10,topM=5)',
+      // worker 内搜索策略版本（均衡档近似）：确定性粗到细
+      `searchProfile=${effSearchProfile}`,
+      'Bsearch=v4(balancedCoarse=10,fastCoarse=5,fine=1,win=12,seed=3,topM=3,Ncap=20)',
       // axis=y 内部 swapXY 修复版本（用于淘汰历史错误缓存）
       'axisSwapFix=v1',
+      effScoreSpec,
+      sortSpec,
     ].join('|');
   };
 
@@ -404,20 +444,18 @@ const App = () => {
   };
 
   const buildRecoveryCacheKey = () => {
-    // 资源回收新口径：x/y 双方向同时评估
-    const axis = 'both';
+    // 资源回收：缓存必须与实际请求轴向一致，否则会命中旧缓存导致“看起来没变化”
+    const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
 
     const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
     const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
     const fw = getFaceWidthRange();
 
-    // recovery：当前仍复用规则矩形生成器；wb 同样使用代表值（Ω 内缩），不做细粒度枚举
-    const wbRep = Number.isFinite(Number(wbR?.target))
-      ? Number(wbR.target)
-      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
-        ? (Number(wbR.min) + Number(wbR.max)) / 2
-        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+    // 资源回收最优：边界煤柱/区段煤柱均按“最小值”口径固定参与计算（用于统一验收口径）
+    const wbEff = Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0;
+    const wsEff = Number.isFinite(Number(wsR?.min)) ? Number(wsR.min) : 0;
+    const wbRep = wbEff;
 
     const seamThickness = Number(planningParams?.seamThickness);
     const coalDensity = Number(planningParams?.coalDensity);
@@ -432,10 +470,8 @@ const App = () => {
     const interpVersion = 'idw-v1';
 
     const f3 = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(3) : '0.000');
-    // v1.0：明确 wbMin/wbMax/wbFixed（即使当前 UI 只传代表值，也要写入 cacheKey 防漂移）
-    const wbFixedRaw = (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
-      ? (Number(wbR.min) + Number(wbR.max)) / 2
-      : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : Number(wbRep));
+    // v1.0：明确 wbMin/wbMax/wbFixed；recovery 口径固定取最小值
+    const wbFixedRaw = wbEff;
 
     const perFaceTrapezoid = true;
     const perFaceInRatioMin = 0.7;
@@ -444,21 +480,34 @@ const App = () => {
     const perFaceMaxSeq = 160;
     const perFaceSeedM = 12;
     const perFaceNSet = [3, 4, 5, 6, 7];
-    const perFaceExtraBudgetMs = 800;
+    const perFaceExtraBudgetMs = 1500;
     const perFaceVarB = true;
     const perFaceBListMax = 10;
     const preferPerFaceBest = false;
     const relaxedAllowPerFaceShift = true;
 
+    // v1.1：工程化全覆盖（分段变宽 + 残煤清扫）参数纳入 cacheKey
+    const segLtM = 50;
+    const segGmax = 0.4; // m/m（等价：每100m允许变宽/变窄≤40m）
+    const segDeltaBMaxMain = 5;
+    const segDeltaBMaxCleanup = 10;
+    const cleanupEnable = true;
+    const cleanupAllowAddShortFace = true;
+
+    const fullCover = true;
+    const fullCoverMin = 0.995;
+    const ignoreCoalPillarsInCoverage = true;
+
     return [
       'res',
-      'res-v1.0',
+      // v1.2：破坏旧缓存（修复：缓存 key 轴向一致性 + worker 裁剪 loop 稳定性）
+      'res-v1.2',
       `axis=${axis}`,
       `bnd=${bHash}`,
-      `wbMin=${f3(wbR.min)}`,
-      `wbMax=${f3(wbR.max)}`,
+      `wbMin=${f3(wbEff)}`,
+      `wbMax=${f3(wbEff)}`,
       `wbFixed=${f3(wbFixedRaw)}`,
-      `ws=${f3(wsR.min)}-${f3(wsR.max)}`,
+      `ws=${f3(wsEff)}-${f3(wsEff)}`,
       `B=${f3(fw.min)}-${f3(fw.max)}`,
       `thicknessDataHash=${thicknessDataHash}`,
       `targetSeam=${targetSeam}`,
@@ -482,6 +531,17 @@ const App = () => {
       `pfBListMax=${String(perFaceBListMax)}`,
       `pfPrefer=${preferPerFaceBest ? '1' : '0'}`,
       `relShift=${relaxedAllowPerFaceShift ? '1' : '0'}`,
+
+      `fullCover=${fullCover ? '1' : '0'}`,
+      `fullCoverMin=${String(fullCoverMin)}`,
+      `ignorePillars=${ignoreCoalPillarsInCoverage ? '1' : '0'}`,
+
+      `segLt=${String(segLtM)}`,
+      `segG=${String(segGmax)}`,
+      `segDBmain=${String(segDeltaBMaxMain)}`,
+      `segDBclean=${String(segDeltaBMaxCleanup)}`,
+      `clean=${cleanupEnable ? '1' : '0'}`,
+      `cleanAdd=${cleanupAllowAddShortFace ? '1' : '0'}`,
     ].join('|');
   };
 
@@ -545,9 +605,9 @@ const App = () => {
       const nRange = r?.nRange;
       setPlanningParams((p) => ({
         ...p,
-        faceCountSelected: Number.isFinite(pickedN) ? String(Math.round(pickedN)) : p.faceCountSelected,
-        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.round(Number(nRange.nMin))) : p.faceCountSuggestedMin,
-        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.round(Number(nRange.nMax))) : p.faceCountSuggestedMax,
+        faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
+        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
+        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
       }));
     } catch {
       // ignore
@@ -570,6 +630,9 @@ const App = () => {
       loops = picked.render.facesLoops;
     }
     setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+    // 绘制：用 union 外轮廓覆盖 stroke，可消除相邻工作面共享边导致的重线
+    const unionLoops = Array.isArray(picked?.render?.plannedUnionLoopsWorld) ? picked.render.plannedUnionLoopsWorld : [];
+    setPlannedWorkfaceUnionLoopsWorld(cloneJson(unionLoops));
     setShowWorkfaceOutline(true);
     setShowPlanningBoundaryOverlay(true);
   };
@@ -578,6 +641,71 @@ const App = () => {
     const r = result ?? planningRecoveryResult;
     const req = recoveryLastRequestRef.current;
 
+    // 屏幕坐标（viewBox）级诊断：很多“短线”并非世界坐标短边，而是缩放后 < 1px 的边/重复点/闭合点导致。
+    // 这里统一在前端做一次统计，定位短线来自哪一层（boundary / overlay / union / fill）。
+    const computeLoopStatsScreen = (loops0, { shortEdgePx = 1.0 } = {}) => {
+      const loops = Array.isArray(loops0) ? loops0 : (loops0 ? [loops0] : []);
+      let loopCount = 0;
+      let pointCount = 0;
+      let segCount = 0;
+      let shortSegCount = 0;
+      let nanPointCount = 0;
+      let minSegLen = Infinity;
+      let minSegLenLoop = -1;
+
+      const normLoop = (loopLike) => {
+        const loop = Array.isArray(loopLike)
+          ? loopLike
+          : (Array.isArray(loopLike?.loop) ? loopLike.loop : []);
+        const pts = (loop ?? [])
+          .map((p) => ({ x: Number(p?.nx ?? p?.x), y: Number(p?.ny ?? p?.y) }))
+          .filter((p) => {
+            const ok = Number.isFinite(p.x) && Number.isFinite(p.y);
+            if (!ok) nanPointCount++;
+            return ok;
+          });
+        if (pts.length >= 2) {
+          const a = pts[0];
+          const b = pts[pts.length - 1];
+          if (Math.abs(a.x - b.x) <= 1e-12 && Math.abs(a.y - b.y) <= 1e-12) pts.pop();
+        }
+        return pts;
+      };
+
+      for (let li = 0; li < loops.length; li++) {
+        const pts = normLoop(loops[li]);
+        if (pts.length < 2) continue;
+        loopCount++;
+        pointCount += pts.length;
+
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const d = Math.hypot(dx, dy);
+          if (!Number.isFinite(d)) continue;
+          segCount++;
+          if (d < shortEdgePx) shortSegCount++;
+          if (d < minSegLen) {
+            minSegLen = d;
+            minSegLenLoop = li;
+          }
+        }
+      }
+
+      return {
+        loopCount,
+        pointCount,
+        segCount,
+        shortEdgePx,
+        shortSegCount,
+        minSegLen: Number.isFinite(minSegLen) ? minSegLen : null,
+        minSegLenLoop: (minSegLenLoop >= 0 ? minSegLenLoop : null),
+        nanPointCount,
+      };
+    };
+
     const candidates = Array.isArray(r?.candidates) ? r.candidates : [];
     const picked = selectedSig
       ? (candidates.find((c) => String(c?.signature ?? '') === String(selectedSig)) ?? candidates[0])
@@ -585,6 +713,7 @@ const App = () => {
 
     const pickCand = (c) => {
       const m = c?.metrics ?? {};
+      const r = c?.render ?? {};
       return {
         signature: String(c?.signature ?? ''),
         N: c?.N,
@@ -599,9 +728,15 @@ const App = () => {
         nearAngleDegList: (Array.isArray(c?.nearAngleDegList) ? c.nearAngleDegList : (Array.isArray(m?.nearAngleDegList) ? m.nearAngleDegList : null)),
         farAngleDegList: (Array.isArray(c?.farAngleDegList) ? c.farAngleDegList : (Array.isArray(m?.farAngleDegList) ? m.farAngleDegList : null)),
         coverageRatio: (c?.coverageRatio ?? m?.coverageRatio ?? null),
+        coverageRatioEff: (c?.coverageRatioEff ?? m?.coverageRatioEff ?? null),
         coveredArea: (c?.coveredArea ?? m?.faceAreaTotal ?? null),
         faceAreaTotal: (c?.faceAreaTotal ?? m?.faceAreaTotal ?? null),
         innerArea: (c?.innerArea ?? m?.omegaArea ?? null),
+        omegaAreaEff: (c?.omegaAreaEff ?? m?.omegaAreaEff ?? null),
+        pillarArea: (c?.pillarArea ?? m?.pillarArea ?? null),
+        pillarGapCount: (c?.pillarGapCount ?? m?.pillarGapCount ?? null),
+        pillarGapWidthSum: (c?.pillarGapWidthSum ?? m?.pillarGapWidthSum ?? null),
+        residualAreaEff: (c?.residualAreaEff ?? m?.residualAreaEff ?? null),
         minInRatio: (c?.minInRatio ?? m?.minFaceInRatio ?? m?.minInRatio ?? null),
         rminOk: (c?.rminOk ?? m?.rminOk ?? null),
         overlapOk: (c?.overlapOk ?? m?.overlapOk ?? null),
@@ -609,6 +744,7 @@ const App = () => {
         overlapAreaTotal: (c?.overlapAreaTotal ?? m?.overlapAreaTotal ?? null),
         maxOverlapArea: (c?.maxOverlapArea ?? m?.maxOverlapArea ?? null),
         qualified: (c?.qualified ?? m?.qualified ?? null),
+        qualifiedFullCover: (c?.qualifiedFullCover ?? m?.qualifiedFullCover ?? null),
         reason: (c?.reason ?? m?.reason ?? null),
         lenCV: (c?.lenCV ?? m?.lenCV ?? null),
         minL: (c?.minL ?? m?.minL ?? null),
@@ -618,17 +754,50 @@ const App = () => {
         abnormalFaces: (Array.isArray(c?.abnormalFaces) ? c.abnormalFaces : (Array.isArray(m?.abnormalFaces) ? m.abnormalFaces : null)),
         sumAbsDeltaDeg: (c?.sumAbsDeltaDeg ?? m?.sumAbsDeltaDeg ?? null),
         smoothnessDeg: (c?.smoothnessDeg ?? m?.smoothnessDeg ?? null),
+        fullCoverPatch: (m?.fullCoverPatch ?? null),
+
+        // 诊断：排查“煤柱区边界短线/重线”
+        renderStats: {
+          fillFaceCount: (r?.fillFaceCount ?? null),
+          unionLoopCount: (r?.unionLoopCount ?? null),
+          unionOutlineStats: (r?.unionOutlineStats ?? null),
+          fillLoopsStats: (r?.fillLoopsStats ?? null),
+        },
       };
     };
 
     const topK = candidates.slice(0, 10).map(pickCand);
     const tableRows = Array.isArray(r?.table?.rows) ? r.table.rows.slice(0, 10) : [];
 
+    // 仅统计“当前前端正在绘制的图层”。理论上它应对应 picked（选中候选）的 loops。
+    // 若短线仍出现但 worker 世界坐标最短边并不短，这里通常能看到屏幕级 shortSegCount。
+    const shortEdgePx = 1.0;
+    const screenDiagnostics = {
+      viewBox: { w: 800, h: 500 },
+      shortEdgePx,
+      boundaryStats: computeLoopStatsScreen(normalizedBoundaryLoop, { shortEdgePx }),
+      boundaryOverlayStats: computeLoopStatsScreen(planningBoundaryOverlayLoop, { shortEdgePx }),
+      omegaOverlayStats: computeLoopStatsScreen(planningOmegaOverlayLoops, { shortEdgePx }),
+      plannedFillStats: computeLoopStatsScreen(
+        (Array.isArray(normalizedPlannedWorkfaceLoops) ? normalizedPlannedWorkfaceLoops.map((x) => x?.loop).filter(Boolean) : []),
+        { shortEdgePx },
+      ),
+      plannedUnionStats: computeLoopStatsScreen(normalizedPlannedWorkfaceUnionLoops, { shortEdgePx }),
+      renderFlags: {
+        showWorkfaceOutline: Boolean(showWorkfaceOutline),
+        showPlanningBoundaryOverlay: Boolean(showPlanningBoundaryOverlay),
+        planningOptMode: String(planningOptMode ?? ''),
+      },
+    };
+
     return {
       ts: Date.now(),
       ui: {
         mainViewMode,
         planningOptMode,
+        recoveryBusy: Boolean(planningRecoveryBusy),
+        recoveryLatestReqSeq: Number(recoveryReqSeqRef.current || 0),
+        recoverySelectedSig: String(planningRecoverySelectedSig || ''),
       },
       request: {
         payload: req ? {
@@ -651,6 +820,14 @@ const App = () => {
           perFaceVarB: req?.perFaceVarB,
           perFaceBListMax: req?.perFaceBListMax,
           maxTimeMs: req?.maxTimeMs,
+          fullCover: req?.fullCover,
+          fullCoverMin: req?.fullCoverMin,
+          ignoreCoalPillarsInCoverage: req?.ignoreCoalPillarsInCoverage,
+          includeClippedLoops: req?.includeClippedLoops,
+          fullCoverPatch: req?.fullCoverPatch,
+          fullCoverPatchMaxTimeMs: req?.fullCoverPatchMaxTimeMs,
+          segmentWidth: req?.segmentWidth ?? null,
+          cleanupResidual: req?.cleanupResidual ?? null,
           thickness: {
             thicknessDataHash: req?.thickness?.thicknessDataHash,
             targetSeam: req?.thickness?.targetSeam,
@@ -660,19 +837,30 @@ const App = () => {
         } : null,
       },
       response: r ? {
+        ui: {
+          shownResponseReqSeq: Number(r?.reqSeq || 0),
+          lastRequestReqSeq: Number(req?.reqSeq || 0),
+          latestReqSeq: Number(recoveryReqSeqRef.current || 0),
+          busy: Boolean(planningRecoveryBusy),
+        },
         ok: Boolean(r?.ok),
         failedReason: String(r?.failedReason ?? ''),
         reqSeq: r?.reqSeq,
         cacheKey: String(r?.cacheKey ?? ''),
         fast: Boolean(r?.fast),
         candidatesCount: Array.isArray(r?.candidates) ? r.candidates.length : null,
-        selectedCandidateKey: String(selectedSig || r?.selectedCandidateKey || r?.bestKey || r?.bestSignature || ''),
+        // 注意：这里不再用 selectedSig 覆盖 worker 字段，避免造成“明明 top1 合格但 selectedCandidateKey 显示不合格”的误判。
+        workerSelectedCandidateKey: String(r?.selectedCandidateKey || ''),
+        workerBestKey: String(r?.bestKey || ''),
+        workerBestSignature: String(r?.bestSignature || ''),
+        uiSelectedSig: String(selectedSig || ''),
         omegaArea: r?.omegaArea,
         tonnageTotal: r?.tonnageTotal,
         stats: r?.stats ?? null,
         debugPerFace: r?.debug?.perFace ?? null,
       } : null,
       selectedCandidate: picked ? pickCand(picked) : null,
+      screenDiagnostics,
       top10: topK,
       tableTop10: tableRows,
     };
@@ -714,6 +902,202 @@ const App = () => {
     }
   };
 
+  const buildEfficiencyDebugCopyPayload = (result, selectedSig) => {
+    const r = result ?? planningEfficiencyResult;
+    const req = efficiencyLastRequestRef.current;
+
+    const computeLoopStatsScreen = (loops0, { shortEdgePx = 1.0 } = {}) => {
+      const loops = Array.isArray(loops0) ? loops0 : (loops0 ? [loops0] : []);
+      let loopCount = 0;
+      let pointCount = 0;
+      let segCount = 0;
+      let shortSegCount = 0;
+      let nanPointCount = 0;
+      let minSegLen = Infinity;
+      let minSegLenLoop = -1;
+
+      const normLoop = (loopLike) => {
+        const loop = Array.isArray(loopLike)
+          ? loopLike
+          : (Array.isArray(loopLike?.loop) ? loopLike.loop : []);
+        const pts = (loop ?? [])
+          .map((p) => ({ x: Number(p?.nx ?? p?.x), y: Number(p?.ny ?? p?.y) }))
+          .filter((p) => {
+            const ok = Number.isFinite(p.x) && Number.isFinite(p.y);
+            if (!ok) nanPointCount++;
+            return ok;
+          });
+        if (pts.length >= 2) {
+          const a = pts[0];
+          const b = pts[pts.length - 1];
+          if (Math.abs(a.x - b.x) <= 1e-12 && Math.abs(a.y - b.y) <= 1e-12) pts.pop();
+        }
+        return pts;
+      };
+
+      for (let li = 0; li < loops.length; li++) {
+        const pts = normLoop(loops[li]);
+        if (pts.length < 2) continue;
+        loopCount++;
+        pointCount += pts.length;
+
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const d = Math.hypot(dx, dy);
+          if (!Number.isFinite(d)) continue;
+          segCount++;
+          if (d < shortEdgePx) shortSegCount++;
+          if (d < minSegLen) {
+            minSegLen = d;
+            minSegLenLoop = li;
+          }
+        }
+      }
+
+      return {
+        loopCount,
+        pointCount,
+        segCount,
+        shortEdgePx,
+        shortSegCount,
+        minSegLen: Number.isFinite(minSegLen) ? minSegLen : null,
+        minSegLenLoop: (minSegLenLoop >= 0 ? minSegLenLoop : null),
+        nanPointCount,
+      };
+    };
+
+    const candidates = Array.isArray(r?.candidates) ? r.candidates : [];
+    const picked = selectedSig
+      ? (candidates.find((c) => String(c?.signature ?? '') === String(selectedSig)) ?? candidates[0])
+      : (candidates[0] ?? null);
+
+    const pickCand = (c) => {
+      const m = c?.metrics ?? {};
+      return {
+        signature: String(c?.signature ?? ''),
+        N: c?.N,
+        B: c?.B,
+        wb: c?.wb,
+        ws: c?.ws,
+        coverageRatio: (c?.coverageRatio ?? m?.coverageRatio ?? null),
+        coveredArea: (c?.coveredArea ?? m?.faceAreaTotal ?? null),
+        innerArea: (c?.innerArea ?? m?.omegaArea ?? null),
+        efficiencyScore: (c?.efficiencyScore ?? m?.efficiencyScore ?? null),
+        qualified: (c?.qualified ?? m?.qualified ?? null),
+        reason: (c?.reason ?? m?.reason ?? null),
+        overlapOk: (c?.overlapOk ?? m?.overlapOk ?? null),
+        rminOk: (c?.rminOk ?? m?.rminOk ?? null),
+      };
+    };
+
+    const topK = candidates.slice(0, 10).map(pickCand);
+    const tableRows = Array.isArray(r?.table?.rows) ? r.table.rows.slice(0, 10) : [];
+
+    const shortEdgePx = 1.0;
+    const screenDiagnostics = {
+      viewBox: { w: 800, h: 500 },
+      shortEdgePx,
+      boundaryStats: computeLoopStatsScreen(normalizedBoundaryLoop, { shortEdgePx }),
+      boundaryOverlayStats: computeLoopStatsScreen(planningBoundaryOverlayLoop, { shortEdgePx }),
+      omegaOverlayStats: computeLoopStatsScreen(planningOmegaOverlayLoops, { shortEdgePx }),
+      plannedFillStats: computeLoopStatsScreen(
+        (Array.isArray(normalizedPlannedWorkfaceLoops) ? normalizedPlannedWorkfaceLoops.map((x) => x?.loop).filter(Boolean) : []),
+        { shortEdgePx },
+      ),
+      plannedUnionStats: computeLoopStatsScreen(normalizedPlannedWorkfaceUnionLoops, { shortEdgePx }),
+      renderFlags: {
+        showWorkfaceOutline: Boolean(showWorkfaceOutline),
+        showPlanningBoundaryOverlay: Boolean(showPlanningBoundaryOverlay),
+        planningOptMode: String(planningOptMode ?? ''),
+      },
+    };
+
+    return {
+      ts: Date.now(),
+      ui: {
+        mainViewMode,
+        planningOptMode,
+        efficiencyBusy: Boolean(planningEfficiencyBusy),
+        efficiencyLatestReqSeq: Number(efficiencyReqSeqRef.current || 0),
+        efficiencySelectedSig: String(planningEfficiencySelectedSig || ''),
+      },
+      request: {
+        payload: req ? {
+          reqSeq: req?.reqSeq,
+          cacheKey: String(req?.cacheKey ?? ''),
+          axis: String(req?.axis ?? ''),
+          fast: Boolean(req?.fast),
+          boundaryPillarMin: req?.boundaryPillarMin,
+          boundaryPillarMax: req?.boundaryPillarMax,
+          coalPillarMin: req?.coalPillarMin,
+          coalPillarMax: req?.coalPillarMax,
+          faceWidthMin: req?.faceWidthMin,
+          faceWidthMax: req?.faceWidthMax,
+          faceAdvanceMax: req?.faceAdvanceMax,
+          topK: req?.topK,
+          maxTimeMs: req?.maxTimeMs,
+        } : null,
+      },
+      response: r ? {
+        ok: Boolean(r?.ok),
+        failedReason: String(r?.failedReason ?? ''),
+        message: String(r?.message ?? ''),
+        reqSeq: r?.reqSeq,
+        cacheKey: String(r?.cacheKey ?? ''),
+        fast: Boolean(r?.fast),
+        candidatesCount: Array.isArray(r?.candidates) ? r.candidates.length : null,
+        workerSelectedCandidateKey: String(r?.selectedCandidateKey || ''),
+        workerBestKey: String(r?.bestKey || ''),
+        workerBestSignature: String(r?.bestSignature || ''),
+        uiSelectedSig: String(selectedSig || ''),
+        stats: r?.stats ?? null,
+      } : null,
+      selectedCandidate: picked ? pickCand(picked) : null,
+      screenDiagnostics,
+      top10: topK,
+      tableTop10: tableRows,
+    };
+  };
+
+  const openEfficiencyDebugModal = () => {
+    try {
+      const sig = String(planningEfficiencySelectedSig || planningEfficiencyResult?.selectedCandidateKey || planningEfficiencyResult?.bestKey || planningEfficiencyResult?.bestSignature || '');
+      const blob = buildEfficiencyDebugCopyPayload(planningEfficiencyResult, sig);
+      setPlanningEfficiencyDebugText(JSON.stringify(blob, null, 2));
+    } catch (e) {
+      setPlanningEfficiencyDebugText(JSON.stringify({ ts: Date.now(), error: String(e?.message ?? e) }, null, 2));
+    }
+    setPlanningEfficiencyDebugOpen(true);
+  };
+
+  const copyEfficiencyDebugText = async () => {
+    const text = String(planningEfficiencyDebugText ?? '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fallback
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      // ignore
+    }
+  };
+
   const applyEfficiencyCandidateBySignature = (sig, result) => {
     const r = result ?? planningEfficiencyResult;
     if (!r?.candidates?.length) return;
@@ -726,9 +1110,9 @@ const App = () => {
       const nRange = r?.nRange;
       setPlanningParams((p) => ({
         ...p,
-        faceCountSelected: Number.isFinite(pickedN) ? String(Math.round(pickedN)) : p.faceCountSelected,
-        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.round(Number(nRange.nMin))) : p.faceCountSuggestedMin,
-        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.round(Number(nRange.nMax))) : p.faceCountSuggestedMax,
+        faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
+        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
+        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
       }));
     } catch {
       // ignore
@@ -749,6 +1133,7 @@ const App = () => {
       loops = picked.render.plannedWorkfaceLoopsWorld;
     }
     setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+    setPlannedWorkfaceUnionLoopsWorld([]);
     setShowWorkfaceOutline(true);
     setShowPlanningBoundaryOverlay(true);
 
@@ -791,6 +1176,7 @@ const App = () => {
 
     if (Array.isArray(loops) && loops.length > 0) {
       setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+      setPlannedWorkfaceUnionLoopsWorld([]);
       setShowWorkfaceOutline(true);
       setShowPlanningBoundaryOverlay(true);
     }
@@ -804,11 +1190,17 @@ const App = () => {
     }
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
+    // 用户要求：关闭 fast，仅输出最终精算结果。
+    // 说明：保留函数签名以兼容旧调用点，但在内部强制 fast/refine=false。
+    const fastFinal = false;
+    const refineFinal = false;
+
     const cacheKey = buildEfficiencyCacheKey();
+    planningEfficiencyCacheKeyRef.current = String(cacheKey);
     setPlanningEfficiencyCacheKey(cacheKey);
 
-    // fast + refine：先快速算一版立刻出图，再自动补一轮 full compute。
-    if (fast && refine) {
+    // 关闭 fast：不再使用 fast+refine 流程
+    if (fastFinal && refineFinal) {
       efficiencyPendingRefineKeyRef.current = String(cacheKey);
       const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
       efficiencyPendingRefineAxisRef.current = axisNow;
@@ -882,11 +1274,17 @@ const App = () => {
     const cachedLooksConsistent = cached?.result?.ok
       && !cachedFast
       && !cachedPartial
-      && cachedAxis === 'both'
-      && (cachedSig.startsWith('x|') || cachedSig.startsWith('y|'));
+      && cachedAxis === axisNow
+      && cachedSig.startsWith(`${axisNow}|`);
 
     if (cachedLooksConsistent) {
+      workerLog('[worker][efficiency] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
       setPlanningEfficiencyResult(cached.result);
+      try {
+        efficiencyLastResponseRef.current = cached.result;
+      } catch {
+        // ignore
+      }
       const rememberedSig = String(efficiencySelectedSigByKeyRef.current.get(cacheKey) || '');
       const rememberedOk = Boolean(
         rememberedSig
@@ -937,19 +1335,50 @@ const App = () => {
     }
 
     if (!efficiencyWorkerRef.current) return;
-    const axis = 'both';
+    const axis = axisNow;
     const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
     const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
     const fw = getFaceWidthRange();
 
-    const wbRep = Number.isFinite(Number(wbR?.target))
-      ? Number(wbR.target)
-      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
-        ? (Number(wbR.min) + Number(wbR.max)) / 2
-        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+    // 工程效率最优（更新：2026-01-20）：wb 固定取最小值（与 worker/cacheKey 保持一致）
+    const wbFixed = (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+      ? Math.min(Number(wbR.min), Number(wbR.max))
+      : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
 
     const reqSeq = (efficiencyReqSeqRef.current += 1);
-    if (!background) setPlanningEfficiencyBusy(true);
+    // 即使是 background 重算，也需要展示“计算中…（进度）”
+    setPlanningEfficiencyBusy(true);
+    setPlanningEfficiencyProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
+    planningEfficiencyProgressLastTsRef.current = 0;
+
+    // 启动前台计算时先置为“计算中”，避免 UI/调试面板继续展示上一轮响应。
+    // 同时清空绘图层，防止旧图造成误判。
+    if (!background) {
+      try {
+        setPlanningEfficiencySelectedSig('');
+        setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
+      } catch {
+        // ignore
+      }
+      try {
+        setPlanningEfficiencyResult((prev) => ({
+          ok: false,
+          mode: 'smart-efficiency',
+          message: '计算中…（0%，已尝试0，可行0，开始）',
+          failedReason: '',
+          reqSeq,
+          cacheKey,
+          axis,
+          fast: false,
+          candidates: [],
+          omegaRender: prev?.omegaRender ?? null,
+          omegaArea: prev?.omegaArea ?? null,
+        }));
+      } catch {
+        // ignore
+      }
+    }
 
     const gridRes = 20;
     const interpVersion = 'idw-v1';
@@ -963,12 +1392,15 @@ const App = () => {
         input: { mode: 'efficiency' },
         boundaryLoopWorld: cloneJson(boundaryLoopWorld),
         axis,
-        fast: Boolean(fast),
-        // smart-efficiency：wb 固定代表值
-        boundaryPillarMin: wbRep,
-        boundaryPillarMax: wbRep,
+        fast: Boolean(fastFinal),
+        // 默认启用“均衡档近似”：确定性粗到细 + 种子精修（更快）
+        searchProfile: 'balanced',
+        // smart-efficiency：wb 固定取最小值（不做搜索/枚举）
+        boundaryPillarMin: wbFixed,
+        boundaryPillarMax: wbFixed,
         coalPillarMin: wsR.min,
         coalPillarMax: wsR.max,
+        coalPillarTarget: parseNonNegOrNull(planningParams?.coalPillarTarget),
         faceWidthMin: fw.min,
         faceWidthMax: fw.max,
         faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
@@ -977,8 +1409,22 @@ const App = () => {
     };
 
     try {
+      efficiencyLastRequestRef.current = cloneJson(msg.payload);
+    } catch {
+      efficiencyLastRequestRef.current = msg.payload;
+    }
+
+    try {
       assertPlanningPayload('efficiency', msg.payload);
       console.log('start', { uiMode: 'efficiency', requestId: reqSeq, mode: msg.payload.mode, cacheKey: msg.payload.cacheKey });
+      workerLog('[worker][efficiency] postMessage', {
+        reqSeq,
+        cacheKey: msg.payload.cacheKey,
+        axis: msg.payload.axis,
+        fast: Boolean(msg.payload.fast),
+        topK: msg.payload.topK,
+        maxTimeMs: msg.payload.maxTimeMs,
+      });
     } catch (e) {
       const errMsg = String(e?.message ?? e);
       console.error('mismatch', { uiMode: 'efficiency', requestId: reqSeq, error: errMsg });
@@ -1001,6 +1447,7 @@ const App = () => {
           wbMax: wbR.max,
           wsMin: wsR.min,
           wsMax: wsR.max,
+          wsTarget: parseNonNegOrNull(planningParams?.coalPillarTarget),
           Bmin: fw.min,
           Bmax: fw.max,
           Lmax: Number(planningParams?.faceAdvanceMax) || null,
@@ -1010,6 +1457,7 @@ const App = () => {
           BnormalizeWarnings: fw.warnings,
           boundaryHash: hashBoundaryLoopWorld(boundaryLoopWorld),
           boundaryPointCount: boundaryLoopWorld.length,
+          searchProfile: 'balanced',
           topK: 10,
         },
       }));
@@ -1026,15 +1474,30 @@ const App = () => {
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
     const cacheKey = buildRecoveryCacheKey();
+    planningRecoveryCacheKeyRef.current = String(cacheKey);
     setPlanningRecoveryCacheKey(cacheKey);
+
+    // 每次“触发计算”都默认回到候选 Top1 展示：清掉该 cacheKey 下的历史选中态
+    // 否则会一直显示上次手动选的旧方案（例如未补残煤的版本）。
+    try {
+      recoverySelectedSigByKeyRef.current.delete(cacheKey);
+      const cached0 = recoveryCacheRef.current.get(cacheKey);
+      if (cached0?.selectedSig) {
+        recoveryCacheRef.current.set(cacheKey, { ...cached0, selectedSig: '' });
+      }
+    } catch {
+      // ignore
+    }
+
+    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
 
     if (fast && refine) {
       recoveryPendingRefineKeyRef.current = String(cacheKey);
-      recoveryPendingRefineAxisRef.current = 'both';
+      recoveryPendingRefineAxisRef.current = axisNow;
     }
 
     const cached = recoveryCacheRef.current.get(cacheKey);
-    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    workerLog('[worker][recovery] cache-check', { cacheKey, axisNow, force: Boolean(force), fast: Boolean(fast), refine: Boolean(refine), background: Boolean(background) });
     const cachedAxis = String(cached?.result?.axis ?? '');
     const cachedFast = Boolean(cached?.result?.fast);
     const cachedSig = String(
@@ -1051,6 +1514,7 @@ const App = () => {
       && cachedSig.startsWith(`${axisNow}|`);
 
     if (cachedLooksConsistent) {
+      workerLog('[worker][recovery] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
       setPlanningRecoveryResult(cached.result);
       try {
         recoveryLastResponseRef.current = cached.result;
@@ -1083,6 +1547,13 @@ const App = () => {
     }
 
     if (cached && !cachedLooksConsistent) {
+      workerWarn('[worker][recovery] cache-evict(inconsistent)', {
+        cacheKey,
+        axisNow,
+        cachedAxis,
+        cachedFast,
+        cachedSig,
+      });
       try {
         recoveryCacheRef.current.delete(cacheKey);
       } catch {
@@ -1103,11 +1574,9 @@ const App = () => {
     const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
     const fw = getFaceWidthRange();
 
-    const wbRep = Number.isFinite(Number(wbR?.target))
-      ? Number(wbR.target)
-      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
-        ? (Number(wbR.min) + Number(wbR.max)) / 2
-        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+    // 资源回收最优：边界煤柱/区段煤柱均按“最小值”口径固定参与计算
+    const wbRep = Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0;
+    const wsMin = Number.isFinite(Number(wsR?.min)) ? Number(wsR.min) : 0;
 
     const seamThickness = Number(planningParams?.seamThickness);
     const hasConstThk = Number.isFinite(seamThickness) && seamThickness > 0;
@@ -1132,7 +1601,40 @@ const App = () => {
       : null;
 
     const reqSeq = (recoveryReqSeqRef.current += 1);
-    if (!background) setPlanningRecoveryBusy(true);
+    setPlanningRecoveryBusy(true);
+    setPlanningRecoveryProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
+    planningRecoveryProgressLastTsRef.current = 0;
+
+    // 计算耗时较长时，旧图会造成误判；这里在真正发起 compute 时先清空绘图层。
+    try {
+      setPlanningRecoverySelectedSig('');
+      setPlannedWorkfaceLoopsWorld([]);
+      setPlannedWorkfaceUnionLoopsWorld([]);
+    } catch {
+      // ignore
+    }
+
+    // 启动前台计算时先置为“计算中”，避免 UI/调试面板继续展示上一轮响应（会出现 reqSeq 对不上的假象）。
+    if (!background) {
+      try {
+        setPlanningRecoveryResult((prev) => ({
+          ok: false,
+          mode: 'smart-resource',
+          message: '计算中…（0%，已尝试0，可行0，开始）',
+          failedReason: '',
+          reqSeq,
+          cacheKey,
+          axis,
+          fast: Boolean(fast),
+          candidates: [],
+          tonnageTotal: 0,
+          omegaRender: prev?.omegaRender ?? null,
+          omegaArea: prev?.omegaArea ?? null,
+        }));
+      } catch {
+        // ignore
+      }
+    }
 
     const msg = {
       type: 'compute',
@@ -1162,16 +1664,45 @@ const App = () => {
         // 无解兜底：若严格/主阈值找不到条带组合，自动降低“每面有效占比”阈值到 floor。
         autoRelaxInRatio: true,
         autoRelaxInRatioFloor: 0.5,
-        // 性能：给足 per-face（含长度增长/边界自适应）枚举时间，减少 partial/fast=true
-        maxTimeMs: 12000,
+        // 性能：给足 per-face（含长度增长/边界自适应）枚举时间，减少 timeBudgetHit → partial/fast=true
+        maxTimeMs: 18000,
         // 新口径：优先全覆盖粉色区域（达不到则降级并给 warning）
         fullCover: true,
         fullCoverMin: 0.995,
-        includeClippedLoops: false,
+        // 工程验收口径：中间煤柱区不计入覆盖/残煤评价（也不允许被补片覆盖）
+        ignoreCoalPillarsInCoverage: true,
+        // 为了能在画布上看到分段变宽/残煤清扫后的真实形状，需要回传裁剪后的 loops。
+        // 注意：这会增加回包体积；若后续要优化，可改成仅回传 top1 的 loops。
+        includeClippedLoops: true,
+
+        // v1.1：工程化全覆盖（分段变宽 + 残煤清扫）
+        segmentWidth: {
+          enabled: true,
+          LtM: 50,
+          gmax: 0.4, // m/m
+          // 主方案微调（更像现场）
+          deltaBMaxMainM: 5,
+          // 残煤清扫（更激进但受限规模）
+          deltaBMaxCleanupM: 10,
+          deltaBStepM: 1,
+          segmentCountMaxMain: 3,
+          segmentCountMaxCleanup: 3,
+          breakRatios2: [0.4, 0.5, 0.6],
+          breakRatios3: [[0.35, 0.65], [0.4, 0.7], [0.45, 0.75]],
+        },
+        cleanupResidual: {
+          enabled: true,
+          maxFacesToAdjust: 5,
+          maxReplacements: 2,
+          allowAddShortFace: true,
+          maxNewFaces: 1,
+          maxTimeMs: 1500,
+        },
+
         boundaryPillarMin: wbRep,
         boundaryPillarMax: wbRep,
-        coalPillarMin: wsR.min,
-        coalPillarMax: wsR.max,
+        coalPillarMin: wsMin,
+        coalPillarMax: wsMin,
         faceWidthMin: fw.min,
         faceWidthMax: fw.max,
         faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
@@ -1197,6 +1728,15 @@ const App = () => {
     try {
       assertPlanningPayload('recovery', msg.payload);
       console.log('start', { uiMode: 'recovery', requestId: reqSeq, mode: msg.payload.mode, cacheKey: msg.payload.cacheKey });
+      workerLog('[worker][recovery] postMessage', {
+        reqSeq,
+        cacheKey: msg.payload.cacheKey,
+        axis: msg.payload.axis,
+        fast: Boolean(msg.payload.fast),
+        topK: msg.payload.topK,
+        maxTimeMs: msg.payload.maxTimeMs,
+        includeClippedLoops: Boolean(msg.payload.includeClippedLoops),
+      });
     } catch (e) {
       const errMsg = String(e?.message ?? e);
       console.error('mismatch', { uiMode: 'recovery', requestId: reqSeq, error: errMsg });
@@ -1249,6 +1789,7 @@ const App = () => {
     if (efficiencyPreviewDebounceRef.current) clearTimeout(efficiencyPreviewDebounceRef.current);
     efficiencyPreviewDebounceRef.current = setTimeout(() => {
       const cacheKey = buildEfficiencyCacheKey();
+      planningEfficiencyCacheKeyRef.current = String(cacheKey);
       setPlanningEfficiencyCacheKey(cacheKey);
       const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
       const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
@@ -1264,6 +1805,8 @@ const App = () => {
       const reqSeq = (efficiencyPreviewReqSeqRef.current += 1);
       setPlanningEfficiencyPreviewBusy(true);
       setPlanningEfficiencyPreview({ ok: false, preview: true, targetN: N, reqSeq, cacheKey, message: '预览计算中…' });
+
+      workerLog('[worker][efficiency] postMessage(preview)', { reqSeq, cacheKey, axis, targetN: N });
 
       efficiencyWorkerRef.current.postMessage({
         type: 'preview',
@@ -1342,9 +1885,20 @@ const App = () => {
       try {
         assertPlanningResponse(uiMode, payload);
         console.log('end', { uiMode, requestId: payloadSeq, mode: payload?.mode, cacheKey: payloadKey });
+        workerLog('[worker] onmessage(result)', {
+          uiMode,
+          reqSeq: payloadSeq,
+          cacheKey: payloadKey,
+          fast: payloadFast,
+          ok: Boolean(payload?.ok),
+          partial: Boolean(payload?.stats?.partial),
+          elapsedMs: payload?.stats?.elapsedMs ?? null,
+          candidatesCount: Array.isArray(payload?.candidates) ? payload.candidates.length : (payload?.stats?.candidateCount ?? null),
+        });
       } catch (e) {
         const errMsg = String(e?.message ?? e);
         console.error('mismatch', { uiMode, requestId: payloadSeq, error: errMsg, responseMode: payload?.mode, cacheKey: payloadKey });
+        workerError('[worker] response-assert-failed', { uiMode, reqSeq: payloadSeq, cacheKey: payloadKey, error: errMsg });
         if (isRecovery) {
           setPlanningRecoveryBusy(false);
           setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: errMsg, failedReason: errMsg, candidates: [] });
@@ -1360,11 +1914,13 @@ const App = () => {
       // 忽略过期响应（用户可能在计算中又改了参数）
       const latestSeq = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
       if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) {
+        workerWarn('[worker] discard-stale', { uiMode, payloadSeq, latestSeq, cacheKey: payloadKey, fast: payloadFast, ok: Boolean(payload?.ok) });
         if (!payloadFast && payload?.ok && payloadKey) {
-          const workerBestSig = payload.bestKey
+          const workerBestSig = (payload.candidates?.[0]?.signature ?? '')
+            || payload.bestKey
             || payload.selectedCandidateKey
             || payload.bestSignature
-            || (payload.candidates?.[0]?.signature ?? '');
+            || '';
 
           const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(payloadKey) || '');
           const rememberedOk = Boolean(
@@ -1378,8 +1934,13 @@ const App = () => {
         return;
       }
 
-      if (isRecovery) setPlanningRecoveryBusy(false);
-      else setPlanningEfficiencyBusy(false);
+      if (isRecovery) {
+        setPlanningRecoveryBusy(false);
+        setPlanningRecoveryProgress(null);
+      } else {
+        setPlanningEfficiencyBusy(false);
+        setPlanningEfficiencyProgress(null);
+      }
 
       if (!payload?.ok) {
         if (isRecovery) setPlanningRecoveryResult(payload);
@@ -1397,6 +1958,7 @@ const App = () => {
         if (isRecovery) setPlanningRecoverySelectedSig('');
         else setPlanningEfficiencySelectedSig('');
         setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
 
         // efficiency compute 失败：清理预览状态
         if (!isRecovery) {
@@ -1417,10 +1979,11 @@ const App = () => {
       }
 
       const cacheKey = payloadKey || (isRecovery ? buildRecoveryCacheKey() : buildEfficiencyCacheKey());
-      const workerBestSig = payload.bestKey
+      const workerBestSig = (payload.candidates?.[0]?.signature ?? '')
+        || payload.bestKey
         || payload.selectedCandidateKey
         || payload.bestSignature
-        || (payload.candidates?.[0]?.signature ?? '');
+        || '';
 
       // 优先恢复用户在该 cacheKey 下的手动选择（若仍存在于候选集中）
       const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(cacheKey) || '');
@@ -1446,6 +2009,11 @@ const App = () => {
         applyRecoveryCandidateBySignature(preferredSig, payload);
       } else {
         setPlanningEfficiencyResult(payload);
+        try {
+          efficiencyLastResponseRef.current = payload;
+        } catch {
+          // ignore
+        }
         applyEfficiencyCandidateBySignature(preferredSig, payload);
         // compute 成功：清理预览（回到“真实候选集”）
         setPlanningEfficiencyPreview(null);
@@ -1530,8 +2098,52 @@ const App = () => {
     if (efficiencyWorkerRef.current) {
       efficiencyWorkerRef.current.onmessage = (ev) => {
         const data = ev?.data ?? {};
-        if (data?.type !== 'result' && data?.type !== 'preview') return;
+        if (data?.type !== 'result' && data?.type !== 'preview' && data?.type !== 'progress') return;
         const payload = data?.payload ?? {};
+
+        if (data?.type === 'progress') {
+          const payloadSeq = Number(payload?.reqSeq);
+          const latestSeq = efficiencyReqSeqRef.current;
+          if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) return;
+          const payloadKey = String(payload?.cacheKey ?? '');
+          const latestKey = String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || '');
+          if (payloadKey && latestKey && payloadKey !== latestKey) return;
+          const now = Date.now();
+          if (now - (planningEfficiencyProgressLastTsRef.current || 0) < 120) return;
+          planningEfficiencyProgressLastTsRef.current = now;
+          setPlanningEfficiencyProgress(payload?.progress ?? null);
+
+          // 同步更新“结果提示条”的文案（用户主要关注这里的“计算中…”）。
+          try {
+            const p = payload?.progress ?? null;
+            const pct = Number(p?.percent);
+            const tried = Number(p?.attemptedCombos);
+            const ok = Number(p?.feasibleCombos);
+            const phase = String(p?.phase ?? '').trim();
+            const wsI = Number(p?.wsIndex);
+            const wsT = Number(p?.wsTotal);
+            const nI = Number(p?.nIndex);
+            const nT = Number(p?.nTotal);
+            const parts = [];
+            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+            if (Number.isFinite(wsI) && Number.isFinite(wsT) && wsT >= 1) parts.push(`ws ${Math.max(1, Math.round(wsI))}/${Math.round(wsT)}`);
+            if (Number.isFinite(nI) && Number.isFinite(nT) && nT >= 1) parts.push(`N ${Math.max(1, Math.round(nI))}/${Math.round(nT)}`);
+            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+            if (phase) parts.push(phase);
+            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+            setPlanningEfficiencyResult((prev) => {
+              if (!prev || prev.ok) return prev;
+              const msg0 = String(prev?.message ?? '');
+              if (!msg0.startsWith('计算中')) return prev;
+              const msg1 = `计算中…${suffix}`;
+              return (msg0 === msg1) ? prev : { ...prev, message: msg1 };
+            });
+          } catch {
+            // ignore
+          }
+          return;
+        }
 
         if (data?.type === 'preview') {
           const payloadSeq = Number(payload?.reqSeq);
@@ -1551,8 +2163,45 @@ const App = () => {
     if (resourceWorkerRef.current) {
       resourceWorkerRef.current.onmessage = (ev) => {
         const data = ev?.data ?? {};
-        if (data?.type !== 'result') return;
+        if (data?.type !== 'result' && data?.type !== 'progress') return;
         const payload = data?.payload ?? {};
+
+        if (data?.type === 'progress') {
+          const payloadSeq = Number(payload?.reqSeq);
+          const latestSeq = recoveryReqSeqRef.current;
+          if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) return;
+          const payloadKey = String(payload?.cacheKey ?? '');
+          const latestKey = String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || '');
+          if (payloadKey && latestKey && payloadKey !== latestKey) return;
+          const now = Date.now();
+          if (now - (planningRecoveryProgressLastTsRef.current || 0) < 120) return;
+          planningRecoveryProgressLastTsRef.current = now;
+          setPlanningRecoveryProgress(payload?.progress ?? null);
+
+          try {
+            const p = payload?.progress ?? null;
+            const pct = Number(p?.percent);
+            const tried = Number(p?.attemptedCombos);
+            const ok = Number(p?.feasibleCombos);
+            const phase = String(p?.phase ?? '').trim();
+            const parts = [];
+            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+            if (phase) parts.push(phase);
+            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+            setPlanningRecoveryResult((prev) => {
+              if (!prev || prev.ok) return prev;
+              const msg0 = String(prev?.message ?? '');
+              if (!msg0.startsWith('计算中')) return prev;
+              const msg1 = `计算中…${suffix}`;
+              return (msg0 === msg1) ? prev : { ...prev, message: msg1 };
+            });
+          } catch {
+            // ignore
+          }
+          return;
+        }
         handleComputeResult('recovery', payload);
       };
     }
@@ -1622,6 +2271,41 @@ const App = () => {
   const lastAutoSeamThicknessRef = useRef(null);
   const mainCenterScrollRef = useRef(null);
   const planningOptPanelAnchorRef = useRef(null);
+  const planningEfficiencySectionRef = useRef(null);
+  const planningRecoverySectionRef = useRef(null);
+
+  const handleToggleEfficiencyCandidates = () => {
+    const rows0 = planningEfficiencyResult?.table?.rows ?? [];
+    const topSig = String(rows0?.[0]?.signature ?? '');
+
+    if (planningEfficiencyShowAllCandidates) {
+      // 折叠：自动回到 Top1 并滚回板块顶部，避免长表视角跑偏
+      if (topSig) handleSelectEfficiencyCandidate(topSig);
+      setPlanningEfficiencyShowAllCandidates(false);
+      setTimeout(() => {
+        planningEfficiencySectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      }, 0);
+      return;
+    }
+
+    setPlanningEfficiencyShowAllCandidates(true);
+  };
+
+  const handleToggleRecoveryCandidates = () => {
+    const rows0 = planningRecoveryResult?.table?.rows ?? [];
+    const topSig = String(rows0?.[0]?.signature ?? '');
+
+    if (planningRecoveryShowAllCandidates) {
+      if (topSig) handleSelectRecoveryCandidate(topSig);
+      setPlanningRecoveryShowAllCandidates(false);
+      setTimeout(() => {
+        planningRecoverySectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      }, 0);
+      return;
+    }
+
+    setPlanningRecoveryShowAllCandidates(true);
+  };
 
   const openRightPanelOnly = (key) => {
     setActiveAccordion(key ? [key] : []);
@@ -1637,7 +2321,7 @@ const App = () => {
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
     if (m === 'efficiency') {
       // 显式切换：展示“计算中…”更符合用户预期
-      requestComputeEfficiency({ force: true, fast: true, refine: true, background: false });
+      requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
       return;
     }
     if (m === 'recovery') {
@@ -1684,6 +2368,8 @@ const App = () => {
   const [workingFaceData, setWorkingFaceData] = useState([]);
   // 智能规划：规划工作面轮廓（世界坐标）
   const [plannedWorkfaceLoopsWorld, setPlannedWorkfaceLoopsWorld] = useState([]); // [{ faceIndex, loop: [{x,y}...] }]
+  // 智能规划：规划工作面“合并后外轮廓”（世界坐标；用于避免相邻面共享边形成重线）
+  const [plannedWorkfaceUnionLoopsWorld, setPlannedWorkfaceUnionLoopsWorld] = useState([]); // [[{x,y}...]]
   // 智能规划：工作面悬停 Tooltip（仅 UI 派生，不触发任何重算；位置固定，避免 mousemove 频繁 setState）
   const [planningWorkfaceHover, setPlanningWorkfaceHover] = useState(null); // { faceIndex:number }
   const planningWorkfaceTooltipRef = useRef(null);
@@ -2152,6 +2838,7 @@ const App = () => {
       planningReverseSolutions: cloneJson(planningReverseSolutions),
       planningAdvanceAxis,
       plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+      plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
       showPlanningBoundaryOverlay,
       hasInitializedFaceWidthRange,
       planningPreStartSnapshot: cloneJson(planningPreStartSnapshot),
@@ -2175,6 +2862,7 @@ const App = () => {
       setPlanningReverseSolutions(snap.planningReverseSolutions ?? []);
       setPlanningAdvanceAxis(String(snap.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x');
       setPlannedWorkfaceLoopsWorld(snap.plannedWorkfaceLoopsWorld ?? []);
+      setPlannedWorkfaceUnionLoopsWorld(snap.plannedWorkfaceUnionLoopsWorld ?? []);
       setShowPlanningBoundaryOverlay(Boolean(snap.showPlanningBoundaryOverlay));
       setHasInitializedFaceWidthRange(Boolean(snap.hasInitializedFaceWidthRange));
       setPlanningPreStartSnapshot(snap.planningPreStartSnapshot ? cloneJson(snap.planningPreStartSnapshot) : null);
@@ -2282,6 +2970,7 @@ const App = () => {
     const hasPlanningArtifacts = Boolean(
       current.showPlanningBoundaryOverlay
       || (Array.isArray(current.plannedWorkfaceLoopsWorld) && current.plannedWorkfaceLoopsWorld.length)
+      || (Array.isArray(current.plannedWorkfaceUnionLoopsWorld) && current.plannedWorkfaceUnionLoopsWorld.length)
       || (Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions.length)
       || (!Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions)
       || current.hasInitializedFaceWidthRange
@@ -2297,6 +2986,7 @@ const App = () => {
         planningReverseSolutions: cloneJson(planningPreStartSnapshot.planningReverseSolutions ?? current.planningReverseSolutions),
         planningAdvanceAxis: String(planningPreStartSnapshot.planningAdvanceAxis ?? current.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x',
         plannedWorkfaceLoopsWorld: cloneJson(planningPreStartSnapshot.plannedWorkfaceLoopsWorld ?? []),
+        plannedWorkfaceUnionLoopsWorld: cloneJson(planningPreStartSnapshot.plannedWorkfaceUnionLoopsWorld ?? []),
         showPlanningBoundaryOverlay: Boolean(planningPreStartSnapshot.showPlanningBoundaryOverlay),
         hasInitializedFaceWidthRange: Boolean(planningPreStartSnapshot.hasInitializedFaceWidthRange),
         planningPreStartSnapshot: null,
@@ -2321,6 +3011,7 @@ const App = () => {
       planningReverseSolutions: [],
       planningAdvanceAxis: 'x',
       plannedWorkfaceLoopsWorld: [],
+      plannedWorkfaceUnionLoopsWorld: [],
       showPlanningBoundaryOverlay: false,
       hasInitializedFaceWidthRange: false,
       planningPreStartSnapshot: null,
@@ -6328,9 +7019,76 @@ const App = () => {
     return pts;
   };
 
+  // 渲染级清理：消除重复点/极短边/近共线点，避免虚线边界出现“短线/毛刺”。
+  // 注意：仅用于屏幕坐标（nx/ny）loop；不要拿它改 world 坐标几何以免影响计算。
+  const sanitizeRenderLoop = (pts0, { minSegLen = 1.5, collinearSin = 0.01 } = {}) => {
+    const pts = (Array.isArray(pts0) ? pts0 : [])
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (pts.length < 3) return pts;
+
+    const dist = (a, b) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.hypot(dx, dy);
+    };
+
+    // 1) 去掉连续重复点/极短边
+    const a1 = [];
+    for (const p of pts) {
+      const prev = a1[a1.length - 1];
+      if (prev && dist(prev, p) < Math.max(0.2, minSegLen * 0.25)) continue;
+      a1.push(p);
+    }
+    if (a1.length < 3) return a1;
+
+    const a2 = [a1[0]];
+    for (let i = 1; i < a1.length; i++) {
+      const p = a1[i];
+      const prev = a2[a2.length - 1];
+      if (prev && dist(prev, p) < minSegLen) continue;
+      a2.push(p);
+    }
+    if (a2.length < 3) return a2;
+
+    // 2) 删除近共线点（方向一致时）
+    const isNearCollinear = (p0, p1, p2) => {
+      const ax = p1.x - p0.x;
+      const ay = p1.y - p0.y;
+      const bx = p2.x - p1.x;
+      const by = p2.y - p1.y;
+      const la = Math.hypot(ax, ay);
+      const lb = Math.hypot(bx, by);
+      if (!(la > 1e-9 && lb > 1e-9)) return true;
+      const cross = ax * by - ay * bx;
+      const sin = Math.abs(cross) / (la * lb);
+      const dot = ax * bx + ay * by;
+      return sin <= collinearSin && dot >= 0;
+    };
+
+    let out = a2;
+    for (let pass = 0; pass < 2; pass++) {
+      if (out.length < 4) break;
+      const b = [];
+      for (let i = 0; i < out.length; i++) {
+        const pPrev = out[(i - 1 + out.length) % out.length];
+        const p = out[i];
+        const pNext = out[(i + 1) % out.length];
+        // 保留 3 点以上的闭环：删除近共线点
+        if (out.length > 3 && isNearCollinear(pPrev, p, pNext)) continue;
+        b.push(p);
+      }
+      // 避免删到不成形
+      if (b.length >= 3) out = b;
+    }
+
+    return out.length >= 3 ? out : a2;
+  };
+
   const normalizedBoundaryLoop = useMemo(() => {
     if (!hasBoundaryData || !normalizedBoundaryData?.length) return [];
-    const pts = computeNonSelfIntersectingLoop(normalizedBoundaryData, (p) => p?.nx, (p) => p?.ny);
+    const pts0 = computeNonSelfIntersectingLoop(normalizedBoundaryData, (p) => p?.nx, (p) => p?.ny);
+    const pts = sanitizeRenderLoop(pts0, { minSegLen: 1.6, collinearSin: 0.012 });
     return pts.map((p) => ({ nx: p.x, ny: p.y }));
   }, [hasBoundaryData, normalizedBoundaryData]);
 
@@ -6348,6 +7106,7 @@ const App = () => {
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
     const cacheKey = buildEfficiencyCacheKey();
+    planningEfficiencyCacheKeyRef.current = String(cacheKey);
     setPlanningEfficiencyCacheKey(cacheKey);
 
     // 若 cache 中已有结果，直接切换（不必再次计算）
@@ -6390,15 +7149,13 @@ const App = () => {
       }
     }
 
-    // 输入变化后做一次 debounce：先 fast 快速出图，再后台 refine full。
-    // 目的：切换 y 轴 / 调整煤柱范围时，不必等待 full 才看到变化。
+    // 输入变化后做一次 debounce：后台 full compute（关闭 fast，仅输出精算结果）。
     if (planningEfficiencyBusy) return;
     if (!efficiencyWorkerRef.current) return;
 
     if (efficiencyAutoRecomputeDebounceRef.current) clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
     efficiencyAutoRecomputeDebounceRef.current = setTimeout(() => {
-      // fast 计算只为“快速出图”，不应频繁抖动 busy 文案；因此后台执行。
-      requestComputeEfficiency({ force: true, fast: true, refine: true, background: true });
+      requestComputeEfficiency({ force: true, fast: false, refine: false, background: true });
     }, 220);
 
     return () => {
@@ -6434,6 +7191,7 @@ const App = () => {
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
     const cacheKey = buildRecoveryCacheKey();
+    planningRecoveryCacheKeyRef.current = String(cacheKey);
     setPlanningRecoveryCacheKey(cacheKey);
 
     const cached = recoveryCacheRef.current.get(cacheKey);
@@ -6628,7 +7386,8 @@ const App = () => {
 
     if (loopWorld.length < 3) return [];
     const normalized = normalizeCoords(loopWorld, combinedPointsForBounds);
-    const pts = computeNonSelfIntersectingLoop(normalized, (p) => p?.nx, (p) => p?.ny);
+    const pts0 = computeNonSelfIntersectingLoop(normalized, (p) => p?.nx, (p) => p?.ny);
+    const pts = sanitizeRenderLoop(pts0, { minSegLen: 1.6, collinearSin: 0.012 });
     return pts.map((p) => ({ nx: p.x, ny: p.y }));
   }, [
     showPlanningBoundaryOverlay,
@@ -6684,9 +7443,11 @@ const App = () => {
     setHasInitializedFaceWidthRange(false);
     setPlanningPreStartSnapshot(null);
     setPlanningEfficiencyResult(null);
+    planningEfficiencyCacheKeyRef.current = '';
     setPlanningEfficiencyCacheKey('');
     setPlanningEfficiencySelectedSig('');
     setPlanningRecoveryResult(null);
+    planningRecoveryCacheKeyRef.current = '';
     setPlanningRecoveryCacheKey('');
     setPlanningRecoverySelectedSig('');
     setPlanningInnerOmegaOverrideWb(null);
@@ -6935,9 +7696,9 @@ const App = () => {
       const clampN = (n) => {
         const nn = Math.max(1, Math.round(Number(n)));
         if (Number.isFinite(nMin) && Number.isFinite(nMax) && nMax >= nMin) {
-          return Math.min(Math.max(nn, Math.round(nMin)), Math.round(nMax));
+          return Math.min(Math.max(nn, Math.round(nMin)), Math.min(20, Math.round(nMax)));
         }
-        return nn;
+        return Math.min(20, nn);
       };
 
       const pickedN = clampN(targetN);
@@ -7116,9 +7877,11 @@ const App = () => {
       if (loops.length) {
         setMainViewMode('planning');
         setPlannedWorkfaceLoopsWorld(loops);
+        setPlannedWorkfaceUnionLoopsWorld([]);
         setShowWorkfaceOutline(true);
       } else {
         setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
       }
       return;
     }
@@ -7180,6 +7943,7 @@ const App = () => {
     if (loops.length) {
       setMainViewMode('planning');
       setPlannedWorkfaceLoopsWorld(loops);
+      setPlannedWorkfaceUnionLoopsWorld([]);
       setShowWorkfaceOutline(true);
     }
   };
@@ -7192,6 +7956,7 @@ const App = () => {
         planningReverseSolutions: cloneJson(planningReverseSolutions),
         planningAdvanceAxis,
         plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+        plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
         showPlanningBoundaryOverlay,
         hasInitializedFaceWidthRange,
       });
@@ -7199,6 +7964,7 @@ const App = () => {
       // 切换到规划视图并清空旧结果
       switchMainViewModeWithRightPanel('planning');
       setPlannedWorkfaceLoopsWorld([]);
+      setPlannedWorkfaceUnionLoopsWorld([]);
 
       if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
         window.alert('请先导入采区边界坐标数据。');
@@ -7232,15 +7998,15 @@ const App = () => {
       setPlanningEfficiencySelectedSig('');
       setPlanningRecoverySelectedSig('');
 
-      // 单击即出图：先 fast 再 refine full
-      // fast 阶段非常快，若触发 busy 会造成候选表右侧“计算中…”闪烁；改为后台执行。
+      // 单击即出图：工程效率仅精算（关闭 fast）。
       if (planningOptMode === 'efficiency') {
-        requestComputeEfficiency({ force: true, fast: true, refine: true, background: true });
+        // 点击“启动智能采区规划”属于用户显式触发：使用前台计算，确保显示进度与“计算中…”提示。
+        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
         return;
       }
       if (planningOptMode === 'recovery') {
         // recovery：直接 full compute（fast 预览会导致候选=1 且 per-face 被禁用）
-        requestComputeRecovery({ force: true, fast: false, refine: false, background: true });
+        requestComputeRecovery({ force: true, fast: false, refine: false, background: false });
         return;
       }
 
@@ -7430,6 +8196,9 @@ const App = () => {
       let nMin = nMin0;
       let nMax = nMax0;
 
+      // 工作面个数全局上限：20
+      nMax = Math.min(nMax, 20);
+
       const lMin = lMax * advanceLenRatioMin;
       const lMaxUse = lMax * advanceLenRatioMax;
 
@@ -7469,7 +8238,7 @@ const App = () => {
         ? Math.max(1, Math.floor((spanMinAtWbMin + wsRangeMin) / denomN))
         : nMax;
 
-      nMax = Math.min(nMax, nMaxFeasibleByWidth);
+      nMax = Math.min(nMax, nMaxFeasibleByWidth, 20);
       if (nMax < nMin) {
         window.alert(
           '根据煤柱范围反算后：所有可选工作面个数方案的“工作面宽度上限”均小于 100m，已自动剔除。\n' +
@@ -7719,9 +8488,11 @@ const App = () => {
       const loops = buildPlannedFaceLoopsWithinPolygon({ innerPoly, axis: advanceAxis, N: nSelected, B: bForDraw, Ws: wsMean });
       if (loops.length) {
         setPlannedWorkfaceLoopsWorld(loops);
+        setPlannedWorkfaceUnionLoopsWorld([]);
         setShowWorkfaceOutline(true);
       } else {
         setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
       }
     } catch (e) {
       console.error('handleStartIntelligentPlanning failed', e);
@@ -7759,15 +8530,70 @@ const App = () => {
   const normalizedPlannedWorkfaceLoops = useMemo(() => {
     const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
     if (!src.length) return [];
+
+    const loopKey = (loopN) => {
+      const pts = Array.isArray(loopN) ? loopN : [];
+      if (pts.length < 2) return '';
+
+      // bbox + 点集哈希：同一 faceIndex 下可能出现多个裁剪后子多边形，必须保证 key 唯一
+      let minX = pts[0].nx;
+      let maxX = pts[0].nx;
+      let minY = pts[0].ny;
+      let maxY = pts[0].ny;
+      let h = 2166136261;
+      const mix = (v) => { h ^= (v | 0); h = Math.imul(h, 16777619); };
+      const q = (v) => {
+        const x = Number(v);
+        if (!Number.isFinite(x)) return 0;
+        // 量化到 1e-3，避免浮点抖动导致 key 不稳定
+        return Math.round(x * 1000);
+      };
+      for (const p of pts) {
+        const x = Number(p?.nx);
+        const y = Number(p?.ny);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        mix(q(x));
+        mix(q(y));
+      }
+      mix(pts.length);
+      const hu = (h >>> 0).toString(16);
+      return `${q(minX)}|${q(minY)}|${q(maxX)}|${q(maxY)}|n=${pts.length}|h=${hu}`;
+    };
+
     return src
       .map((wf) => {
         const loopW = (wf?.loop ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
         if (loopW.length < 2) return null;
-        const loopN = normalizeCoords(loopW, combinedPointsForBounds).map((p) => ({ nx: p.nx, ny: p.ny }));
-        return { faceIndex: wf.faceIndex, loop: loopN };
+
+        const loopN0 = normalizeCoords(loopW, combinedPointsForBounds).map((p) => ({ x: p.nx, y: p.ny }));
+        // 填充面（尤其 patch=1）在屏幕坐标可能出现亚像素级短边，SVG 抗锯齿会表现为“短线/毛刺”。
+        // 这里仅做渲染级清理，不改变世界坐标几何与任何评分/覆盖率口径。
+        const loopN1 = sanitizeRenderLoop(loopN0, { minSegLen: 1.2, collinearSin: 0.01 });
+        const loopN = loopN1.map((p) => ({ nx: p.x, ny: p.y }));
+        return { faceIndex: wf.faceIndex, loop: loopN, __k: loopKey(loopN) };
       })
       .filter(Boolean);
   }, [plannedWorkfaceLoopsWorld, combinedPointsForBounds]);
+
+  const normalizedPlannedWorkfaceUnionLoops = useMemo(() => {
+    const src = Array.isArray(plannedWorkfaceUnionLoopsWorld) ? plannedWorkfaceUnionLoopsWorld : [];
+    if (!src.length) return [];
+    return src
+      .map((loopW) => {
+        const ptsW = (loopW ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+        if (ptsW.length < 2) return null;
+        const loopN0 = normalizeCoords(ptsW, combinedPointsForBounds).map((p) => ({ x: p.nx, y: p.ny }));
+        // union 外轮廓（尤其 patch=1）常带极短边/近共线点：会表现为边界上的短线段。
+        // 这里只做渲染级清理，不改变世界坐标的几何口径。
+        const loopN = sanitizeRenderLoop(loopN0, { minSegLen: 1.2, collinearSin: 0.01 });
+        return loopN.map((p) => ({ nx: p.x, ny: p.y }));
+      })
+      .filter(Boolean);
+  }, [plannedWorkfaceUnionLoopsWorld, combinedPointsForBounds]);
 
   const safeLoopNoClosure = (loop) => {
     const pts = Array.isArray(loop) ? loop.filter((p) => Number.isFinite(Number(p?.x)) && Number.isFinite(Number(p?.y))).map((p) => ({ x: Number(p.x), y: Number(p.y) })) : [];
@@ -8938,6 +9764,7 @@ const App = () => {
                       <stop offset="60%" stopColor="#f472b6" stopOpacity="0.18" />
                       <stop offset="100%" stopColor="#f472b6" stopOpacity="0.08" />
                     </radialGradient>
+
                   </defs>
                   {/* 采区外框矩形（仅未导入数据时显示占位外框） */}
                   {!hasSpatialData && (
@@ -9064,7 +9891,7 @@ const App = () => {
                       )}
 
                       {/* 工作面虚线圈定（按 4 点一组判别工作面；自动消除相交） */}
-                      {showWorkfaceOutline && hasWorkingFaceData && normalizedWorkfaceLoops.length > 0 && (
+                      {showWorkfaceOutline && hasWorkingFaceData && normalizedWorkfaceLoops.length > 0 && !(mainViewMode === 'planning' && normalizedPlannedWorkfaceLoops.length > 0) && (
                         <g>
                           {normalizedWorkfaceLoops.map((wf) => {
                             const loop = wf?.loop ?? [];
@@ -9094,18 +9921,44 @@ const App = () => {
                             if (loop.length < 2) return null;
                             const pts = loop.map((p) => `${p.nx},${p.ny}`);
                             const closedPts = loop.length >= 3 ? [...pts, pts[0]] : pts;
+                            const showUnionOutline = planningOptMode === 'recovery' && normalizedPlannedWorkfaceUnionLoops.length > 0;
                             return (
                               <polygon
-                                key={`wf-plan-${wf.faceIndex}`}
+                                key={`wf-plan-${wf.faceIndex}-${String(wf?.__k ?? '')}`}
                                 points={closedPts.join(' ')}
                                 fill="#3b82f6"
                                 fillOpacity="0.22"
-                                stroke="#2563eb"
-                                strokeWidth="2"
-                                strokeOpacity="0.7"
+                                // recovery：用 union 外轮廓统一描边，避免相邻面共享边重线
+                                // efficiency：保持单面描边（不受 recovery 的外轮廓策略影响）
+                                stroke={showUnionOutline ? 'none' : '#2563eb'}
+                                strokeWidth={showUnionOutline ? 0 : 2}
+                                strokeOpacity={showUnionOutline ? 0 : 0.7}
                                 onMouseEnter={(e) => handlePlannedWorkfaceMouseEnter(e, wf.faceIndex)}
                                 onMouseMove={handlePlannedWorkfaceMouseMove}
                                 onMouseLeave={handlePlannedWorkfaceMouseLeave}
+                              />
+                            );
+                          })}
+                        </g>
+                      )}
+
+                      {/* 规划工作面外轮廓（union 后描边）：避免相邻面共享边产生“重线” */}
+                      {mainViewMode === 'planning' && planningOptMode === 'recovery' && normalizedPlannedWorkfaceUnionLoops.length > 0 && (
+                        <g pointerEvents="none">
+                          {normalizedPlannedWorkfaceUnionLoops.map((loop, i) => {
+                            if (!Array.isArray(loop) || loop.length < 2) return null;
+                            const pts = loop.map((p) => `${p.nx},${p.ny}`);
+                            const closedPts = loop.length >= 3 ? [...pts, pts[0]] : pts;
+                            return (
+                              <polyline
+                                key={`wf-plan-union-${i}`}
+                                points={closedPts.join(' ')}
+                                fill="none"
+                                stroke="#1d4ed8"
+                                strokeWidth="2"
+                                strokeOpacity="0.9"
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
                               />
                             );
                           })}
@@ -9578,22 +10431,60 @@ const App = () => {
               />
 
               {planningOptMode === 'efficiency' && (
-                <section className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <section ref={planningEfficiencySectionRef} className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="min-w-0">
                       <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">工程效率候选对比表</div>
-                      <div className="mt-1 text-[11px] text-slate-500">
-                        口径：覆盖率 = 回采面积 / 可采区面积（边界煤柱内缩后范围）。点击行可联动更新粉色可采区与矩形工作面。
-                      </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {planningEfficiencyBusy && (
-                        <div className="text-[10px] text-slate-400 font-mono">计算中…</div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {(() => {
+                            const p = planningEfficiencyProgress;
+                            const pct = Number(p?.percent);
+                            const tried = Number(p?.attemptedCombos);
+                            const ok = Number(p?.feasibleCombos);
+                            const phase = String(p?.phase ?? '').trim();
+                            const wsI = Number(p?.wsIndex);
+                            const wsT = Number(p?.wsTotal);
+                            const nI = Number(p?.nIndex);
+                            const nT = Number(p?.nTotal);
+                            const parts = [];
+                            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+                            if (Number.isFinite(wsI) && Number.isFinite(wsT) && wsT >= 1) parts.push(`ws ${Math.max(1, Math.round(wsI))}/${Math.round(wsT)}`);
+                            if (Number.isFinite(nI) && Number.isFinite(nT) && nT >= 1) parts.push(`N ${Math.max(1, Math.round(nI))}/${Math.round(nT)}`);
+                            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+                            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+                            if (phase) parts.push(phase);
+                            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+                            return `计算中…${suffix}`;
+                          })()}
+                        </div>
                       )}
                       {planningEfficiencyResult?.ok && (
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}
-                        </div>
+                        <>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}
+                          </div>
+                          <button
+                            type="button"
+                            className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                            onClick={openEfficiencyDebugModal}
+                            title="打开计算过程弹窗，可复制请求/回包/Top10候选的关键字段"
+                          >
+                            计算过程
+                          </button>
+                          {Array.isArray(planningEfficiencyResult?.table?.rows) && planningEfficiencyResult.table.rows.length > 1 && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                              onClick={handleToggleEfficiencyCandidates}
+                              title="默认仅展示最优方案；可展开查看TopK候选对比表"
+                            >
+                              {planningEfficiencyShowAllCandidates ? '仅显示最优' : '展开候选'}
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -9611,64 +10502,112 @@ const App = () => {
                   {planningEfficiencyResult?.ok && (
                     <div className="w-full">
                       <div className="w-full overflow-x-auto">
-                      <table className="w-full table-fixed text-[11px]">
+                      <table className="w-full table-auto text-[11px]">
                         <thead className="sticky top-0 bg-white border-b border-slate-100">
                           <tr>
-                            <th className="w-12 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">序号</th>
-                            <th className="w-16 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
-                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
-                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m）</th>
-                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
-                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
-                            <th className="w-24 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
-                            <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
-                            <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
-                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
+                            <th className="w-12 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">序号</th>
+                            <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
+                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m）</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
+                            <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
+                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
+                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {(planningEfficiencyResult?.table?.rows ?? []).map((r) => {
-                            const sig = String(r?.signature ?? '');
-                            const active = sig && sig === planningEfficiencySelectedSig;
-                            const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
-                            const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
-                            const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
-                            const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+                          {(() => {
+                            const rows0 = planningEfficiencyResult?.table?.rows ?? [];
+                            const rows = planningEfficiencyShowAllCandidates ? rows0 : rows0.slice(0, 1);
 
-                            return (
-                              <tr
-                                key={sig || `row-${r?.rank}`}
-                                className={
-                                  `border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ` +
-                                  (active ? 'bg-pink-50/60' : 'hover:bg-slate-50')
-                                }
-                                onClick={() => handleSelectEfficiencyCandidate(sig)}
-                                title="点击：联动绘图"
-                              >
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{r?.rank ?? '--'}</td>
-                                <td className="py-2 px-2 text-center">
-                                  <input
-                                    type="radio"
-                                    name="planning-efficiency-choice"
-                                    checked={Boolean(active)}
-                                    onChange={() => handleSelectEfficiencyCandidate(sig)}
-                                    onClick={(e) => e.stopPropagation()}
-                                    aria-label="选择方案"
-                                  />
-                                </td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-bold">{r?.N ?? '--'}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.B)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
-                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.efficiencyScore)}</td>
-                              </tr>
-                            );
-                          })}
+                            return rows.map((r) => {
+                              const sig = String(r?.signature ?? '');
+                              const active = sig && sig === planningEfficiencySelectedSig;
+                              const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
+                              const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
+                              const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+                              const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+
+                              return (
+                                <tr
+                                  key={sig || `row-${r?.rank}`}
+                                  className={
+                                    `border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ` +
+                                    (active ? 'bg-pink-50/60' : 'hover:bg-slate-50')
+                                  }
+                                  onClick={() => handleSelectEfficiencyCandidate(sig)}
+                                  title="点击：联动绘图"
+                                >
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{r?.rank ?? '--'}</td>
+                                  <td className="py-2 px-2 text-center">
+                                    <input
+                                      type="radio"
+                                      name="planning-efficiency-choice"
+                                      checked={Boolean(active)}
+                                      onChange={() => handleSelectEfficiencyCandidate(sig)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      aria-label="选择方案"
+                                    />
+                                  </td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-bold">{r?.N ?? '--'}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.B)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.efficiencyScore)}</td>
+                                </tr>
+                              );
+                            });
+                          })()}
                         </tbody>
                       </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {planningEfficiencyDebugOpen && (
+                    <div
+                      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4"
+                      role="dialog"
+                      aria-modal="true"
+                      onMouseDown={(e) => {
+                        if (e.target === e.currentTarget) setPlanningEfficiencyDebugOpen(false);
+                      }}
+                    >
+                      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+                        <div className="p-3 border-b border-slate-100 flex items-center justify-between">
+                          <div className="text-[12px] font-bold text-slate-700">工程效率计算过程（可复制）</div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              onClick={copyEfficiencyDebugText}
+                            >
+                              复制JSON
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              onClick={() => setPlanningEfficiencyDebugOpen(false)}
+                            >
+                              关闭
+                            </button>
+                          </div>
+                        </div>
+                        <div className="p-3">
+                          <textarea
+                            className="w-full h-[70vh] font-mono text-[11px] rounded border border-slate-200 p-2 text-slate-700"
+                            readOnly
+                            value={String(planningEfficiencyDebugText ?? '')}
+                          />
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            提示：把这段JSON完整复制发我即可（包含请求参数、回包 stats、Top10 候选关键字段）。
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -9676,20 +10615,32 @@ const App = () => {
               )}
 
               {planningOptMode === 'recovery' && (
-                <section className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <section ref={planningRecoverySectionRef} className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">资源回收结果（默认仅展示最优方案）</div>
-                      <div className="mt-1 text-[11px] text-slate-500">
-                        口径：优先最大化总储量（t）；若无厚度输入则退化为“有效回采面积/覆盖率最大化”。允许工作面超出粉色可采区Ω，按裁剪后的有效面积计分与排序。点击行可联动更新粉色可采区与工作面。
-                      </div>
+                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">资源回收最优计算结果</div>
                       {planningRecoveryResult?.ok && planningRecoveryResult?.stats && planningRecoveryResult?.stats?.hasThickness === false && (
                         <div className="mt-1 text-[11px] text-amber-700">当前未检测到厚度输入：已按覆盖率进行排序（退化模式）。</div>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       {planningRecoveryBusy && (
-                        <div className="text-[10px] text-slate-400 font-mono">计算中…</div>
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {(() => {
+                            const p = planningRecoveryProgress;
+                            const pct = Number(p?.percent);
+                            const tried = Number(p?.attemptedCombos);
+                            const ok = Number(p?.feasibleCombos);
+                            const phase = String(p?.phase ?? '').trim();
+                            const parts = [];
+                            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+                            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+                            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+                            if (phase) parts.push(phase);
+                            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+                            return `计算中…${suffix}`;
+                          })()}
+                        </div>
                       )}
                       {planningRecoveryResult?.ok && (
                         <>
@@ -9702,13 +10653,13 @@ const App = () => {
                             onClick={openRecoveryDebugModal}
                             title="打开调试弹窗，可复制请求/回包/Top10候选的关键字段"
                           >
-                            调试数据
+                            计算过程
                           </button>
                           {Array.isArray(planningRecoveryResult?.table?.rows) && planningRecoveryResult.table.rows.length > 1 && (
                             <button
                               type="button"
                               className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
-                              onClick={() => setPlanningRecoveryShowAllCandidates((v) => !v)}
+                              onClick={handleToggleRecoveryCandidates}
                               title="默认仅展示最优方案；可展开查看TopK候选对比表"
                             >
                               {planningRecoveryShowAllCandidates ? '仅显示最优' : '展开候选'}
@@ -9732,22 +10683,21 @@ const App = () => {
                   {planningRecoveryResult?.ok && (
                     <div className="w-full">
                       <div className="w-full overflow-x-auto">
-                        <table className="w-full table-fixed text-[11px]">
+                        <table className="w-full table-auto text-[11px]">
                           <thead className="sticky top-0 bg-white border-b border-slate-100">
                             <tr>
-                              <th className="w-12 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">序号</th>
-                              <th className="w-16 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
-                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
-                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m，范围）</th>
-                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">推进长度 L（m，范围）</th>
-                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">异常面（裁剪后非矩形）</th>
-                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
-                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
-                              <th className="w-24 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
-                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
-                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
-                              <th className="w-40 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（t）</th>
-                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">资源回收评分</th>
+                              <th className="w-12 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">序号</th>
+                              <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数（个）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度（m）</th>
+                              <th className="min-w-[120px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">推进长度（m）</th>
+                              <th className="min-w-[84px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">异常面</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱（m）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
+                              <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（t）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">资源回收评分</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -9827,7 +10777,6 @@ const App = () => {
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.tonnageTotal)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.recoveryScore)}</td>
@@ -9840,7 +10789,6 @@ const App = () => {
                       </div>
                     </div>
                   )}
-
                   {planningRecoveryDebugOpen && (
                     <div
                       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4"
@@ -9852,7 +10800,7 @@ const App = () => {
                     >
                       <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
                         <div className="p-3 border-b border-slate-100 flex items-center justify-between">
-                          <div className="text-[12px] font-bold text-slate-700">资源回收调试数据（可复制）</div>
+                          <div className="text-[12px] font-bold text-slate-700">资源回收计算过程（可复制）</div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -10969,13 +11917,15 @@ const App = () => {
                     const effNValues = effHasRange
                       ? (planningEfficiencyResult.nRange.nValues ?? [])
                         .map((x) => Math.round(Number(x)))
-                        .filter((x) => Number.isFinite(x) && x >= 1)
+                        .filter((x) => Number.isFinite(x) && x >= 1 && x <= 20)
                       : [];
-                    const effMinBound = effHasRange ? Math.max(1, Math.round(Number(planningEfficiencyResult.nRange.nMin))) : null;
-                    const effMaxBound = effHasRange ? Math.max(1, Math.round(Number(planningEfficiencyResult.nRange.nMax))) : null;
+                    const effMinBound = effHasRange ? Math.max(1, Math.min(20, Math.round(Number(planningEfficiencyResult.nRange.nMin)))) : null;
+                    const effMaxBound = effHasRange ? Math.max(1, Math.min(20, Math.round(Number(planningEfficiencyResult.nRange.nMax)))) : null;
 
-                    const minBound = effHasRange ? effMinBound : (hasRange ? Math.max(1, Math.round(nMinRaw)) : 1);
-                    const maxBound = effHasRange ? effMaxBound : (hasRange ? Math.max(1, Math.round(nMaxRaw)) : 200);
+                    const minBound0 = effHasRange ? effMinBound : (hasRange ? Math.max(1, Math.round(nMinRaw)) : 1);
+                    const maxBound0 = effHasRange ? effMaxBound : (hasRange ? Math.max(1, Math.round(nMaxRaw)) : 20);
+                    const minBound = Math.min(20, Math.max(1, Number(minBound0) || 1));
+                    const maxBound = Math.max(minBound, Math.min(20, Math.max(1, Number(maxBound0) || 20)));
 
                     const clampN = (v) => {
                       const n = Math.round(Number(v));
@@ -11041,7 +11991,7 @@ const App = () => {
                         <div className="text-[10px] text-slate-400">
                           {effHasRange
                             ? `工程效率模式：可行N直接切换（不重算）；不可行N将生成预览布局（非最优）。可行 N：${effNValues.join(' / ')}`
-                            : (hasRange ? '默认方案：N 取可行范围的均值；调节后将自动选取最接近的可行 N 并重绘。' : '提示：尚未生成可行范围时，提供默认范围 1~200 供预设。')}
+                            : (hasRange ? '默认方案：N 取可行范围的均值；调节后将自动选取最接近的可行 N 并重绘。' : '提示：尚未生成可行范围时，提供默认范围 1~20 供预设。')}
                         </div>
 
                         {effHasRange && (

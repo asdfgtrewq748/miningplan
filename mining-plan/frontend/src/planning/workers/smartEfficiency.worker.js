@@ -8,6 +8,10 @@ const gf = new GeometryFactory();
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+// 覆盖率比较 epsilon：用于抑制几何运算带来的微小抖动，保证排序稳定。
+// 约定：|a-b| <= eps 视为“同一档覆盖率”，再用次级指标 tie-break。
+const COVERAGE_EPS = 1e-5;
+
 const toNum = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -21,6 +25,136 @@ const uniqNums = (arr, eps = 1e-9) => {
   }
   return out;
 };
+
+// 区段煤柱 ws：按 1m 步长在范围内枚举。
+// 若范围内不存在整数米（例如 [3.2, 3.8]），则退化为取 lo（仍保证在范围内）。
+const enumRangeBy1m = (minV, maxV) => {
+  const a0 = Number(minV);
+  const b0 = Number(maxV);
+  const loRaw = Number.isFinite(a0) && Number.isFinite(b0) ? Math.min(a0, b0) : (Number.isFinite(a0) ? a0 : (Number.isFinite(b0) ? b0 : 0));
+  const hiRaw = Number.isFinite(a0) && Number.isFinite(b0) ? Math.max(a0, b0) : (Number.isFinite(a0) ? a0 : (Number.isFinite(b0) ? b0 : 0));
+  const lo = Math.max(0, loRaw);
+  const hi = Math.max(0, hiRaw);
+
+  const a = Math.ceil(lo);
+  const b = Math.floor(hi);
+  if (Number.isFinite(a) && Number.isFinite(b) && b >= a) {
+    const out = [];
+    for (let x = a; x <= b; x += 1) out.push(x);
+    return out;
+  }
+  return [lo];
+};
+
+// ws 的“均衡档”采样：用少量代表点替代 1m 全枚举。
+// 目标：显著减少重几何评估次数，同时保持结果在大多数场景下接近精算。
+// 规则：
+// - 始终包含两端点
+// - 若提供 target，则强制包含 target（落到整数米并夹到范围内）
+// - 其余点按等分插值生成（落到整数米），最终去重并升序
+const sampleWsCoarse = (minV, maxV, targetV, count = 9) => {
+  const a0 = Number(minV);
+  const b0 = Number(maxV);
+  const loRaw = Number.isFinite(a0) && Number.isFinite(b0) ? Math.min(a0, b0) : (Number.isFinite(a0) ? a0 : (Number.isFinite(b0) ? b0 : 0));
+  const hiRaw = Number.isFinite(a0) && Number.isFinite(b0) ? Math.max(a0, b0) : (Number.isFinite(a0) ? a0 : (Number.isFinite(b0) ? b0 : 0));
+  const lo = Math.max(0, loRaw);
+  const hi = Math.max(0, hiRaw);
+
+  const loI = Math.ceil(lo);
+  const hiI = Math.floor(hi);
+  if (!(Number.isFinite(loI) && Number.isFinite(hiI) && hiI >= loI)) {
+    return [lo];
+  }
+
+  const span = hiI - loI;
+  const k = Math.max(2, Math.round(Number(count) || 9));
+  // 范围很小：直接全列举即可
+  if (span + 1 <= k) return enumRangeBy1m(loI, hiI);
+
+  const out = [];
+  out.push(loI);
+  out.push(hiI);
+
+  const t0 = Number(targetV);
+  if (Number.isFinite(t0)) {
+    const tI = clamp(Math.round(t0), loI, hiI);
+    out.push(tI);
+  }
+
+  for (let i = 1; i <= k - 2; i++) {
+    const x = loI + (span * i) / (k - 1);
+    out.push(Math.round(x));
+  }
+
+  return Array.from(new Set(out.map((x) => clamp(Math.round(Number(x)), loI, hiI))))
+    .filter((x) => Number.isFinite(x))
+    .sort((x, y) => x - y);
+};
+
+// 工程效率综合评分（v2）：覆盖率为主，同时考虑组织复杂度与推进均衡性。
+// 说明：保持分值大致在 0~100（可略超/略负），便于 UI 直观比较。
+const EFF_SCORE_WEIGHTS_V2 = {
+  wN: 0.20,      // 工作面数惩罚系数（每增加 1 个面，扣分）
+  wCV: 10.0,     // 推进长度离散（lenCV）惩罚系数
+  wShort: 5.0,   // 短面惩罚系数
+  minLRef: 100,  // 参考最短推进长度（m）：低于该值开始扣分
+};
+
+const EFF_SCORE_VERSION = 'v2';
+
+// 只计算分数（用于全量枚举热路径），避免为每个候选构造 detail 对象。
+const computeEfficiencyScoreV2Parts = ({ coverageRatio, N, lenCV, minL }) => {
+  const cov = Number(coverageRatio);
+  const n = Math.max(1, Math.round(Number(N) || 1));
+  const cv = Math.max(0, Number(lenCV) || 0);
+  const lmin = Math.max(0, Number(minL) || 0);
+
+  const base = (Number.isFinite(cov) ? cov : 0) * 100;
+  const penaltyN = EFF_SCORE_WEIGHTS_V2.wN * Math.max(0, n - 1);
+  const penaltyCV = EFF_SCORE_WEIGHTS_V2.wCV * clamp(cv, 0, 2);
+  const shortRatio = clamp((EFF_SCORE_WEIGHTS_V2.minLRef - lmin) / (EFF_SCORE_WEIGHTS_V2.minLRef || 1), 0, 1);
+  const penaltyShort = EFF_SCORE_WEIGHTS_V2.wShort * shortRatio;
+  const penaltyTotal = penaltyN + penaltyCV + penaltyShort;
+
+  const score = base - penaltyTotal;
+  return {
+    score: Number.isFinite(score) ? score : -Infinity,
+    base,
+    penaltyN,
+    penaltyCV,
+    shortRatio,
+    penaltyShort,
+    penaltyTotal,
+    cov: Number.isFinite(cov) ? cov : 0,
+    n,
+    cv: Number.isFinite(cv) ? cv : 0,
+    lmin: Number.isFinite(lmin) ? lmin : 0,
+  };
+};
+
+const computeEfficiencyScoreV2Detail = ({ coverageRatio, N, lenCV, minL }) => {
+  const parts = computeEfficiencyScoreV2Parts({ coverageRatio, N, lenCV, minL });
+  return {
+    version: EFF_SCORE_VERSION,
+    weights: { ...EFF_SCORE_WEIGHTS_V2 },
+    inputs: {
+      coverageRatio: parts.cov,
+      N: parts.n,
+      lenCV: parts.cv,
+      minL: parts.lmin,
+    },
+    base: parts.base,
+    penalty: {
+      N: parts.penaltyN,
+      CV: parts.penaltyCV,
+      short: parts.penaltyShort,
+      total: parts.penaltyTotal,
+    },
+    score: parts.score,
+  };
+};
+
+const computeEfficiencyScoreV2 = ({ coverageRatio, N, lenCV, minL }) => computeEfficiencyScoreV2Parts({ coverageRatio, N, lenCV, minL }).score;
 
 const sampleRange3 = (minV, maxV) => {
   const a = Math.max(0, Number(minV) || 0);
@@ -217,6 +351,25 @@ const translateLoops = (loops, dx, dy) => {
 const swapXYPoint = (p) => ({ x: Number(p?.y), y: Number(p?.x) });
 const swapXYPoints = (pts) => (Array.isArray(pts) ? pts.map(swapXYPoint) : []);
 const swapXYLoops = (loops) => (Array.isArray(loops) ? loops.map((loop) => swapXYPoints(loop)) : []);
+
+// 将本地 loops（local coord）转换为 world loops，必要时做 swapXY。
+const materializeLoopsWorld = ({ loopsLocal, dx, dy, swapXY }) => {
+  const inLoops = Array.isArray(loopsLocal) ? loopsLocal : [];
+  const out = [];
+  for (let i = 0; i < inLoops.length; i++) {
+    const loop = Array.isArray(inLoops[i]) ? inLoops[i] : [];
+    if (loop.length < 2) continue;
+    const pts = new Array(loop.length);
+    for (let j = 0; j < loop.length; j++) {
+      const p = loop[j] ?? {};
+      const xw = Number(p.x) + dx;
+      const yw = Number(p.y) + dy;
+      pts[j] = swapXY ? { x: yw, y: xw } : { x: xw, y: yw };
+    }
+    out.push(pts);
+  }
+  return out;
+};
 
 const bboxOfLoop = (loop) => {
   const pts = Array.isArray(loop) ? loop : [];
@@ -631,14 +784,46 @@ const chooseBestStart = (startMin, startMax, startGuess, buildForStart, stepsOve
 
 // 规则矩形方案：仅 designRects 参与评分/排序；裁切多边形仅兜底展示。
 // axis=x: 条带沿 y 分带、矩形长边沿 x；axis=y 相反。
+const prepareOmegaForRects = ({ omegaPoly, debugRef }) => {
+  if (!omegaPoly || omegaPoly.isEmpty?.()) return null;
+  try {
+    const omegaV = ensureValid(fixPolygonSafe(omegaPoly), 'omega', debugRef);
+    if (!omegaV || omegaV.isEmpty?.()) return null;
+
+    // 数值稳定：轻微收缩 omega 作为“严格包含”的安全壳，不改变工程口径。
+    let omegaSafe = omegaV;
+    try {
+      const shrunk = BufferOp.bufferOp(omegaV, -0.01);
+      const picked = fixPolygonSafe(pickLargestPolygon(shrunk));
+      if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) omegaSafe = picked;
+    } catch {
+      omegaSafe = omegaV;
+    }
+    omegaSafe = ensureValid(omegaSafe, 'omegaSafe', debugRef);
+    if (!omegaSafe || omegaSafe.isEmpty?.()) return null;
+
+    const bboxOmega = envToBox(omegaSafe.getEnvelopeInternal());
+    if (!bboxOmega) return null;
+    const spanX = bboxOmega.maxX - bboxOmega.minX;
+    const spanY = bboxOmega.maxY - bboxOmega.minY;
+    if (!(Number.isFinite(spanX) && spanX > 1e-6 && Number.isFinite(spanY) && spanY > 1e-6)) return null;
+
+    return { omegaSafe, bboxOmega, spanX, spanY };
+  } catch {
+    return null;
+  }
+};
+
 const buildDesignRectsForN = ({
   omegaPoly,
+  omegaPrepared = null,
   axis,
   N,
   B,
   Ws,
   Lmax,
   includeClipped = false,
+  collectLoops = true,
   bumpFail,
   debugRef,
   fast = false,
@@ -657,26 +842,14 @@ const buildDesignRectsForN = ({
   if (!(Number.isFinite(B) && B > 0)) return emptyOut;
   if (!(Number.isFinite(Ws) && Ws >= 0)) return emptyOut;
 
-  const omegaV = ensureValid(fixPolygonSafe(omegaPoly), 'omega', debugRef);
-  if (!omegaV || omegaV.isEmpty?.()) return emptyOut;
-
-  // 数值稳定：轻微收缩 omega 作为“严格包含”的安全壳，不改变工程口径。
-  let omegaSafe = omegaV;
-  try {
-    const shrunk = BufferOp.bufferOp(omegaV, -0.01);
-    const picked = fixPolygonSafe(pickLargestPolygon(shrunk));
-    if (picked && !picked.isEmpty?.() && picked.getArea?.() > 0) omegaSafe = picked;
-  } catch {
-    omegaSafe = omegaV;
-  }
-  omegaSafe = ensureValid(omegaSafe, 'omegaSafe', debugRef);
-
-  const bboxOmega = envToBox(omegaSafe.getEnvelopeInternal());
-  if (!bboxOmega) return emptyOut;
-
-  const spanX = bboxOmega.maxX - bboxOmega.minX;
-  const spanY = bboxOmega.maxY - bboxOmega.minY;
-  if (!(Number.isFinite(spanX) && spanX > 1e-6 && Number.isFinite(spanY) && spanY > 1e-6)) return emptyOut;
+  const prep = (omegaPrepared && omegaPrepared.omegaSafe && omegaPrepared.bboxOmega)
+    ? omegaPrepared
+    : prepareOmegaForRects({ omegaPoly, debugRef });
+  if (!prep) return emptyOut;
+  const omegaSafe = prep.omegaSafe;
+  const bboxOmega = prep.bboxOmega;
+  const spanX = prep.spanX;
+  const spanY = prep.spanY;
 
   // 推进长度上限：优先用输入框（Lmax），否则取可采区推进方向几何跨度
   const Lcap = (Number.isFinite(Number(Lmax)) && Number(Lmax) > 0)
@@ -1032,8 +1205,8 @@ const buildDesignRectsForN = ({
 
         const x0 = it.a + insideEps;
         const x1 = x0 + L;
-        const loop = rectToLoop(x0, y0, x1, y1);
-        if (!loop) {
+        // 只要数值有效，则矩形可构造；loop 仅在 collectLoops=true 时生成。
+        if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) {
           if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
           continue;
         }
@@ -1063,11 +1236,18 @@ const buildDesignRectsForN = ({
           }
         }
 
-        out.rectLoopsLocal.push(loop);
+        if (collectLoops) {
+          const loop = rectToLoop(x0, y0, x1, y1);
+          if (!loop) {
+            if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+            continue;
+          }
+          out.rectLoopsLocal.push(loop);
+        }
+        out.faceCount += 1;
         out.lengths.push(L);
         out.rectAreaTotal += Math.max(0, (x1 - x0) * (y1 - y0));
       }
-      out.faceCount = out.rectLoopsLocal.length;
       out.area = out.rectAreaTotal;
       return out;
     };
@@ -1128,8 +1308,7 @@ const buildDesignRectsForN = ({
 
       const y0 = it.a + insideEps;
       const y1 = y0 + L;
-      const loop = rectToLoop(x0, y0, x1, y1);
-      if (!loop) {
+      if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) {
         if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
         continue;
       }
@@ -1158,11 +1337,18 @@ const buildDesignRectsForN = ({
         }
       }
 
-      out.rectLoopsLocal.push(loop);
+      if (collectLoops) {
+        const loop = rectToLoop(x0, y0, x1, y1);
+        if (!loop) {
+          if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+          continue;
+        }
+        out.rectLoopsLocal.push(loop);
+      }
+      out.faceCount += 1;
       out.lengths.push(L);
       out.rectAreaTotal += Math.max(0, (x1 - x0) * (y1 - y0));
     }
-    out.faceCount = out.rectLoopsLocal.length;
     out.area = out.rectAreaTotal;
     return out;
   };
@@ -1186,6 +1372,7 @@ const compute = (payload) => {
   const internalAxis = 'x';
   const swapXY = originalAxis === 'y';
   const fastMode = Boolean(payload?.fast);
+  const searchProfile = String(payload?.searchProfile ?? 'balanced') === 'exact' ? 'exact' : 'balanced';
 
   const nowMs = () => {
     try {
@@ -1196,6 +1383,20 @@ const compute = (payload) => {
       return Date.now();
     }
   };
+
+  const startMs = nowMs();
+
+  // === 工程效率进度设计（按算法结构） ===
+  // 工程效率 full compute 没有硬 time budget（Infinity），因此“时间占比”会长期停在 0%。
+  // 这里改为：按“B 评估次数 / 估算总评估次数”的进度。
+  // 估算总数使用上界：粗搜所有 coarseBs + 精修 upperBound(B_COARSE_TOPM * (2*win+1))。
+  let progressTotalEvalUpper = 0;
+  let progressPrePct = 1; // 预处理阶段的起步百分比（1~10）
+  let progressWsIndex = 0;
+  let progressWsTotal = 0;
+  let progressNIndex = 0;
+  let progressNTotal = 0;
+  let lastPercentSent = 0;
 
   // fast 模式时间预算：保证切换轴向/煤柱范围时能快速返回
   const TIME_BUDGET_MS = fastMode ? 280 : Infinity;
@@ -1230,19 +1431,83 @@ const compute = (payload) => {
       attemptedCombos: 0,
       feasibleCombos: 0,
       failTypes: {},
+      searchProfile: fastMode ? 'fast' : searchProfile,
       timeBudgetMs: Number.isFinite(TIME_BUDGET_MS) ? TIME_BUDGET_MS : null,
       timeBudgetHit: false,
       Bsearch: {
-        version: fastMode ? 'v2-fast' : 'v2',
-        coarseStep: fastMode ? 50 : 25,
+        version: fastMode ? 'v4-fast' : (searchProfile === 'exact' ? 'v4-exact' : 'v4-balanced'),
+        // 默认（更新：2026-01-20 之后）：均衡档使用粗到细，减少重几何评估次数
+        // - fast：粗搜 5m（时间预算兜底）
+        // - exact：粗搜 1m（等价全范围精算；精修自动关闭）
+        // - balanced：粗搜 10m + 局部 1m 精修
+        coarseStep: fastMode ? 5 : (searchProfile === 'exact' ? 1 : 10),
         fineStep: 1,
-        fineHalfWin: fastMode ? 6 : 10,
-        coarseTopM: fastMode ? 2 : 5,
+        fineHalfWin: fastMode ? 6 : (searchProfile === 'exact' ? 10 : 12),
+        coarseTopM: fastMode ? 2 : (searchProfile === 'exact' ? 5 : 3),
         coarseEvaluatedBCount: 0,
         fineEvaluatedBCount: 0,
         seedBs: [],
       },
     },
+  };
+
+  // 进度上报：用于前端“计算中…”后显示当前尝试/可行计数。
+  // 约束：必须节流，避免高频 postMessage 反而拖慢计算。
+  let lastProgressMs = nowMs();
+  let lastAttemptedSent = 0;
+  let lastPhaseSent = '';
+  const PROGRESS_THROTTLE_MS = 180;
+  const PROGRESS_MIN_DELTA = 80;
+  const maybePostProgress = (phase, opts = {}) => {
+    try {
+      const attempted = Number(responseBase?.attemptSummary?.attemptedCombos ?? 0);
+      const feasible = Number(responseBase?.attemptSummary?.feasibleCombos ?? 0);
+      const t = nowMs();
+      const phaseStr = String(phase ?? '');
+      const force = Boolean(opts?.force) || (phaseStr && phaseStr !== lastPhaseSent);
+      if (!force && (attempted - lastAttemptedSent) < PROGRESS_MIN_DELTA && (t - lastProgressMs) < PROGRESS_THROTTLE_MS) return;
+      lastAttemptedSent = attempted;
+      lastProgressMs = t;
+      if (phaseStr) lastPhaseSent = phaseStr;
+
+      const doneEval = Number(responseBase?.attemptSummary?.Bsearch?.coarseEvaluatedBCount ?? 0)
+        + Number(responseBase?.attemptSummary?.Bsearch?.fineEvaluatedBCount ?? 0);
+      const denomEval = Math.max(1, Number(progressTotalEvalUpper) || 0);
+      const evalFrac = Math.max(0, Math.min(1, doneEval / denomEval));
+
+      // 预处理占 10%，枚举/精修占 90%
+      const base = Math.max(0, Math.min(10, Math.round(Number(progressPrePct) || 0)));
+      const percentRaw = (denomEval > 1)
+        ? Math.max(base, Math.min(99, base + Math.floor(evalFrac * (99 - base))))
+        : base;
+      const percent = Math.max(lastPercentSent, percentRaw);
+      lastPercentSent = percent;
+
+      self.postMessage({
+        type: 'progress',
+        payload: {
+          mode: 'smart-efficiency',
+          reqSeq,
+          cacheKey,
+          axis: originalAxis,
+          fast: fastMode,
+          progress: {
+            phase: phaseStr,
+            percent,
+            attemptedCombos: attempted,
+            feasibleCombos: feasible,
+            wsIndex: progressWsIndex,
+            wsTotal: progressWsTotal,
+            nIndex: progressNIndex,
+            nTotal: progressNTotal,
+            evalDone: doneEval,
+            evalTotalUpper: denomEval,
+          },
+        },
+      });
+    } catch {
+      // ignore
+    }
   };
 
   const bumpFail = (code) => {
@@ -1253,6 +1518,7 @@ const compute = (payload) => {
 
   const boundaryLoopWorldRaw = Array.isArray(payload?.boundaryLoopWorld) ? payload.boundaryLoopWorld : [];
   const boundaryLoopWorld = swapXY ? swapXYPoints(boundaryLoopWorldRaw) : boundaryLoopWorldRaw;
+  maybePostProgress('初始化', { force: true });
   if (boundaryLoopWorldRaw.length < 3) {
     responseBase.failedReason = '采区边界点不足/退化';
     bumpFail('BOUNDARY_TOO_FEW');
@@ -1281,6 +1547,7 @@ const compute = (payload) => {
 
   const wsMin = toNum(payload?.coalPillarMin) ?? 0;
   const wsMax = toNum(payload?.coalPillarMax) ?? wsMin;
+  const wsTarget = toNum(payload?.coalPillarTarget);
 
   const faceAdvanceMax = toNum(payload?.faceAdvanceMax);
 
@@ -1487,23 +1754,30 @@ const compute = (payload) => {
     // ignore sanity failures here; real strip stats below will show
   }
 
-  // === 决策层规则：工程效率最优模式下 wb 固定，不做搜索/枚举 ===
-  // 代表值：默认取输入范围均值（若前端已固定传入，则 min==max）。
-  const wbFixedRaw = (Number.isFinite(Number(wbMin)) && Number.isFinite(Number(wbMax))) ? (Number(wbMin) + Number(wbMax)) / 2 : (Number.isFinite(Number(wbMin)) ? Number(wbMin) : 0);
+  // === 决策层规则（更新：2026-01-20）：
+  // - 边界煤柱 wb：固定取最小值（不做搜索/枚举）
+  // - 区段煤柱 ws：默认使用“均衡档”采样（更快）；如需精算可传 searchProfile='exact'
+  const wbFixedRaw = (Number.isFinite(Number(wbMin)) && Number.isFinite(Number(wbMax)))
+    ? Math.min(Number(wbMin), Number(wbMax))
+    : (Number.isFinite(Number(wbMin)) ? Number(wbMin) : 0);
   const wbSamples = [wbFixedRaw];
-  const wsSamplesFull = sampleRange3(wsMin, wsMax);
-  const wsSamples = fastMode
-    ? (wsSamplesFull.length ? [wsSamplesFull[Math.floor(wsSamplesFull.length / 2)]] : [Math.max(0, wsMin)])
-    : wsSamplesFull;
+  const wsSamples = (fastMode || searchProfile === 'exact')
+    ? enumRangeBy1m(wsMin, wsMax)
+    : sampleWsCoarse(wsMin, wsMax, wsTarget, 9);
 
   // === B 两阶段搜索策略（粗搜 + 局部 1m 精修） ===
   // 说明：按你确认的层级 A：对每个 (ws,N) 单独做粗搜+精修。
   // B 口径：整数米；精修范围 [ceil(Bmin) .. floor(Bmax)]，步长=1。
-  const B_COARSE_STEP = fastMode ? 50 : 25;
+  // B 的枚举步长：
+  // - fast：粗搜 5m 一档（保证速度）
+  // - exact：粗搜 1m 一档（相当于全范围精细枚举）
+  // - balanced：粗搜 10m 一档（再做局部 1m 精修）
+  const B_COARSE_STEP = fastMode ? 5 : (searchProfile === 'exact' ? 1 : 10);
   const B_FINE_STEP = 1;
-  const B_FINE_HALFWIN = fastMode ? 6 : 10;
-  const B_COARSE_TOPM = fastMode ? 2 : 5;
-  const DO_FINE = !fastMode;
+  const B_FINE_HALFWIN = fastMode ? 6 : (searchProfile === 'exact' ? 10 : 12);
+  const B_COARSE_TOPM = fastMode ? 2 : (searchProfile === 'exact' ? 5 : 3);
+  // 当 coarseStep 已经是 1m 时，精修会完全重复粗搜，直接关闭。
+  const DO_FINE = !fastMode && B_COARSE_STEP > B_FINE_STEP;
 
   const seedBSet = new Set();
   const recordSeedB = (b) => {
@@ -1519,10 +1793,34 @@ const compute = (payload) => {
     if (!a && !b) return 0;
     if (!a) return 1;
     if (!b) return -1;
-    if (b.coverageRatio !== a.coverageRatio) return b.coverageRatio - a.coverageRatio;
+    if (Math.abs((b.coverageRatio ?? 0) - (a.coverageRatio ?? 0)) > COVERAGE_EPS) return (b.coverageRatio ?? 0) - (a.coverageRatio ?? 0);
     if ((a.lenCV ?? 0) !== (b.lenCV ?? 0)) return (a.lenCV ?? 0) - (b.lenCV ?? 0);
     if (b.B !== a.B) return b.B - a.B;
     return String(a.signature).localeCompare(String(b.signature));
+  };
+
+  // 维护 TopM（按 compareWithinSameN 排序，最优在前），避免对大量候选做全量 sort。
+  // 仅用于 debug seedBs；不会影响最终 candidates（候选仍全部 pushCandidateUnique）。
+  const pushTopM = (arr, item, maxM) => {
+    if (!item || maxM <= 0) return;
+    if (!Array.isArray(arr)) return;
+    if (arr.length === 0) {
+      arr.push(item);
+      return;
+    }
+    // 若未满，直接插入到合适位置；若已满，仅当 item 优于最差项才插入。
+    const worst = arr[arr.length - 1];
+    if (arr.length >= maxM && compareWithinSameN(item, worst) >= 0) return;
+
+    let pos = arr.length;
+    for (let i = 0; i < arr.length; i++) {
+      if (compareWithinSameN(item, arr[i]) < 0) {
+        pos = i;
+        break;
+      }
+    }
+    arr.splice(pos, 0, item);
+    if (arr.length > maxM) arr.length = maxM;
   };
 
   const genCoarseBs = (lo, hi) => {
@@ -1553,12 +1851,14 @@ const compute = (payload) => {
   const buildCandidateForFixedN = ({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N, B }) => {
     const built = buildDesignRectsForN({
       omegaPoly: innerPoly,
+      omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
       axis: internalAxis,
       N,
       B,
       Ws: wsNonNeg,
       Lmax: faceAdvanceMax,
       includeClipped: false,
+      collectLoops: false,
       bumpFail,
       debugRef: stripDebug,
       fast: fastMode,
@@ -1571,9 +1871,6 @@ const compute = (payload) => {
       bumpFail('FACECOUNT_NEQ_TARGET');
       return null;
     }
-
-    const rectLoopsLocal = Array.isArray(built?.rectLoopsLocal) ? built.rectLoopsLocal : [];
-    if (!rectLoopsLocal.length) return null;
 
     const rectAreaTotal = Number(built?.rectAreaTotal);
     if (!(Number.isFinite(rectAreaTotal) && rectAreaTotal > 1e-6)) {
@@ -1602,7 +1899,7 @@ const compute = (payload) => {
     const lenCV = meanL > 1e-9 ? stdL / meanL : 0;
 
     const qualified = coverageRatio >= COVERAGE_MIN;
-    const efficiencyScore = coverageRatio * 100;
+    const efficiencyScore = computeEfficiencyScoreV2({ coverageRatio, N: actualN, lenCV, minL });
     const signature = `${originalAxis}|wb=${wbUsed.toFixed(4)}|ws=${wsNonNeg.toFixed(4)}|N=${actualN}|B=${Number(B).toFixed(4)}`;
 
     const candidate = {
@@ -1617,6 +1914,9 @@ const compute = (payload) => {
       qualified,
       lowCoverage: !qualified,
       efficiencyScore,
+      efficiencyScoreDetail: null,
+      // 为了避免全枚举阶段构造大对象，detail 延迟到回包 candidates 阶段再填充。
+      __effInputs: { coverageRatio, N: actualN, lenCV, minL },
       minL,
       sumL,
       lenCV,
@@ -1631,6 +1931,7 @@ const compute = (payload) => {
         minL,
         sumL,
         lenCV,
+        efficiencyScoreDetail: null,
       },
       innerArea,
       coveredArea: rectAreaTotal,
@@ -1639,26 +1940,16 @@ const compute = (payload) => {
       omegaRender: {
         loops: omegaLoops,
       },
+      // render 的大数组延迟构造：仅对最终回包 candidates 生成 world loops。
       render: {
         omegaLoops: omegaLoops,
-        rectLoops: swapXY
-          ? swapXYLoops(rectLoopsLocal.map((loop) => (loop ?? []).map((p) => ({ x: Number(p?.x) + offset.dx, y: Number(p?.y) + offset.dy }))))
-          : rectLoopsLocal.map((loop) => (loop ?? []).map((p) => ({ x: Number(p?.x) + offset.dx, y: Number(p?.y) + offset.dy }))),
-        clippedLoops: swapXY
-          ? swapXYLoops((Array.isArray(built?.clippedLoopsLocal) ? built.clippedLoopsLocal : [])
-            .map((loop) => (loop ?? []).map((p) => ({ x: Number(p?.x) + offset.dx, y: Number(p?.y) + offset.dy }))))
-          : (Array.isArray(built?.clippedLoopsLocal) ? built.clippedLoopsLocal : [])
-            .map((loop) => (loop ?? []).map((p) => ({ x: Number(p?.x) + offset.dx, y: Number(p?.y) + offset.dy }))),
+        rectLoops: [],
+        clippedLoops: [],
       },
+      __dx: offset.dx,
+      __dy: offset.dy,
+      __swapXY: swapXY,
     };
-
-    try {
-      const facesLoopsWorld = candidate.render.rectLoops.map((loop, idx) => ({ faceIndex: idx + 1, loop }));
-      candidate.render.facesLoops = facesLoopsWorld;
-      candidate.render.plannedWorkfaceLoopsWorld = facesLoopsWorld;
-    } catch {
-      // ignore
-    }
 
     return candidate;
   };
@@ -1666,6 +1957,9 @@ const compute = (payload) => {
   const qualifiedCandidates = [];
   const fallbackCandidates = [];
   const allCandByKey = new Map();
+
+  // wb 固定时，innerPoly 对所有候选相同：用于回包阶段重建 loops（避免全枚举阶段存大数组）
+  let omegaCtxForRender = null;
 
   const pushCandidateUnique = (c) => {
     if (!c) return;
@@ -1714,26 +2008,77 @@ const compute = (payload) => {
       continue;
     }
 
+    omegaCtxForRender = { innerPoly };
+
+    // 预处理可能较耗时：先上报一次阶段，避免 UI 长时间停在 0%。
+    progressPrePct = 6;
+    maybePostProgress('预处理', { force: true });
+
+    // 预处理外提：对同一个 innerPoly 只做一次 ensureValid/buffer/bbox/span
+    try {
+      omegaCtxForRender.omegaPrepared = prepareOmegaForRects({ omegaPoly: innerPoly, debugRef: stripDebug });
+    } catch {
+      omegaCtxForRender.omegaPrepared = null;
+    }
+
+    progressPrePct = 10;
+    maybePostProgress('开始枚举', { force: true });
+
     const env = innerPoly.getEnvelopeInternal();
     const span = internalAxis === 'x' ? (env.getMaxY() - env.getMinY()) : (env.getMaxX() - env.getMinX());
     if (!(Number.isFinite(span) && span > 1e-6)) continue;
 
     const wsList = wsSamples.length ? wsSamples : [0];
+    progressWsTotal = wsList.length;
+    progressWsIndex = 0;
+
+    // 用几何跨度推导“可放置的最大工作面数”，避免对固定 N 的硬匹配导致候选为 0。
+    const computeNmax = (spanV, B, wsV) => {
+      const s = Number(spanV);
+      const b = Number(B);
+      const w = Math.max(0, Number(wsV) || 0);
+      if (!(Number.isFinite(s) && s > 0)) return 0;
+      if (!(Number.isFinite(b) && b > 0)) return 0;
+      // N*B + (N-1)*ws <= span  => N <= (span + ws) / (B + ws)
+      return Math.floor((s + w) / (b + w));
+    };
+
+    // 先做一次“总工作量上界”估算（非常轻量，只做算术+genCoarseBs），用于稳定百分比。
+    try {
+      const BminInt0 = Math.ceil(Bmin);
+      const BmaxInt0 = Math.floor(Bmax);
+      if (Number.isFinite(BminInt0) && Number.isFinite(BmaxInt0) && BmaxInt0 >= BminInt0) {
+        let totalUpper = 0;
+        for (const ws0 of wsList) {
+          const wsNonNeg0 = Math.max(0, Number(ws0) || 0);
+          const NmaxAtBmin0 = computeNmax(span, BminInt0, wsNonNeg0);
+          if (!(Number.isFinite(NmaxAtBmin0) && NmaxAtBmin0 >= 1)) continue;
+          const NcapLimit0 = fastMode ? 12 : 20;
+          const Ncap0 = Math.max(1, Math.min(NcapLimit0, NmaxAtBmin0));
+          for (let Nreq0 = 1; Nreq0 <= Ncap0; Nreq0++) {
+            const bUpperBySpan0 = (span - (Nreq0 - 1) * wsNonNeg0) / Nreq0;
+            const Bupper0 = Math.min(BmaxInt0, Math.floor(bUpperBySpan0));
+            if (!(Number.isFinite(Bupper0) && Bupper0 >= BminInt0)) break;
+            const rangeLen = Math.max(0, Bupper0 - BminInt0 + 1);
+            const coarseUpper = (B_COARSE_STEP === 1)
+              ? rangeLen
+              : genCoarseBs(BminInt0, Bupper0).length;
+            const fineUpper = DO_FINE
+              ? (B_COARSE_TOPM * Math.min(rangeLen, (2 * B_FINE_HALFWIN + 1)))
+              : 0;
+            totalUpper += Math.max(0, coarseUpper) + Math.max(0, fineUpper);
+          }
+        }
+        progressTotalEvalUpper = Math.max(0, Math.round(totalUpper));
+      }
+    } catch {
+      progressTotalEvalUpper = 0;
+    }
 
     for (const ws of wsList) {
       if (timeExceeded()) break;
+      progressWsIndex += 1;
       const wsNonNeg = Math.max(0, Number(ws) || 0);
-
-      // 用几何跨度推导“可放置的最大工作面数”，避免对固定 N 的硬匹配导致候选为 0。
-      const computeNmax = (spanV, B, wsV) => {
-        const s = Number(spanV);
-        const b = Number(B);
-        const w = Math.max(0, Number(wsV) || 0);
-        if (!(Number.isFinite(s) && s > 0)) return 0;
-        if (!(Number.isFinite(b) && b > 0)) return 0;
-        // N*B + (N-1)*ws <= span  => N <= (span + ws) / (B + ws)
-        return Math.floor((s + w) / (b + w));
-      };
 
       // === 新策略：对每个 (ws,N) 做 B 的“两阶段搜索” ===
       // N 上限由 (Bmin, ws) 给出；对更大的 N，其可行 B 上限只会更小，可提前终止。
@@ -1749,10 +2094,16 @@ const compute = (payload) => {
         bumpFail('NMAX_LT_1');
         continue;
       }
-      const Ncap = Math.max(1, Math.min(fastMode ? 12 : 60, NmaxAtBmin));
+      // 工作面个数上限：全局限制为 20（fast 仍保持更小上限以保证快速返回）
+      const NcapLimit = fastMode ? 12 : 20;
+      const Ncap = Math.max(1, Math.min(NcapLimit, NmaxAtBmin));
+
+      progressNTotal = Ncap;
 
       for (let Nreq = 1; Nreq <= Ncap; Nreq++) {
         if (timeExceeded()) break;
+        progressNIndex = Nreq;
+        if (Nreq === 1) maybePostProgress('枚举', { force: true });
         const bUpperBySpan = (span - (Nreq - 1) * wsNonNeg) / Nreq;
         const Bupper = Math.min(BmaxInt, Math.floor(bUpperBySpan));
         if (!(Number.isFinite(Bupper) && Bupper >= BminInt)) {
@@ -1761,25 +2112,42 @@ const compute = (payload) => {
         }
 
         // --- 粗搜 ---
-        const coarseBs = genCoarseBs(BminInt, Bupper);
-        const coarseCands = [];
-        for (const B of coarseBs) {
-          if (timeExceeded()) break;
-          responseBase.attemptSummary.attemptedCombos += 1;
-          responseBase.attemptSummary.Bsearch.coarseEvaluatedBCount += 1;
-          const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B });
-          if (!c) continue;
-          responseBase.attemptSummary.feasibleCombos += 1;
-          pushCandidateUnique(c);
-          coarseCands.push(c);
+        const seedsTopCands = [];
+        if (B_COARSE_STEP === 1) {
+          for (let B = BminInt; B <= Bupper; B += 1) {
+            if (timeExceeded()) break;
+            responseBase.attemptSummary.attemptedCombos += 1;
+            responseBase.attemptSummary.Bsearch.coarseEvaluatedBCount += 1;
+            if (responseBase.attemptSummary.attemptedCombos === 1) maybePostProgress('枚举', { force: true });
+            // 每次迭代都调用（内部节流），避免尝试次数较少时进度不刷新。
+            maybePostProgress('枚举');
+            const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B });
+            if (!c) continue;
+            responseBase.attemptSummary.feasibleCombos += 1;
+            pushCandidateUnique(c);
+            pushTopM(seedsTopCands, c, B_COARSE_TOPM);
+          }
+        } else {
+          const coarseBs = genCoarseBs(BminInt, Bupper);
+          for (const B of coarseBs) {
+            if (timeExceeded()) break;
+            responseBase.attemptSummary.attemptedCombos += 1;
+            responseBase.attemptSummary.Bsearch.coarseEvaluatedBCount += 1;
+            if (responseBase.attemptSummary.attemptedCombos === 1) maybePostProgress('粗搜', { force: true });
+            maybePostProgress('粗搜');
+            const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B });
+            if (!c) continue;
+            responseBase.attemptSummary.feasibleCombos += 1;
+            pushCandidateUnique(c);
+            pushTopM(seedsTopCands, c, B_COARSE_TOPM);
+          }
         }
-        if (!coarseCands.length) continue;
-        coarseCands.sort(compareWithinSameN);
+        if (!seedsTopCands.length) continue;
 
-        // 选 TopM 个“不同 B”的种子
+        // 选 TopM 个种子（按 compareWithinSameN 最优优先）；用于 debug seedBs 与（若开启）精修。
         const seeds = [];
         const seenB = new Set();
-        for (const c of coarseCands) {
+        for (const c of seedsTopCands) {
           const bKey = String(Math.round(Number(c.B)));
           if (seenB.has(bKey)) continue;
           seenB.add(bKey);
@@ -1799,6 +2167,8 @@ const compute = (payload) => {
               if (seenB.has(String(B))) continue;
               responseBase.attemptSummary.attemptedCombos += 1;
               responseBase.attemptSummary.Bsearch.fineEvaluatedBCount += 1;
+              if (responseBase.attemptSummary.attemptedCombos === 1) maybePostProgress('精修', { force: true });
+              maybePostProgress('精修');
               const c = buildCandidateForFixedN({ innerPoly, innerArea, omegaLoops, wbUsed, wsNonNeg, N: Nreq, B });
               if (!c) continue;
               responseBase.attemptSummary.feasibleCombos += 1;
@@ -1835,10 +2205,10 @@ const compute = (payload) => {
     };
   }
 
-  // === 用户确认的口径（2026-01-16）：
-  // 1) 默认最优方案：按工程效率评分 efficiencyScore 排序，优先展示评分最高。
-  // 2) 候选对比表：同样按 efficiencyScore 排序（qualified 优先），稳定 tie-break：
-  //    efficiencyScore desc -> coverage desc -> N asc -> B desc -> signature asc
+  // === 用户确认的口径（更新：2026-01-20）：
+  // 1) 覆盖率绝对优先（分层，epsilon 内认为同一档）：先按 coverageRatio 排序。
+  // 2) 覆盖率相同时：优先工作面个数 N 最小（组织更简单）。
+  // 3) 其余再用工程效率综合评分（v2）与稳定 tie-break。
   const scoreOf = (c) => {
     const v = Number(c?.efficiencyScore);
     if (Number.isFinite(v)) return v;
@@ -1849,22 +2219,38 @@ const compute = (payload) => {
     const r = Number(c?.coverageRatio);
     return Number.isFinite(r) ? r : -Infinity;
   };
-  const compareByEfficiencyScore = (a, b) => {
+  const cvOf = (c) => {
+    const v = Number(c?.lenCV);
+    return Number.isFinite(v) ? v : Infinity;
+  };
+  const minLOf = (c) => {
+    const v = Number(c?.minL);
+    return Number.isFinite(v) ? v : -Infinity;
+  };
+  const compareCoverageFirst = (a, b) => {
     const qa = Boolean(a?.qualified);
     const qb = Boolean(b?.qualified);
     if (qa !== qb) return qa ? -1 : 1; // qualified 优先
+
+    const ra = coverageOf(a);
+    const rb = coverageOf(b);
+    if (Math.abs(rb - ra) > COVERAGE_EPS) return rb - ra;
+
+    const na = Number(a?.N);
+    const nb = Number(b?.N);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
 
     const sa = scoreOf(a);
     const sb = scoreOf(b);
     if (sb !== sa) return sb - sa;
 
-    const ra = coverageOf(a);
-    const rb = coverageOf(b);
-    if (rb !== ra) return rb - ra;
+    const cva = cvOf(a);
+    const cvb = cvOf(b);
+    if (cva !== cvb) return cva - cvb;
 
-    const na = Number(a?.N);
-    const nb = Number(b?.N);
-    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    const la = minLOf(a);
+    const lb = minLOf(b);
+    if (lb !== la) return lb - la;
 
     const Ba = Number(a?.B);
     const Bb = Number(b?.B);
@@ -1874,7 +2260,7 @@ const compute = (payload) => {
   };
 
   const usedFallback = qualifiedCandidates.length === 0;
-  const compareMain = compareByEfficiencyScore;
+  const compareMain = compareCoverageFirst;
   const rankedAll = (allCandidates ?? []).slice().sort(compareMain);
   const best = rankedAll[0];
   const nStar = best.N;
@@ -1883,17 +2269,18 @@ const compute = (payload) => {
   // 为了让“工作面个数滑块”可切换而不重算：
   // - 必须返回 bestKeyByN（每个可行 N 的最优候选 key）
   // - candidates 至少包含每个 N 的 best 候选（否则前端无法按 key 切换）
+  // 性能优化：rankedAll 已按 compareMain 全局排序；同一 N 的最优项就是该 N 首次出现的候选。
+  // 因此可一次遍历同时构建 bestByN 和 candidatesByN，避免对每个 N 反复 filter+sort（O(n^2)）。
   const bestByN = new Map();
+  const candidatesByN = {};
   for (const c of rankedAll) {
     const n = Number(c?.N);
     if (!(Number.isFinite(n) && n >= 1)) continue;
-    const cur = bestByN.get(n);
-    if (!cur) {
-      bestByN.set(n, c);
-      continue;
-    }
-    // 每个 N：按当前模式的主排序口径选最优（稳定 tie-break）
-    if (compareMain(c, cur) < 0) bestByN.set(n, c);
+    const sig = String(c?.signature ?? '');
+    const nk = String(n);
+    if (!candidatesByN[nk]) candidatesByN[nk] = [];
+    if (sig) candidatesByN[nk].push(sig);
+    if (!bestByN.has(n)) bestByN.set(n, c);
   }
 
   const nValuesAll = Array.from(bestByN.keys()).sort((a, b) => a - b);
@@ -1904,16 +2291,6 @@ const compute = (payload) => {
   const bestKeyByN = {};
   for (const n of nValuesAll) {
     bestKeyByN[String(n)] = String(bestByN.get(n)?.signature ?? '');
-  }
-
-  // candidatesByN：给前端做可行刻度/吸附/展示（key 列表）
-  // 默认按覆盖率 desc、lenCV asc、B desc
-  const candidatesByN = {};
-  for (const n of nValuesAll) {
-    const list = rankedAll.filter((c) => Number(c?.N) === n);
-    list.sort(compareMain);
-    // 只回传 key 列表，避免 payload 过大
-    candidatesByN[String(n)] = list.map((c) => String(c?.signature ?? '')).filter(Boolean);
   }
 
   // UI candidates：至少包含每个 N 的 best 候选
@@ -1944,6 +2321,82 @@ const compute = (payload) => {
   // UI candidates 按当前模式排序（与表格一致）
   candidates.sort(compareMain);
 
+  const materializeCandidateForResponse = (c) => {
+    if (!c) return;
+
+    // 1) efficiencyScoreDetail：只为回包 candidates 构造
+    try {
+      if (!c.efficiencyScoreDetail) {
+        const inp = c.__effInputs ?? { coverageRatio: c.coverageRatio, N: c.N, lenCV: c.lenCV, minL: c.minL };
+        const d = computeEfficiencyScoreV2Detail(inp);
+        c.efficiencyScoreDetail = d;
+        if (c.metrics) c.metrics.efficiencyScoreDetail = d;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2) render loops：只为回包 candidates 生成（world 坐标）
+    try {
+      const dx = Number(c.__dx);
+      const dy = Number(c.__dy);
+      const swapXY = Boolean(c.__swapXY);
+
+      // 候选搜索阶段已关闭 loops 收集；此处基于 wb 固定下的 innerPoly 重建 loops。
+      if (c.render && Array.isArray(c.render.rectLoops) && c.render.rectLoops.length === 0) {
+        const omegaPoly = omegaCtxForRender?.innerPoly;
+        if (omegaPoly) {
+          const rebuilt = buildDesignRectsForN({
+            omegaPoly,
+            omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
+            axis: internalAxis,
+            N: Math.max(1, Math.round(Number(c.N) || 0)),
+            B: Number(c.B),
+            Ws: Math.max(0, Number(c.ws) || 0),
+            Lmax: faceAdvanceMax,
+            includeClipped: false,
+            collectLoops: true,
+            bumpFail: null,
+            debugRef: null,
+            fast: fastMode,
+            coordSpace: 'local',
+          });
+
+          const rectLoopsLocal = Array.isArray(rebuilt?.rectLoopsLocal) ? rebuilt.rectLoopsLocal : [];
+          const clippedLoopsLocal = Array.isArray(rebuilt?.clippedLoopsLocal) ? rebuilt.clippedLoopsLocal : [];
+
+          c.render.rectLoops = materializeLoopsWorld({ loopsLocal: rectLoopsLocal, dx, dy, swapXY });
+          c.render.clippedLoops = clippedLoopsLocal.length
+            ? materializeLoopsWorld({ loopsLocal: clippedLoopsLocal, dx, dy, swapXY })
+            : [];
+        }
+      }
+
+      // facesLoops/plannedWorkfaceLoopsWorld：依赖 rectLoops
+      if (c.render && Array.isArray(c.render.rectLoops) && !Array.isArray(c.render.facesLoops)) {
+        const facesLoopsWorld = c.render.rectLoops.map((loop, idx) => ({ faceIndex: idx + 1, loop }));
+        c.render.facesLoops = facesLoopsWorld;
+        c.render.plannedWorkfaceLoopsWorld = facesLoopsWorld;
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3) 清理内部字段，减小回包体积
+    try {
+      delete c.__rectLoopsLocal;
+      delete c.__clippedLoopsLocal;
+      delete c.__dx;
+      delete c.__dy;
+      delete c.__swapXY;
+      delete c.__effInputs;
+    } catch {
+      // ignore
+    }
+  };
+
+  for (const c of candidates) materializeCandidateForResponse(c);
+
   const rows = candidates.map((c, idx) => ({
     rank: idx + 1,
     key: c.signature,
@@ -1954,6 +2407,10 @@ const compute = (payload) => {
     ws: c.ws,
     coveragePct: c.coverageRatio * 100,
     efficiencyScore: c.efficiencyScore,
+    lenCV: c.lenCV,
+    minL: c.minL,
+    sumL: c.sumL,
+    efficiencyScoreDetail: c.efficiencyScoreDetail ?? c.metrics?.efficiencyScoreDetail ?? null,
     qualified: Boolean(c.qualified),
     innerArea: c.innerArea,
     coveredArea: c.coveredArea,
@@ -2032,6 +2489,11 @@ const compute = (payload) => {
       axis: originalAxis,
       internalAxis,
       swapXY,
+      efficiencyScoreV2: {
+        version: EFF_SCORE_VERSION,
+        coverageEps: COVERAGE_EPS,
+        weights: { ...EFF_SCORE_WEIGHTS_V2 },
+      },
     },
     table: {
       columns: [
@@ -2042,6 +2504,9 @@ const compute = (payload) => {
         '边界煤柱 w_b（m）',
         '区段煤柱 w_s（m）',
         '覆盖率（%）',
+        '推进离散 CV',
+        '最短推进长度 minL（m）',
+        '总推进长度 sumL（m）',
         '可采区面积（㎡）',
         '回采面积（㎡）',
         '工程效率综合评分',
@@ -2059,7 +2524,8 @@ const computePreview = (payload) => {
   const originalAxis = String(payload?.axis ?? 'x') === 'y' ? 'y' : 'x';
   const internalAxis = 'x';
   const swapXY = originalAxis === 'y';
-  const targetN = Math.max(1, Math.round(toNum(payload?.targetN) ?? toNum(payload?.N) ?? 1));
+  const searchProfile = String(payload?.searchProfile ?? 'balanced') === 'exact' ? 'exact' : 'balanced';
+  const targetN = Math.max(1, Math.min(20, Math.round(toNum(payload?.targetN) ?? toNum(payload?.N) ?? 1)));
 
   const responseBase = {
     ok: false,
@@ -2109,9 +2575,15 @@ const computePreview = (payload) => {
     return responseBase;
   }
 
-  const wbFixed = Math.abs(Number(toNum(payload?.boundaryPillar) ?? payload?.boundaryPillarMin ?? payload?.boundaryPillarMax ?? 0) || 0);
+  const wbMinRaw = toNum(payload?.boundaryPillarMin);
+  const wbMaxRaw = toNum(payload?.boundaryPillarMax);
+  const wbFixed = Math.abs(Number(
+    toNum(payload?.boundaryPillar)
+    ?? (Number.isFinite(wbMinRaw) && Number.isFinite(wbMaxRaw) ? Math.min(wbMinRaw, wbMaxRaw) : (Number.isFinite(wbMinRaw) ? wbMinRaw : (Number.isFinite(wbMaxRaw) ? wbMaxRaw : 0)))
+  ) || 0);
   const wsMin = Math.max(0, Number(toNum(payload?.coalPillarMin) ?? 0) || 0);
   const wsMax = Math.max(0, Number(toNum(payload?.coalPillarMax) ?? wsMin) || 0);
+  const wsTarget = toNum(payload?.coalPillarTarget);
   const faceAdvanceMax = toNum(payload?.faceAdvanceMax);
 
   const boundaryNorm = normalizeBoundaryPoints(boundaryLoopWorld, 1e-6);
@@ -2181,7 +2653,9 @@ const computePreview = (payload) => {
     return responseBase;
   }
 
-  const wsSamples = sampleRange3(wsMin, wsMax);
+  const wsSamples = (searchProfile === 'exact')
+    ? enumRangeBy1m(wsMin, wsMax)
+    : sampleWsCoarse(wsMin, wsMax, wsTarget, 9);
   const deltaB = Math.max(5, Math.min(60, (Bmax - Bmin) / 6));
 
   let best = null;
@@ -2209,6 +2683,7 @@ const computePreview = (payload) => {
 
       const built = buildDesignRectsForN({
         omegaPoly: innerPoly,
+        omegaPrepared: prepareOmegaForRects({ omegaPoly: innerPoly, debugRef: null }),
         axis: internalAxis,
         N: targetN,
         B,
