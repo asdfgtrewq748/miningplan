@@ -40,10 +40,13 @@ import {
   Legend,
   ResponsiveContainer
 } from 'recharts';
+import PlanningDebugPanel from './planning/PlanningDebugPanel.jsx';
 import { Delaunay } from 'd3-delaunay';
 import GeometryFactory from 'jsts/org/locationtech/jts/geom/GeometryFactory.js';
 import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
 import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
+import SmoothnessSlider from './components/SmoothnessSlider.jsx';
+import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
 
 const DEFAULT_PLANNING_PARAMS = {
   mineCapacity: '',
@@ -69,6 +72,7 @@ const DEFAULT_PLANNING_PARAMS = {
 };
 
 const App = () => {
+  const DEBUG_PANEL = import.meta.env.DEV;
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
   const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning'
@@ -81,15 +85,1564 @@ const App = () => {
   // 智能规划：保存反算可行解集，用于调节 N 时即时重绘
   const [planningReverseSolutions, setPlanningReverseSolutions] = useState([]);
   const [planningAdvanceAxis, setPlanningAdvanceAxis] = useState('x');
+  // 智能规划：多目标规划优化方案（仅 UI 选择，不改既有算法触发逻辑）
+  const [planningOptMode, setPlanningOptMode] = useState('efficiency'); // 'efficiency' | 'disturbance' | 'recovery' | 'weighted'
+  const [planningOptWeights, setPlanningOptWeights] = useState({ efficiency: 0.34, disturbance: 0.33, recovery: 0.33 });
+
+  // 工程效率最优（候选 + 缓存 + 联动绘图）
+  const efficiencyWorkerRef = useRef(null);
+  const resourceWorkerRef = useRef(null);
+  const efficiencyCacheRef = useRef(new Map());
+  const efficiencyReqSeqRef = useRef(0);
+  const efficiencyPendingRefineKeyRef = useRef('');
+  const efficiencyPendingRefineAxisRef = useRef('');
+  // 记住“用户手动选择的候选方案”（按 cacheKey 维度），避免 refine/full 回包把选中态强行覆盖回 best。
+  const efficiencySelectedSigByKeyRef = useRef(new Map());
+
+  const [planningEfficiencyBusy, setPlanningEfficiencyBusy] = useState(false);
+  const [planningEfficiencyResult, setPlanningEfficiencyResult] = useState(null);
+  const [planningEfficiencyCacheKey, setPlanningEfficiencyCacheKey] = useState('');
+  const [planningEfficiencySelectedSig, setPlanningEfficiencySelectedSig] = useState('');
+  const [planningInnerOmegaOverrideWb, setPlanningInnerOmegaOverrideWb] = useState(null);
+
+  // 资源回收最优（复用同一 worker：传 optMode=recovery，按吨位/覆盖率排序）
+  const recoveryCacheRef = useRef(new Map());
+  const recoveryReqSeqRef = useRef(0);
+  const recoveryPendingRefineKeyRef = useRef('');
+  const recoveryPendingRefineAxisRef = useRef('');
+  const recoverySelectedSigByKeyRef = useRef(new Map());
+
+  const [planningRecoveryBusy, setPlanningRecoveryBusy] = useState(false);
+  const [planningRecoveryResult, setPlanningRecoveryResult] = useState(null);
+  const [planningRecoveryCacheKey, setPlanningRecoveryCacheKey] = useState('');
+  const [planningRecoverySelectedSig, setPlanningRecoverySelectedSig] = useState('');
+  const [planningRecoveryShowAllCandidates, setPlanningRecoveryShowAllCandidates] = useState(false);
+
+  // 资源回收：调试弹窗（用于复制“请求+回包+TopK候选关键字段”给排障用）
+  const recoveryLastRequestRef = useRef(null);
+  const recoveryLastResponseRef = useRef(null);
+  const [planningRecoveryDebugOpen, setPlanningRecoveryDebugOpen] = useState(false);
+  const [planningRecoveryDebugText, setPlanningRecoveryDebugText] = useState('');
+
+  // “启动智能采区规划”：首次默认工程效率；后续按多目标 tab 选择触发
+  const planningHasStartedRef = useRef(false);
+
+  // 工程效率：预览布局（当 N 不在 bestKeyByN 时给一个“可画出来但不保证最优”的方案）
+  const efficiencyPreviewReqSeqRef = useRef(0);
+  const efficiencyPreviewDebounceRef = useRef(null);
+  const [planningEfficiencyPreviewBusy, setPlanningEfficiencyPreviewBusy] = useState(false);
+  const [planningEfficiencyPreview, setPlanningEfficiencyPreview] = useState(null);
+
+  // 调试面板快照：用于追踪“输入 -> 请求 -> 响应”链路（DEV only）
+  const [planningDebugSnapshot, setPlanningDebugSnapshot] = useState(null);
+
+  const hashStringFNV1a32 = (s) => {
+    const str = String(s ?? '');
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return `h${h.toString(16).padStart(8, '0')}`;
+  };
+
+  const hashBoundaryLoopWorld = (loop) => {
+    const pts = Array.isArray(loop) ? loop : [];
+    if (!pts.length) return 'h00000000';
+    const parts = [];
+    for (const p of pts) {
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      parts.push(`${x.toFixed(3)},${y.toFixed(3)}`);
+    }
+    return hashStringFNV1a32(parts.join(';'));
+  };
+
+  const parseNonNegOrNull = (v) => {
+    if (v == null) return null;
+    if (typeof v === 'string' && v.trim() === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, n) : null;
+  };
+
+  const getFaceWidthRange = () => {
+    const defLo = 100;
+    const defHi = 350;
+
+    const rawLo = planningParams?.faceWidthMin;
+    const rawHi = planningParams?.faceWidthMax;
+
+    const parseOptionalNumber = (v) => {
+      if (v == null) return null;
+      if (typeof v === 'string' && v.trim() === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const lo0 = parseOptionalNumber(rawLo);
+    const hi0 = parseOptionalNumber(rawHi);
+
+    const warnings = [];
+    let invalid = false;
+    if (lo0 != null && lo0 <= 0) invalid = true;
+    if (hi0 != null && hi0 <= 0) invalid = true;
+
+    let a = (lo0 != null ? lo0 : defLo);
+    let b = (hi0 != null ? hi0 : defHi);
+
+    // 输入了非法值（<=0）：回退默认（A1 规则）
+    if (invalid) {
+      a = defLo;
+      b = defHi;
+      warnings.push('宽度范围非法（应为正数），已回退默认');
+    }
+
+    // 仅在没有触发“非法回退默认”时处理 min>max 交换
+    if (!invalid && Number.isFinite(a) && Number.isFinite(b) && a > b) {
+      const t = a;
+      a = b;
+      b = t;
+      warnings.push('宽度范围 min>max，已自动交换');
+    }
+
+    // 最终兜底：确保为正数
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) {
+      a = defLo;
+      b = defHi;
+      warnings.push('宽度范围解析失败，已回退默认');
+    }
+
+    return {
+      min: a,
+      max: b,
+      defMin: defLo,
+      defMax: defHi,
+      rawMin: rawLo,
+      rawMax: rawHi,
+      warnings,
+    };
+  };
+
+  const getRangeWithFallback = (minV, maxV, targetV) => {
+    const t = parseNonNegOrNull(targetV);
+    const lo = parseNonNegOrNull(minV);
+    const hi = parseNonNegOrNull(maxV);
+    const mean = (lo != null && hi != null) ? (lo + hi) / 2 : (t != null ? t : 0);
+    const a = (lo != null ? lo : (t != null ? t : mean));
+    const b = (hi != null ? hi : (t != null ? t : mean));
+    return { min: Math.min(a, b), max: Math.max(a, b) };
+  };
+
+  const computeBoundaryBboxWorld = (loop) => {
+    const pts = Array.isArray(loop) ? loop : [];
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let count = 0;
+    for (const p of pts) {
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      count += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    if (!count || !Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+      return { xmin: null, xmax: null, ymin: null, ymax: null };
+    }
+    return { xmin: minX, xmax: maxX, ymin: minY, ymax: maxY };
+  };
+
+  const buildEfficiencyDebugResponseSummary = (result, selectedSig) => {
+    const r = result ?? null;
+    const list = Array.isArray(r?.candidates) ? r.candidates : [];
+    const ok = Boolean(r?.ok);
+    const failedReason = ok ? '' : String(r?.failedReason ?? r?.message ?? '');
+
+    const pickBySig = (sig) => {
+      const s = String(sig ?? '');
+      if (!s) return null;
+      return list.find((c) => String(c?.signature) === s) ?? null;
+    };
+    const top1 = pickBySig(r?.bestSignature) ?? list[0] ?? null;
+    const selected = pickBySig(selectedSig) ?? pickBySig(r?.bestSignature) ?? list[0] ?? null;
+
+    const toLoops = (c) => {
+      const loops = Array.isArray(c?.omegaRender?.loops)
+        ? c.omegaRender.loops
+        : (Array.isArray(c?.omegaRender?.innerOmegaLoopWorld) ? [c.omegaRender.innerOmegaLoopWorld] : []);
+      return loops;
+    };
+
+    const toResultOmegaLoops = () => {
+      const loops = Array.isArray(r?.omegaRender?.loops)
+        ? r.omegaRender.loops
+        : (Array.isArray(r?.omegaRender?.innerOmegaLoopWorld) ? [r.omegaRender.innerOmegaLoopWorld] : []);
+      return loops;
+    };
+    const toFaces = (c) => {
+      if (Array.isArray(c?.render?.rectLoops)) {
+        return c.render.rectLoops
+          .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+          .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+      }
+      const faces = Array.isArray(c?.render?.facesLoops)
+        ? c.render.facesLoops
+        : (Array.isArray(c?.render?.plannedWorkfaceLoopsWorld) ? c.render.plannedWorkfaceLoopsWorld : []);
+      return faces;
+    };
+    const loopPointsSum = (arr) => (arr ?? []).reduce((sum, item) => sum + (Array.isArray(item) ? item.length : 0), 0);
+    const facesPointsSum = (arr) => (arr ?? []).reduce((sum, item) => sum + (Array.isArray(item?.loop) ? item.loop.length : 0), 0);
+
+    const omegaLoops = toResultOmegaLoops();
+    const selectedFacesLoops = selected ? toFaces(selected) : [];
+
+    const omegaArea = Number(r?.omegaArea);
+    const faceAreaTotal = Number(selected?.metrics?.faceAreaTotal ?? selected?.coveredArea);
+    const ratio = Number(selected?.metrics?.coverageRatio ?? selected?.coverageRatio ?? selected?.metrics?.recoveryRatio ?? selected?.recoveryRatio);
+
+    const omegaAreaOut = Number.isFinite(omegaArea) ? omegaArea : null;
+    const omegaEmpty = omegaLoops.length === 0 || (omegaAreaOut != null && omegaAreaOut <= 0);
+    const facesEmpty = selectedFacesLoops.length === 0 || !(Number(selected?.N ?? selected?.metrics?.faceCount ?? 0) > 0);
+
+    const attemptSummary = r?.attemptSummary ?? null;
+    const omegaReadyButNoCandidates = !ok && omegaLoops.length > 0;
+
+    return {
+      ok,
+      failedReason,
+      reqSeq: r?.reqSeq ?? null,
+      cacheKey: r?.cacheKey ?? null,
+      candidatesCount: list.length,
+      selectedCandidateKey: selected ? String(selected?.signature ?? '') : '',
+
+      omegaArea: omegaAreaOut,
+      omegaLoopsCount: omegaLoops.length,
+      omegaTotalPoints: loopPointsSum(omegaLoops),
+      omegaEmpty,
+      omegaReadyButNoCandidates,
+
+      attemptSummary: attemptSummary
+        ? {
+          attemptedCombos: attemptSummary?.attemptedCombos ?? null,
+          feasibleCombos: attemptSummary?.feasibleCombos ?? null,
+          failTypes: attemptSummary?.failTypes ?? null,
+        }
+        : null,
+
+      facesLoopsCount: selectedFacesLoops.length,
+      facesTotalPoints: facesPointsSum(selectedFacesLoops),
+      faceAreaTotal: Number.isFinite(faceAreaTotal) ? faceAreaTotal : null,
+      facesEmpty,
+
+      N: selected?.N ?? selected?.metrics?.faceCount ?? null,
+      B: selected?.B ?? null,
+      wb: selected?.wb ?? selected?.genes?.wb ?? null,
+      ws: selected?.ws ?? selected?.genes?.ws ?? null,
+      coverageRatio: Number.isFinite(ratio) ? ratio : null,
+
+      top1: top1
+        ? {
+          key: String(top1?.signature ?? ''),
+          wb: top1?.wb ?? top1?.genes?.wb ?? null,
+          ws: top1?.ws ?? top1?.genes?.ws ?? null,
+          N: top1?.N ?? top1?.metrics?.faceCount ?? null,
+          B: top1?.B ?? null,
+          ratio: Number(top1?.metrics?.coverageRatio ?? top1?.coverageRatio ?? top1?.metrics?.recoveryRatio ?? top1?.recoveryRatio) || null,
+        }
+        : null,
+    };
+  };
+
+  const buildEfficiencyCacheKey = () => {
+    const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
+
+    const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+    const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+    const fw = getFaceWidthRange();
+
+    // 工程效率最优：wb 固定代表值（默认取均值/或目标值），不做枚举搜索
+    const wbRep = Number.isFinite(Number(wbR?.target))
+      ? Number(wbR.target)
+      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+        ? (Number(wbR.min) + Number(wbR.max)) / 2
+        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+
+    const f3 = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(3) : '0.000');
+    return [
+      'eff',
+      `axis=${axis}`,
+      `bnd=${bHash}`,
+      `wb=${f3(wbRep)}`,
+      `ws=${f3(wsR.min)}-${f3(wsR.max)}`,
+      `B=${f3(fw.min)}-${f3(fw.max)}`,
+      `Bdef=${f3(fw.defMin)}-${f3(fw.defMax)}`,
+      // worker 内 B 搜索策略版本（两阶段：粗搜 + 局部 1m 精修）
+      'Bsearch=v2(coarse=25,fine=1,win=10,topM=5)',
+      // axis=y 内部 swapXY 修复版本（用于淘汰历史错误缓存）
+      'axisSwapFix=v1',
+    ].join('|');
+  };
+
+  const hashCoalThicknessSamples = (samples) => {
+    const pts = Array.isArray(samples) ? samples : [];
+    if (!pts.length) return 'h00000000';
+    const parts = [];
+    for (const p of pts) {
+      const x = Number(p?.x);
+      const y = Number(p?.y);
+      const v = Number(p?.value ?? p?.v ?? p?.thickness ?? p?.Mi);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(v)) continue;
+      parts.push(`${x.toFixed(3)},${y.toFixed(3)},${v.toFixed(3)}`);
+    }
+    return hashStringFNV1a32(parts.join(';'));
+  };
+
+  const buildRecoveryCacheKey = () => {
+    // 资源回收新口径：x/y 双方向同时评估
+    const axis = 'both';
+    const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
+
+    const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+    const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+    const fw = getFaceWidthRange();
+
+    // recovery：当前仍复用规则矩形生成器；wb 同样使用代表值（Ω 内缩），不做细粒度枚举
+    const wbRep = Number.isFinite(Number(wbR?.target))
+      ? Number(wbR.target)
+      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+        ? (Number(wbR.min) + Number(wbR.max)) / 2
+        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+
+    const seamThickness = Number(planningParams?.seamThickness);
+    const coalDensity = Number(planningParams?.coalDensity);
+    const hasConstThk = Number.isFinite(seamThickness) && seamThickness > 0;
+    const rho = (Number.isFinite(coalDensity) && coalDensity > 0) ? coalDensity : 1;
+
+    const thkSamples = boreholeParamSamples?.CoalThk;
+    const thicknessDataHash = hashCoalThicknessSamples(thkSamples);
+    const thkCount = Array.isArray(thkSamples) ? thkSamples.length : 0;
+    const targetSeam = 'CoalThk';
+    const gridRes = 20;
+    const interpVersion = 'idw-v1';
+
+    const f3 = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(3) : '0.000');
+    // v1.0：明确 wbMin/wbMax/wbFixed（即使当前 UI 只传代表值，也要写入 cacheKey 防漂移）
+    const wbFixedRaw = (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+      ? (Number(wbR.min) + Number(wbR.max)) / 2
+      : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : Number(wbRep));
+
+    const perFaceTrapezoid = true;
+    const perFaceInRatioMin = 0.7;
+    const perFaceAdjMaxStepDeg = 4;
+    const perFaceDeltaSetDeg = [-10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10];
+    const perFaceMaxSeq = 160;
+    const perFaceSeedM = 12;
+    const perFaceNSet = [3, 4, 5, 6, 7];
+    const perFaceExtraBudgetMs = 800;
+    const perFaceVarB = true;
+    const perFaceBListMax = 10;
+    const preferPerFaceBest = false;
+    const relaxedAllowPerFaceShift = true;
+
+    return [
+      'res',
+      'res-v1.0',
+      `axis=${axis}`,
+      `bnd=${bHash}`,
+      `wbMin=${f3(wbR.min)}`,
+      `wbMax=${f3(wbR.max)}`,
+      `wbFixed=${f3(wbFixedRaw)}`,
+      `ws=${f3(wsR.min)}-${f3(wsR.max)}`,
+      `B=${f3(fw.min)}-${f3(fw.max)}`,
+      `thicknessDataHash=${thicknessDataHash}`,
+      `targetSeam=${targetSeam}`,
+      `gridRes=${gridRes}`,
+      `interpVersion=${interpVersion}`,
+      `thkN=${thkCount}`,
+      `thkConst=${hasConstThk ? f3(seamThickness) : 'none'}`,
+      `rho=${f3(rho)}`,
+      // 厚度坐标系冻结：axis/y 不跟随 swap
+      'thkAxisFixed=v1.0',
+      // per-face “远边调斜”参数纳入 cacheKey，避免候选/缓存串扰
+      `pfTrap=${perFaceTrapezoid ? '1' : '0'}`,
+      `pfRmin=${f3(perFaceInRatioMin)}`,
+      `pfAdj=${f3(perFaceAdjMaxStepDeg)}`,
+      `pfDSet=${perFaceDeltaSetDeg.join(',')}`,
+      `pfMaxSeq=${String(perFaceMaxSeq)}`,
+      `pfSeedM=${String(perFaceSeedM)}`,
+      `pfN=${perFaceNSet.join(',')}`,
+      `pfExtra=${String(perFaceExtraBudgetMs)}`,
+      `pfVarB=${perFaceVarB ? '1' : '0'}`,
+      `pfBListMax=${String(perFaceBListMax)}`,
+      `pfPrefer=${preferPerFaceBest ? '1' : '0'}`,
+      `relShift=${relaxedAllowPerFaceShift ? '1' : '0'}`,
+    ].join('|');
+  };
+
+  const assertPlanningPayload = (uiMode, payload) => {
+    const m = String(uiMode ?? '');
+    const mode = String(payload?.mode ?? '');
+    const cacheKey = String(payload?.cacheKey ?? '');
+    const inputMode = String(payload?.input?.mode ?? '');
+
+    if (m === 'recovery') {
+      if (mode !== 'smart-resource') throw new Error(`payload.mode 必须为 smart-resource（当前=${mode || '空'}）`);
+      if (!cacheKey.includes('res|')) throw new Error(`payload.cacheKey 必须包含 res|（当前=${cacheKey || '空'}）`);
+      if (cacheKey.includes('eff|')) throw new Error('payload.cacheKey 不得包含 eff|（疑似串模式）');
+      if (inputMode === 'efficiency') throw new Error('payload.input.mode 不得为 efficiency（疑似串模式）');
+      return;
+    }
+
+    if (m === 'efficiency') {
+      if (mode !== 'smart-efficiency') throw new Error(`payload.mode 必须为 smart-efficiency（当前=${mode || '空'}）`);
+      if (!cacheKey.includes('eff|')) throw new Error(`payload.cacheKey 必须包含 eff|（当前=${cacheKey || '空'}）`);
+      return;
+    }
+  };
+
+  const assertPlanningResponse = (uiMode, response) => {
+    const m = String(uiMode ?? '');
+    const mode = String(response?.mode ?? '');
+    const cacheKey = String(response?.cacheKey ?? '');
+
+    if (m === 'recovery') {
+      if (mode !== 'smart-resource') throw new Error(`response.mode 不匹配（期望 smart-resource，实际=${mode || '空'}）`);
+      const need = ['thicknessDataHash=', 'targetSeam=', 'gridRes=', 'interpVersion='];
+      for (const k of need) {
+        if (!cacheKey.includes(k)) throw new Error(`response.cacheKey 缺少 ${k}（当前=${cacheKey || '空'}）`);
+      }
+      if (!(Object.prototype.hasOwnProperty.call(response, 'tonnageTotal'))) {
+        throw new Error('response 中必须存在 tonnageTotal（缺失说明串模式/回包格式异常）');
+      }
+      return;
+    }
+
+    if (m === 'efficiency') {
+      if (mode !== 'smart-efficiency' && mode !== 'smart-efficiency-preview') {
+        throw new Error(`response.mode 不匹配（期望 smart-efficiency，实际=${mode || '空'}）`);
+      }
+      if (Object.prototype.hasOwnProperty.call(response, 'tonnageTotal')) {
+        throw new Error('efficiency 响应不得出现 tonnageTotal（出现说明串模式）');
+      }
+      return;
+    }
+  };
+
+  const applyRecoveryCandidateBySignature = (sig, result) => {
+    const r = result ?? planningRecoveryResult;
+    if (!r?.candidates?.length) return;
+    const picked = r.candidates.find((c) => String(c?.signature) === String(sig)) ?? r.candidates[0];
+    if (!picked) return;
+
+    try {
+      const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
+      const nRange = r?.nRange;
+      setPlanningParams((p) => ({
+        ...p,
+        faceCountSelected: Number.isFinite(pickedN) ? String(Math.round(pickedN)) : p.faceCountSelected,
+        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.round(Number(nRange.nMin))) : p.faceCountSuggestedMin,
+        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.round(Number(nRange.nMax))) : p.faceCountSuggestedMax,
+      }));
+    } catch {
+      // ignore
+    }
+
+    setPlanningRecoverySelectedSig(String(picked.signature ?? ''));
+    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+
+    let loops = [];
+    // 资源回收验收口径：必须裁剪到粉色 Ω 内再展示（超出部分不画）
+    if (Array.isArray(picked?.render?.clippedFacesLoops) && picked.render.clippedFacesLoops.length) {
+      loops = picked.render.clippedFacesLoops;
+    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld) && picked.render.plannedWorkfaceLoopsWorld.length) {
+      loops = picked.render.plannedWorkfaceLoopsWorld;
+    } else if (Array.isArray(picked?.render?.rectLoops)) {
+      loops = picked.render.rectLoops
+        .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+    } else if (Array.isArray(picked?.render?.facesLoops)) {
+      loops = picked.render.facesLoops;
+    }
+    setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+    setShowWorkfaceOutline(true);
+    setShowPlanningBoundaryOverlay(true);
+  };
+
+  const buildRecoveryDebugCopyPayload = (result, selectedSig) => {
+    const r = result ?? planningRecoveryResult;
+    const req = recoveryLastRequestRef.current;
+
+    const candidates = Array.isArray(r?.candidates) ? r.candidates : [];
+    const picked = selectedSig
+      ? (candidates.find((c) => String(c?.signature ?? '') === String(selectedSig)) ?? candidates[0])
+      : (candidates[0] ?? null);
+
+    const pickCand = (c) => {
+      const m = c?.metrics ?? {};
+      return {
+        signature: String(c?.signature ?? ''),
+        N: c?.N,
+        B: c?.B,
+        BMin: (c?.BMin ?? m?.BMin ?? null),
+        BMax: (c?.BMax ?? m?.BMax ?? null),
+        BList: (Array.isArray(c?.BList) ? c.BList : (Array.isArray(m?.BList) ? m.BList : null)),
+        wb: c?.wb,
+        ws: c?.ws,
+        thetaDeg: (c?.thetaDeg ?? m?.thetaDeg ?? null),
+        deltaDegList: (Array.isArray(c?.deltaDegList) ? c.deltaDegList : (Array.isArray(m?.deltaDegList) ? m.deltaDegList : null)),
+        nearAngleDegList: (Array.isArray(c?.nearAngleDegList) ? c.nearAngleDegList : (Array.isArray(m?.nearAngleDegList) ? m.nearAngleDegList : null)),
+        farAngleDegList: (Array.isArray(c?.farAngleDegList) ? c.farAngleDegList : (Array.isArray(m?.farAngleDegList) ? m.farAngleDegList : null)),
+        coverageRatio: (c?.coverageRatio ?? m?.coverageRatio ?? null),
+        coveredArea: (c?.coveredArea ?? m?.faceAreaTotal ?? null),
+        faceAreaTotal: (c?.faceAreaTotal ?? m?.faceAreaTotal ?? null),
+        innerArea: (c?.innerArea ?? m?.omegaArea ?? null),
+        minInRatio: (c?.minInRatio ?? m?.minFaceInRatio ?? m?.minInRatio ?? null),
+        rminOk: (c?.rminOk ?? m?.rminOk ?? null),
+        overlapOk: (c?.overlapOk ?? m?.overlapOk ?? null),
+        overlapPairs: (c?.overlapPairs ?? m?.overlapPairs ?? null),
+        overlapAreaTotal: (c?.overlapAreaTotal ?? m?.overlapAreaTotal ?? null),
+        maxOverlapArea: (c?.maxOverlapArea ?? m?.maxOverlapArea ?? null),
+        qualified: (c?.qualified ?? m?.qualified ?? null),
+        reason: (c?.reason ?? m?.reason ?? null),
+        lenCV: (c?.lenCV ?? m?.lenCV ?? null),
+        minL: (c?.minL ?? m?.minL ?? null),
+        maxL: (c?.maxL ?? m?.maxL ?? null),
+        meanL: (c?.meanL ?? m?.meanL ?? null),
+        abnormalFaceCount: (c?.abnormalFaceCount ?? m?.abnormalFaceCount ?? null),
+        abnormalFaces: (Array.isArray(c?.abnormalFaces) ? c.abnormalFaces : (Array.isArray(m?.abnormalFaces) ? m.abnormalFaces : null)),
+        sumAbsDeltaDeg: (c?.sumAbsDeltaDeg ?? m?.sumAbsDeltaDeg ?? null),
+        smoothnessDeg: (c?.smoothnessDeg ?? m?.smoothnessDeg ?? null),
+      };
+    };
+
+    const topK = candidates.slice(0, 10).map(pickCand);
+    const tableRows = Array.isArray(r?.table?.rows) ? r.table.rows.slice(0, 10) : [];
+
+    return {
+      ts: Date.now(),
+      ui: {
+        mainViewMode,
+        planningOptMode,
+      },
+      request: {
+        payload: req ? {
+          reqSeq: req?.reqSeq,
+          cacheKey: String(req?.cacheKey ?? ''),
+          axis: String(req?.axis ?? ''),
+          fast: Boolean(req?.fast),
+          boundaryPillarMin: req?.boundaryPillarMin,
+          boundaryPillarMax: req?.boundaryPillarMax,
+          coalPillarMin: req?.coalPillarMin,
+          coalPillarMax: req?.coalPillarMax,
+          faceWidthMin: req?.faceWidthMin,
+          faceWidthMax: req?.faceWidthMax,
+          faceAdvanceMax: req?.faceAdvanceMax,
+          topK: req?.topK,
+          perFaceTrapezoid: req?.perFaceTrapezoid,
+          perFaceAdjMaxStepDeg: req?.perFaceAdjMaxStepDeg,
+          perFaceDeltaSetDeg: req?.perFaceDeltaSetDeg,
+          perFaceInRatioMin: req?.perFaceInRatioMin,
+          perFaceVarB: req?.perFaceVarB,
+          perFaceBListMax: req?.perFaceBListMax,
+          maxTimeMs: req?.maxTimeMs,
+          thickness: {
+            thicknessDataHash: req?.thickness?.thicknessDataHash,
+            targetSeam: req?.thickness?.targetSeam,
+            gridRes: req?.thickness?.gridRes,
+            interpVersion: req?.thickness?.interpVersion,
+          },
+        } : null,
+      },
+      response: r ? {
+        ok: Boolean(r?.ok),
+        failedReason: String(r?.failedReason ?? ''),
+        reqSeq: r?.reqSeq,
+        cacheKey: String(r?.cacheKey ?? ''),
+        fast: Boolean(r?.fast),
+        candidatesCount: Array.isArray(r?.candidates) ? r.candidates.length : null,
+        selectedCandidateKey: String(selectedSig || r?.selectedCandidateKey || r?.bestKey || r?.bestSignature || ''),
+        omegaArea: r?.omegaArea,
+        tonnageTotal: r?.tonnageTotal,
+        stats: r?.stats ?? null,
+        debugPerFace: r?.debug?.perFace ?? null,
+      } : null,
+      selectedCandidate: picked ? pickCand(picked) : null,
+      top10: topK,
+      tableTop10: tableRows,
+    };
+  };
+
+  const openRecoveryDebugModal = () => {
+    try {
+      const sig = String(planningRecoverySelectedSig || planningRecoveryResult?.selectedCandidateKey || planningRecoveryResult?.bestKey || '');
+      const blob = buildRecoveryDebugCopyPayload(planningRecoveryResult, sig);
+      setPlanningRecoveryDebugText(JSON.stringify(blob, null, 2));
+    } catch (e) {
+      setPlanningRecoveryDebugText(JSON.stringify({ ts: Date.now(), error: String(e?.message ?? e) }, null, 2));
+    }
+    setPlanningRecoveryDebugOpen(true);
+  };
+
+  const copyRecoveryDebugText = async () => {
+    const text = String(planningRecoveryDebugText ?? '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fallback
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      // ignore
+    }
+  };
+
+  const applyEfficiencyCandidateBySignature = (sig, result) => {
+    const r = result ?? planningEfficiencyResult;
+    if (!r?.candidates?.length) return;
+    const picked = r.candidates.find((c) => String(c?.signature) === String(sig)) ?? r.candidates[0];
+    if (!picked) return;
+
+    // 方案C：回填“采区参数编辑器”的工作面个数滑块（仅用于显示/切换，不参与 cacheKey）
+    try {
+      const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
+      const nRange = r?.nRange;
+      setPlanningParams((p) => ({
+        ...p,
+        faceCountSelected: Number.isFinite(pickedN) ? String(Math.round(pickedN)) : p.faceCountSelected,
+        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.round(Number(nRange.nMin))) : p.faceCountSuggestedMin,
+        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.round(Number(nRange.nMax))) : p.faceCountSuggestedMax,
+      }));
+    } catch {
+      // ignore
+    }
+
+    setPlanningEfficiencySelectedSig(String(picked.signature ?? ''));
+    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+
+    // 工程效率最优：蓝色图层必须使用“设计矩形”（规则矩形），裁切多边形仅解释不参与评分。
+    let loops = [];
+    if (Array.isArray(picked?.render?.rectLoops)) {
+      loops = picked.render.rectLoops
+        .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+    } else if (Array.isArray(picked?.render?.facesLoops)) {
+      loops = picked.render.facesLoops;
+    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld)) {
+      loops = picked.render.plannedWorkfaceLoopsWorld;
+    }
+    setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+    setShowWorkfaceOutline(true);
+    setShowPlanningBoundaryOverlay(true);
+
+    // 开发期自检输出：看不到时先确认“算出来”还是“没画出来”。
+    try {
+      const omegaArea = Number(picked?.metrics?.omegaArea ?? picked?.innerArea);
+      const faceAreaTotal = Number(picked?.metrics?.faceAreaTotal ?? picked?.coveredArea);
+      console.log('[smart-efficiency] selected', {
+        signature: String(picked?.signature ?? ''),
+        omegaArea,
+        faceAreaTotal,
+        facesLoops: Array.isArray(loops) ? loops.length : 0,
+        wb: picked?.wb,
+        ws: picked?.ws,
+        N: picked?.N,
+        B: picked?.B,
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const applyEfficiencyPreviewCandidate = (candidate) => {
+    const picked = candidate;
+    if (!picked) return;
+
+    // 预览不改变“真实候选选中态”（4A），只更新绘图层
+    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+
+    let loops = [];
+    if (Array.isArray(picked?.render?.rectLoops)) {
+      loops = picked.render.rectLoops
+        .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+    } else if (Array.isArray(picked?.render?.facesLoops)) {
+      loops = picked.render.facesLoops;
+    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld)) {
+      loops = picked.render.plannedWorkfaceLoopsWorld;
+    }
+
+    if (Array.isArray(loops) && loops.length > 0) {
+      setPlannedWorkfaceLoopsWorld(cloneJson(loops));
+      setShowWorkfaceOutline(true);
+      setShowPlanningBoundaryOverlay(true);
+    }
+  };
+
+  const requestComputeEfficiency = ({ force = false, fast = false, refine = false, background = false } = {}) => {
+    // 说明：force 用于“点击按钮立即触发”，避免 setState 尚未生效时被 early-return 导致需要点多次。
+    if (!force) {
+      if (mainViewMode !== 'planning') return;
+      if (planningOptMode !== 'efficiency') return;
+    }
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    const cacheKey = buildEfficiencyCacheKey();
+    setPlanningEfficiencyCacheKey(cacheKey);
+
+    // fast + refine：先快速算一版立刻出图，再自动补一轮 full compute。
+    if (fast && refine) {
+      efficiencyPendingRefineKeyRef.current = String(cacheKey);
+      const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+      efficiencyPendingRefineAxisRef.current = axisNow;
+    }
+
+    if (DEBUG_PANEL) {
+      const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+      const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+      const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+      const fw = getFaceWidthRange();
+      const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
+      const bbox = computeBoundaryBboxWorld(boundaryLoopWorld);
+      setPlanningDebugSnapshot((prev) => ({
+        ts: Date.now(),
+        mode: 'smart-efficiency',
+        input: {
+          mode: planningOptMode,
+          axis,
+          Bmin: fw.min,
+          Bmax: fw.max,
+          BrawMin: (fw.rawMin == null ? '' : String(fw.rawMin)),
+          BrawMax: (fw.rawMax == null ? '' : String(fw.rawMax)),
+          Bnormalized: [fw.min, fw.max],
+          BnormalizeWarnings: fw.warnings,
+          Bdef: [fw.defMin, fw.defMax],
+          Lmax: Number(planningParams?.faceAdvanceMax) || null,
+          wbMin: wbR.min,
+          wbMax: wbR.max,
+          wsMin: wsR.min,
+          wsMax: wsR.max,
+          boundaryPointCount: boundaryLoopWorld.length,
+          boundaryBbox: bbox,
+        },
+        request: {
+          mode: 'smart-efficiency',
+          requestId: null,
+          cacheKey,
+          axis,
+          wbMin: wbR.min,
+          wbMax: wbR.max,
+          wsMin: wsR.min,
+          wsMax: wsR.max,
+          Bmin: fw.min,
+          Bmax: fw.max,
+          Lmax: Number(planningParams?.faceAdvanceMax) || null,
+          Bnormalized: [fw.min, fw.max],
+          BnormalizeWarnings: fw.warnings,
+          boundaryHash: bHash,
+          boundaryPointCount: boundaryLoopWorld.length,
+          topK: 10,
+        },
+        response: prev?.response ?? null,
+        lastError: prev?.lastError ?? '',
+      }));
+    }
+
+    const cached = efficiencyCacheRef.current.get(cacheKey);
+    // 重要：历史版本曾出现 request.axis=y 但返回 axis=x 的错误缓存；这里做一致性校验避免“错缓存复活”。
+    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedFast = Boolean(cached?.result?.fast);
+    const cachedPartial = Boolean(cached?.result?.stats?.partial);
+    const cachedSig = String(
+      cached?.selectedSig
+      || cached?.result?.bestKey
+      || cached?.result?.selectedCandidateKey
+      || cached?.result?.bestSignature
+      || (cached?.result?.candidates?.[0]?.signature ?? '')
+      || ''
+    );
+    const cachedLooksConsistent = cached?.result?.ok
+      && !cachedFast
+      && !cachedPartial
+      && cachedAxis === 'both'
+      && (cachedSig.startsWith('x|') || cachedSig.startsWith('y|'));
+
+    if (cachedLooksConsistent) {
+      setPlanningEfficiencyResult(cached.result);
+      const rememberedSig = String(efficiencySelectedSigByKeyRef.current.get(cacheKey) || '');
+      const rememberedOk = Boolean(
+        rememberedSig
+        && Array.isArray(cached?.result?.candidates)
+        && cached.result.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+      );
+
+      const sig = (rememberedOk ? rememberedSig : (
+        cached.selectedSig
+        || cached.result.bestKey
+        || cached.result.selectedCandidateKey
+        || cached.result.bestSignature
+        || (cached.result.candidates?.[0]?.signature ?? '')
+      ));
+
+      // 同步缓存里的 selectedSig，保证下次命中缓存也稳定。
+      if (sig) {
+        efficiencySelectedSigByKeyRef.current.set(cacheKey, String(sig));
+        if (cached?.selectedSig !== String(sig)) {
+          efficiencyCacheRef.current.set(cacheKey, { ...cached, selectedSig: String(sig) });
+        }
+      }
+      applyEfficiencyCandidateBySignature(sig, cached.result);
+
+      // compute/cached 成功：清理预览（回到“真实候选集”）
+      setPlanningEfficiencyPreview(null);
+      setPlanningEfficiencyPreviewBusy(false);
+
+      if (DEBUG_PANEL) {
+        setPlanningDebugSnapshot((prev) => ({
+          ...(prev ?? {}),
+          ts: Date.now(),
+          mode: 'smart-efficiency',
+          response: buildEfficiencyDebugResponseSummary(cached.result, sig),
+          lastError: cached?.result?.ok ? '' : String(cached?.result?.message ?? ''),
+        }));
+      }
+      return;
+    }
+
+    // 不一致的缓存直接丢弃，避免错误命中
+    if (cached && !cachedLooksConsistent) {
+      try {
+        efficiencyCacheRef.current.delete(cacheKey);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!efficiencyWorkerRef.current) return;
+    const axis = 'both';
+    const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+    const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+    const fw = getFaceWidthRange();
+
+    const wbRep = Number.isFinite(Number(wbR?.target))
+      ? Number(wbR.target)
+      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+        ? (Number(wbR.min) + Number(wbR.max)) / 2
+        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+
+    const reqSeq = (efficiencyReqSeqRef.current += 1);
+    if (!background) setPlanningEfficiencyBusy(true);
+
+    const gridRes = 20;
+    const interpVersion = 'idw-v1';
+
+    const msg = {
+      type: 'compute',
+      payload: {
+        reqSeq,
+        mode: 'smart-efficiency',
+        cacheKey,
+        input: { mode: 'efficiency' },
+        boundaryLoopWorld: cloneJson(boundaryLoopWorld),
+        axis,
+        fast: Boolean(fast),
+        // smart-efficiency：wb 固定代表值
+        boundaryPillarMin: wbRep,
+        boundaryPillarMax: wbRep,
+        coalPillarMin: wsR.min,
+        coalPillarMax: wsR.max,
+        faceWidthMin: fw.min,
+        faceWidthMax: fw.max,
+        faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
+        topK: 10,
+      },
+    };
+
+    try {
+      assertPlanningPayload('efficiency', msg.payload);
+      console.log('start', { uiMode: 'efficiency', requestId: reqSeq, mode: msg.payload.mode, cacheKey: msg.payload.cacheKey });
+    } catch (e) {
+      const errMsg = String(e?.message ?? e);
+      console.error('mismatch', { uiMode: 'efficiency', requestId: reqSeq, error: errMsg });
+      setPlanningEfficiencyBusy(false);
+      setPlanningEfficiencyResult({ ok: false, mode: 'smart-efficiency', message: errMsg, failedReason: errMsg, candidates: [] });
+      return;
+    }
+
+    if (DEBUG_PANEL) {
+      setPlanningDebugSnapshot((prev) => ({
+        ...(prev ?? {}),
+        ts: Date.now(),
+        mode: 'smart-efficiency',
+        request: {
+          ...(prev?.request ?? {}),
+          requestId: reqSeq,
+          cacheKey,
+          axis,
+          wbMin: wbR.min,
+          wbMax: wbR.max,
+          wsMin: wsR.min,
+          wsMax: wsR.max,
+          Bmin: fw.min,
+          Bmax: fw.max,
+          Lmax: Number(planningParams?.faceAdvanceMax) || null,
+          BrawMin: (fw.rawMin == null ? '' : String(fw.rawMin)),
+          BrawMax: (fw.rawMax == null ? '' : String(fw.rawMax)),
+          Bnormalized: [fw.min, fw.max],
+          BnormalizeWarnings: fw.warnings,
+          boundaryHash: hashBoundaryLoopWorld(boundaryLoopWorld),
+          boundaryPointCount: boundaryLoopWorld.length,
+          topK: 10,
+        },
+      }));
+    }
+
+    efficiencyWorkerRef.current.postMessage(msg);
+  };
+
+  const requestComputeRecovery = ({ force = false, fast = false, refine = false, background = false } = {}) => {
+    if (!force) {
+      if (mainViewMode !== 'planning') return;
+      if (planningOptMode !== 'recovery') return;
+    }
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    const cacheKey = buildRecoveryCacheKey();
+    setPlanningRecoveryCacheKey(cacheKey);
+
+    if (fast && refine) {
+      recoveryPendingRefineKeyRef.current = String(cacheKey);
+      recoveryPendingRefineAxisRef.current = 'both';
+    }
+
+    const cached = recoveryCacheRef.current.get(cacheKey);
+    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedFast = Boolean(cached?.result?.fast);
+    const cachedSig = String(
+      cached?.selectedSig
+      || cached?.result?.bestKey
+      || cached?.result?.selectedCandidateKey
+      || cached?.result?.bestSignature
+      || (cached?.result?.candidates?.[0]?.signature ?? '')
+      || ''
+    );
+    const cachedLooksConsistent = cached?.result?.ok
+      && !cachedFast
+      && cachedAxis === axisNow
+      && cachedSig.startsWith(`${axisNow}|`);
+
+    if (cachedLooksConsistent) {
+      setPlanningRecoveryResult(cached.result);
+      try {
+        recoveryLastResponseRef.current = cached.result;
+      } catch {
+        // ignore
+      }
+      const rememberedSig = String(recoverySelectedSigByKeyRef.current.get(cacheKey) || '');
+      const rememberedOk = Boolean(
+        rememberedSig
+        && Array.isArray(cached?.result?.candidates)
+        && cached.result.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+      );
+
+      const sig = (rememberedOk ? rememberedSig : (
+        cached.selectedSig
+        || cached.result.bestKey
+        || cached.result.selectedCandidateKey
+        || cached.result.bestSignature
+        || (cached.result.candidates?.[0]?.signature ?? '')
+      ));
+
+      if (sig) {
+        recoverySelectedSigByKeyRef.current.set(cacheKey, String(sig));
+        if (cached?.selectedSig !== String(sig)) {
+          recoveryCacheRef.current.set(cacheKey, { ...cached, selectedSig: String(sig) });
+        }
+      }
+      applyRecoveryCandidateBySignature(sig, cached.result);
+      return;
+    }
+
+    if (cached && !cachedLooksConsistent) {
+      try {
+        recoveryCacheRef.current.delete(cacheKey);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!resourceWorkerRef.current) {
+      const curSeq = Number(recoveryReqSeqRef.current) || 0;
+      const errMsg = '资源回收 worker 未就绪（resourceWorkerRef=null）';
+      console.error('mismatch', { uiMode: 'recovery', requestId: curSeq, error: errMsg });
+      setPlanningRecoveryBusy(false);
+      setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: errMsg, failedReason: errMsg, candidates: [] });
+      return;
+    }
+    const axis = axisNow;
+    const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+    const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+    const fw = getFaceWidthRange();
+
+    const wbRep = Number.isFinite(Number(wbR?.target))
+      ? Number(wbR.target)
+      : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+        ? (Number(wbR.min) + Number(wbR.max)) / 2
+        : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+
+    const seamThickness = Number(planningParams?.seamThickness);
+    const hasConstThk = Number.isFinite(seamThickness) && seamThickness > 0;
+    const coalDensity = Number(planningParams?.coalDensity);
+    const rho = (Number.isFinite(coalDensity) && coalDensity > 0) ? coalDensity : 1;
+
+    const thkSamples = boreholeParamSamples?.CoalThk;
+    const thicknessDataHash = hashCoalThicknessSamples(thkSamples);
+    const targetSeam = 'CoalThk';
+    const gridRes = 20;
+    const interpVersion = 'idw-v1';
+    const fieldPack = (coalThicknessField?.field && coalThicknessField?.gridW && coalThicknessField?.gridH)
+      ? {
+        field: coalThicknessField.field,
+        gridW: coalThicknessField.gridW,
+        gridH: coalThicknessField.gridH,
+        width: coalThicknessField.width,
+        height: coalThicknessField.height,
+        bounds: coalThicknessField.bounds,
+        pad: coalThicknessField?.bounds?.pad,
+      }
+      : null;
+
+    const reqSeq = (recoveryReqSeqRef.current += 1);
+    if (!background) setPlanningRecoveryBusy(true);
+
+    const msg = {
+      type: 'compute',
+      payload: {
+        reqSeq,
+        cacheKey,
+        mode: 'smart-resource',
+        input: { mode: 'recovery' },
+        boundaryLoopWorld: cloneJson(boundaryLoopWorld),
+        axis,
+        fast: Boolean(fast),
+        // per-face：固定近边（煤柱侧）+ 远边调斜（deltaDeg_i）
+        perFaceTrapezoid: true,
+        perFaceDeltaSetDeg: [-10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10],
+        perFaceAdjMaxStepDeg: 4,
+        perFaceInRatioMin: 0.7,
+        perFaceInRatioTry: 0.5,
+        perFaceMaxSeq: 160,
+        perFaceSeedM: 12,
+        perFaceNSet: [3, 4, 5, 6, 7],
+        perFaceExtraBudgetMs: 1500,
+        // per-face：每面工作面宽度 B_i 独立枚举（参与面积最优排序）
+        perFaceVarB: true,
+        perFaceBListMax: 10,
+        preferPerFaceBest: false,
+        relaxedAllowPerFaceShift: true,
+        // 无解兜底：若严格/主阈值找不到条带组合，自动降低“每面有效占比”阈值到 floor。
+        autoRelaxInRatio: true,
+        autoRelaxInRatioFloor: 0.5,
+        // 性能：给足 per-face（含长度增长/边界自适应）枚举时间，减少 partial/fast=true
+        maxTimeMs: 12000,
+        // 新口径：优先全覆盖粉色区域（达不到则降级并给 warning）
+        fullCover: true,
+        fullCoverMin: 0.995,
+        includeClippedLoops: false,
+        boundaryPillarMin: wbRep,
+        boundaryPillarMax: wbRep,
+        coalPillarMin: wsR.min,
+        coalPillarMax: wsR.max,
+        faceWidthMin: fw.min,
+        faceWidthMax: fw.max,
+        faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
+        topK: 10,
+        thickness: {
+          fieldPack,
+          constantM: (hasConstThk ? seamThickness : null),
+          rho,
+          gridRes,
+          interpVersion,
+          thicknessDataHash,
+          targetSeam,
+        },
+      },
+    };
+
+    try {
+      recoveryLastRequestRef.current = cloneJson(msg.payload);
+    } catch {
+      recoveryLastRequestRef.current = msg.payload;
+    }
+
+    try {
+      assertPlanningPayload('recovery', msg.payload);
+      console.log('start', { uiMode: 'recovery', requestId: reqSeq, mode: msg.payload.mode, cacheKey: msg.payload.cacheKey });
+    } catch (e) {
+      const errMsg = String(e?.message ?? e);
+      console.error('mismatch', { uiMode: 'recovery', requestId: reqSeq, error: errMsg });
+      setPlanningRecoveryBusy(false);
+      setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: errMsg, failedReason: errMsg, candidates: [] });
+      return;
+    }
+
+    if (DEBUG_PANEL) {
+      setPlanningDebugSnapshot((prev) => ({
+        ts: Date.now(),
+        mode: 'smart-resource',
+        input: {
+          mode: 'recovery',
+          axis,
+          wbMin: wbR.min,
+          wbMax: wbR.max,
+          wsMin: wsR.min,
+          wsMax: wsR.max,
+          Bmin: fw.min,
+          Bmax: fw.max,
+          Lmax: Number(planningParams?.faceAdvanceMax) || null,
+          thicknessDataHash,
+          targetSeam,
+          gridRes,
+          interpVersion,
+        },
+        request: {
+          mode: 'smart-resource',
+          requestId: reqSeq,
+          cacheKey,
+        },
+        response: prev?.response ?? null,
+        lastError: prev?.lastError ?? '',
+      }));
+    }
+
+    resourceWorkerRef.current.postMessage(msg);
+  };
+
+  const requestEfficiencyPreview = (targetN) => {
+    if (mainViewMode !== 'planning') return;
+    if (planningOptMode !== 'efficiency') return;
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+    if (!efficiencyWorkerRef.current) return;
+
+    const N = Math.max(1, Math.round(Number(targetN)));
+    if (!Number.isFinite(N)) return;
+
+    if (efficiencyPreviewDebounceRef.current) clearTimeout(efficiencyPreviewDebounceRef.current);
+    efficiencyPreviewDebounceRef.current = setTimeout(() => {
+      const cacheKey = buildEfficiencyCacheKey();
+      setPlanningEfficiencyCacheKey(cacheKey);
+      const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+      const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+      const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+      const fw = getFaceWidthRange();
+
+      const wbRep = Number.isFinite(Number(wbR?.target))
+        ? Number(wbR.target)
+        : (Number.isFinite(Number(wbR?.min)) && Number.isFinite(Number(wbR?.max)))
+          ? (Number(wbR.min) + Number(wbR.max)) / 2
+          : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
+
+      const reqSeq = (efficiencyPreviewReqSeqRef.current += 1);
+      setPlanningEfficiencyPreviewBusy(true);
+      setPlanningEfficiencyPreview({ ok: false, preview: true, targetN: N, reqSeq, cacheKey, message: '预览计算中…' });
+
+      efficiencyWorkerRef.current.postMessage({
+        type: 'preview',
+        payload: {
+          reqSeq,
+          cacheKey,
+          axis,
+          boundaryLoopWorld: cloneJson(boundaryLoopWorld),
+          targetN: N,
+          boundaryPillar: wbRep,
+          coalPillarMin: wsR.min,
+          coalPillarMax: wsR.max,
+          faceWidthMin: fw.min,
+          faceWidthMax: fw.max,
+          faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
+        },
+      });
+    }, 140);
+  };
+
+  useEffect(() => {
+    const terminateWorkers = () => {
+      try {
+        efficiencyWorkerRef.current?.terminate?.();
+      } catch {
+        // ignore
+      }
+      try {
+        resourceWorkerRef.current?.terminate?.();
+      } catch {
+        // ignore
+      }
+      efficiencyWorkerRef.current = null;
+      resourceWorkerRef.current = null;
+    };
+
+    const initEfficiencyWorker = () => {
+      if (efficiencyWorkerRef.current) return;
+      try {
+        efficiencyWorkerRef.current = new Worker(
+          new URL('./planning/workers/smartEfficiency.worker.js', import.meta.url),
+          { type: 'module' }
+        );
+      } catch (e) {
+        console.error('init efficiency worker failed', e);
+        efficiencyWorkerRef.current = null;
+      }
+    };
+
+    const initResourceWorker = () => {
+      if (resourceWorkerRef.current) return;
+      try {
+        resourceWorkerRef.current = new Worker(
+          new URL('./planning/workers/smartResource.worker.js', import.meta.url),
+          { type: 'module' }
+        );
+      } catch (e) {
+        console.error('init resource worker failed', e);
+        resourceWorkerRef.current = null;
+      }
+    };
+
+    const getOmegaLoopsFromResult = (r) => {
+      const loopsW = Array.isArray(r?.omegaRender?.loops)
+        ? r.omegaRender.loops
+        : (Array.isArray(r?.omegaRender?.innerOmegaLoopWorld) ? [r.omegaRender.innerOmegaLoopWorld] : []);
+      return loopsW;
+    };
+
+    const handleComputeResult = (uiMode, payload) => {
+      const isRecovery = uiMode === 'recovery';
+      const payloadSeq = Number(payload?.reqSeq);
+      const payloadKey = String(payload?.cacheKey ?? '');
+      const payloadFast = Boolean(payload?.fast);
+
+      try {
+        assertPlanningResponse(uiMode, payload);
+        console.log('end', { uiMode, requestId: payloadSeq, mode: payload?.mode, cacheKey: payloadKey });
+      } catch (e) {
+        const errMsg = String(e?.message ?? e);
+        console.error('mismatch', { uiMode, requestId: payloadSeq, error: errMsg, responseMode: payload?.mode, cacheKey: payloadKey });
+        if (isRecovery) {
+          setPlanningRecoveryBusy(false);
+          setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: errMsg, failedReason: errMsg, candidates: [] });
+        } else {
+          setPlanningEfficiencyBusy(false);
+          setPlanningEfficiencyResult({ ok: false, mode: 'smart-efficiency', message: errMsg, failedReason: errMsg, candidates: [] });
+          setPlanningEfficiencyPreview(null);
+          setPlanningEfficiencyPreviewBusy(false);
+        }
+        return;
+      }
+
+      // 忽略过期响应（用户可能在计算中又改了参数）
+      const latestSeq = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
+      if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) {
+        if (!payloadFast && payload?.ok && payloadKey) {
+          const workerBestSig = payload.bestKey
+            || payload.selectedCandidateKey
+            || payload.bestSignature
+            || (payload.candidates?.[0]?.signature ?? '');
+
+          const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(payloadKey) || '');
+          const rememberedOk = Boolean(
+            rememberedSig
+            && Array.isArray(payload?.candidates)
+            && payload.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+          );
+          const preferredSig = String((rememberedOk ? rememberedSig : (workerBestSig || '')));
+          (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(payloadKey, { result: payload, selectedSig: preferredSig });
+        }
+        return;
+      }
+
+      if (isRecovery) setPlanningRecoveryBusy(false);
+      else setPlanningEfficiencyBusy(false);
+
+      if (!payload?.ok) {
+        if (isRecovery) setPlanningRecoveryResult(payload);
+        else setPlanningEfficiencyResult(payload);
+
+        // 关键：即使 candidates=0 / ok=false，只要 worker 已生成 innerOmega，就必须显示粉色可采区
+        // 用于诊断“参数过严导致无可行条带组合”的情况。
+        try {
+          const omegaLoopsW = getOmegaLoopsFromResult(payload);
+          if (omegaLoopsW.length > 0) setShowPlanningBoundaryOverlay(true);
+        } catch {
+          // ignore
+        }
+
+        if (isRecovery) setPlanningRecoverySelectedSig('');
+        else setPlanningEfficiencySelectedSig('');
+        setPlannedWorkfaceLoopsWorld([]);
+
+        // efficiency compute 失败：清理预览状态
+        if (!isRecovery) {
+          setPlanningEfficiencyPreview(null);
+          setPlanningEfficiencyPreviewBusy(false);
+        }
+
+        if (DEBUG_PANEL && !isRecovery) {
+          setPlanningDebugSnapshot((prev) => ({
+            ...(prev ?? {}),
+            ts: Date.now(),
+            mode: 'smart-efficiency',
+            response: buildEfficiencyDebugResponseSummary(payload, planningEfficiencySelectedSig),
+            lastError: String(payload?.message ?? '工程效率计算失败'),
+          }));
+        }
+        return;
+      }
+
+      const cacheKey = payloadKey || (isRecovery ? buildRecoveryCacheKey() : buildEfficiencyCacheKey());
+      const workerBestSig = payload.bestKey
+        || payload.selectedCandidateKey
+        || payload.bestSignature
+        || (payload.candidates?.[0]?.signature ?? '');
+
+      // 优先恢复用户在该 cacheKey 下的手动选择（若仍存在于候选集中）
+      const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(cacheKey) || '');
+      const rememberedOk = Boolean(
+        rememberedSig
+        && Array.isArray(payload?.candidates)
+        && payload.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+      );
+      const preferredSig = String((rememberedOk ? rememberedSig : (workerBestSig || '')));
+
+      // fast 结果只用于“快速出图”，不进入主缓存，避免阻塞 full compute
+      if (!payloadFast) {
+        (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(cacheKey, { result: payload, selectedSig: preferredSig });
+        if (preferredSig) (isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).set(cacheKey, preferredSig);
+      }
+      if (isRecovery) {
+        setPlanningRecoveryResult(payload);
+        try {
+          recoveryLastResponseRef.current = payload;
+        } catch {
+          // ignore
+        }
+        applyRecoveryCandidateBySignature(preferredSig, payload);
+      } else {
+        setPlanningEfficiencyResult(payload);
+        applyEfficiencyCandidateBySignature(preferredSig, payload);
+        // compute 成功：清理预览（回到“真实候选集”）
+        setPlanningEfficiencyPreview(null);
+        setPlanningEfficiencyPreviewBusy(false);
+      }
+
+      if (DEBUG_PANEL && !isRecovery) {
+        setPlanningDebugSnapshot((prev) => ({
+          ...(prev ?? {}),
+          ts: Date.now(),
+          mode: 'smart-efficiency',
+          response: buildEfficiencyDebugResponseSummary(payload, preferredSig),
+          lastError: '',
+        }));
+      }
+
+      if (DEBUG_PANEL && isRecovery) {
+        setPlanningDebugSnapshot((prev) => ({
+          ...(prev ?? {}),
+          ts: Date.now(),
+          mode: 'smart-resource',
+          response: {
+            ok: Boolean(payload?.ok),
+            failedReason: String(payload?.failedReason ?? ''),
+            reqSeq: payload?.reqSeq,
+            cacheKey: String(payload?.cacheKey ?? ''),
+            fast: Boolean(payload?.fast),
+            candidatesCount: Array.isArray(payload?.candidates) ? payload.candidates.length : (payload?.stats?.candidateCount ?? null),
+            selectedCandidateKey: String(preferredSig || ''),
+            omegaArea: Number.isFinite(Number(payload?.omegaArea)) ? Number(payload.omegaArea) : null,
+            tonnageTotal: Number.isFinite(Number(payload?.tonnageTotal)) ? Number(payload.tonnageTotal) : null,
+            perFace: {
+              enabled: Boolean(payload?.debug?.perFace?.enabled),
+              generated: Number(payload?.debug?.perFace?.generated ?? null),
+              qualified: Number(payload?.debug?.perFace?.qualified ?? null),
+              pushedUnique: Number(payload?.debug?.perFace?.pushedUnique ?? null),
+              lastReason: String(payload?.debug?.perFace?.lastReason ?? ''),
+            },
+          },
+          lastError: '',
+        }));
+      }
+
+      // fast+refine：快速结果返回后，立即补一轮 full compute（同一 cacheKey & axis 才执行）
+      try {
+        if (payloadFast && payload?.ok) {
+          const wantKey = String((isRecovery ? recoveryPendingRefineKeyRef : efficiencyPendingRefineKeyRef).current || '');
+          const wantAxis = String((isRecovery ? recoveryPendingRefineAxisRef : efficiencyPendingRefineAxisRef).current || '');
+          const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+          const keyNow = isRecovery ? buildRecoveryCacheKey() : buildEfficiencyCacheKey();
+          const shouldRefine = wantKey
+            && wantKey === String(payloadKey || cacheKey)
+            && wantKey === String(keyNow)
+            && wantAxis
+            && wantAxis === String(payload?.axis ?? '')
+            && (isRecovery ? true : (wantAxis === String(axisNow)))
+            && mainViewMode === 'planning'
+            && planningOptMode === (isRecovery ? 'recovery' : 'efficiency');
+
+          if (shouldRefine) {
+            if (isRecovery) {
+              recoveryPendingRefineKeyRef.current = '';
+              recoveryPendingRefineAxisRef.current = '';
+            } else {
+              efficiencyPendingRefineKeyRef.current = '';
+              efficiencyPendingRefineAxisRef.current = '';
+            }
+            setTimeout(() => {
+              if (isRecovery) requestComputeRecovery({ force: true, fast: false, refine: false, background: true });
+              else requestComputeEfficiency({ force: true, fast: false, refine: false, background: true });
+            }, 150);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    initEfficiencyWorker();
+    initResourceWorker();
+
+    if (efficiencyWorkerRef.current) {
+      efficiencyWorkerRef.current.onmessage = (ev) => {
+        const data = ev?.data ?? {};
+        if (data?.type !== 'result' && data?.type !== 'preview') return;
+        const payload = data?.payload ?? {};
+
+        if (data?.type === 'preview') {
+          const payloadSeq = Number(payload?.reqSeq);
+          if (Number.isFinite(payloadSeq) && payloadSeq !== efficiencyPreviewReqSeqRef.current) return;
+          setPlanningEfficiencyPreviewBusy(false);
+          setPlanningEfficiencyPreview(payload);
+          if (payload?.ok && payload?.candidate) {
+            applyEfficiencyPreviewCandidate(payload.candidate);
+          }
+          return;
+        }
+
+        handleComputeResult('efficiency', payload);
+      };
+    }
+
+    if (resourceWorkerRef.current) {
+      resourceWorkerRef.current.onmessage = (ev) => {
+        const data = ev?.data ?? {};
+        if (data?.type !== 'result') return;
+        const payload = data?.payload ?? {};
+        handleComputeResult('recovery', payload);
+      };
+    }
+
+    return terminateWorkers;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSelectEfficiencyCandidate = (signature) => {
+    const sig = String(signature ?? '');
+    if (!sig) return;
+
+    // 选择真实候选时退出“预览模式”（4A）
+    setPlanningEfficiencyPreview(null);
+    setPlanningEfficiencyPreviewBusy(false);
+
+    const cacheKey = planningEfficiencyCacheKey || buildEfficiencyCacheKey();
+    // 记住用户选择，防止后续 refine/full 回包把选中态覆盖回 best。
+    efficiencySelectedSigByKeyRef.current.set(cacheKey, sig);
+    const cached = efficiencyCacheRef.current.get(cacheKey);
+    if (cached?.result?.ok) {
+      efficiencyCacheRef.current.set(cacheKey, { ...cached, selectedSig: sig });
+    }
+    applyEfficiencyCandidateBySignature(sig, cached?.result ?? planningEfficiencyResult);
+
+    if (DEBUG_PANEL) {
+      const res = cached?.result ?? planningEfficiencyResult;
+      setPlanningDebugSnapshot((prev) => ({
+        ...(prev ?? {}),
+        ts: Date.now(),
+        mode: 'smart-efficiency',
+        response: buildEfficiencyDebugResponseSummary(res, sig),
+      }));
+    }
+  };
+
+  const handleSelectRecoveryCandidate = (signature) => {
+    const sig = String(signature ?? '');
+    if (!sig) return;
+    const cacheKey = planningRecoveryCacheKey || buildRecoveryCacheKey();
+    recoverySelectedSigByKeyRef.current.set(cacheKey, sig);
+    const cached = recoveryCacheRef.current.get(cacheKey);
+    if (cached?.result?.ok) {
+      recoveryCacheRef.current.set(cacheKey, { ...cached, selectedSig: sig });
+    }
+    applyRecoveryCandidateBySignature(sig, cached?.result ?? planningRecoveryResult);
+  };
+
+  const selectEfficiencyByN = (n) => {
+    const N = Number(n);
+    if (!(Number.isFinite(N) && N >= 1)) return;
+    const r = planningEfficiencyResult;
+    const bestKey = r?.bestKeyByN?.[String(N)] || r?.byN?.[String(N)]?.bestKey;
+    if (!bestKey) return;
+
+    // 切到可行 N：清理预览
+    setPlanningEfficiencyPreview(null);
+    setPlanningEfficiencyPreviewBusy(false);
+
+    handleSelectEfficiencyCandidate(bestKey);
+  };
   const [showMainMap, setShowMainMap] = useState(true);
   const [showErrorAnalysis, setShowErrorAnalysis] = useState(true);
   const [showMeasuredMapping, setShowMeasuredMapping] = useState(true);
   const [activeAccordion, setActiveAccordion] = useState(['summary']);
 
   const lastAutoSeamThicknessRef = useRef(null);
+  const mainCenterScrollRef = useRef(null);
+  const planningOptPanelAnchorRef = useRef(null);
 
   const openRightPanelOnly = (key) => {
     setActiveAccordion(key ? [key] : []);
+  };
+
+  const handlePlanningOptModeChange = (nextMode) => {
+    const m = String(nextMode ?? '').trim();
+    setPlanningOptMode(m);
+
+    // 体验优化：在“采区规划图”视图下，切换到 efficiency/recovery 立即启动对应计算。
+    // 注意：这里使用 force=true，避免 setState 未生效导致 requestCompute* 被门禁提前 return。
+    if (mainViewMode !== 'planning') return;
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+    if (m === 'efficiency') {
+      // 显式切换：展示“计算中…”更符合用户预期
+      requestComputeEfficiency({ force: true, fast: true, refine: true, background: false });
+      return;
+    }
+    if (m === 'recovery') {
+      requestComputeRecovery({ force: true, fast: true, refine: true, background: false });
+    }
   };
 
   const switchMainViewModeWithRightPanel = (mode) => {
@@ -97,6 +1650,32 @@ const App = () => {
     if (mode === 'planning') openRightPanelOnly('planning');
     if (mode === 'odi') openRightPanelOnly('summary');
   };
+
+  // 智能规划：进入“采区规划图”后自动把“多目标规划优化方案”滚动到可视区
+  // 说明：该面板在主图卡片下方，主图较高时容易被“中间滚动窗口”遮在下方。
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    const panel = planningOptPanelAnchorRef.current;
+    if (!panel) return;
+
+    const ensureVisible = () => {
+      const container = mainCenterScrollRef.current;
+      if (container?.getBoundingClientRect && panel?.getBoundingClientRect) {
+        const c = container.getBoundingClientRect();
+        const p = panel.getBoundingClientRect();
+        const fullyVisible = p.top >= c.top && p.bottom <= c.bottom;
+        if (!fullyVisible) {
+          panel.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+        return;
+      }
+
+      panel.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
+    };
+
+    const t = setTimeout(ensureVisible, 0);
+    return () => clearTimeout(t);
+  }, [mainViewMode]);
   const [boundaryData, setBoundaryData] = useState([]);
   const [drillholeData, setDrillholeData] = useState([]);
   const [drillholeLayersById, setDrillholeLayersById] = useState({});
@@ -105,6 +1684,11 @@ const App = () => {
   const [workingFaceData, setWorkingFaceData] = useState([]);
   // 智能规划：规划工作面轮廓（世界坐标）
   const [plannedWorkfaceLoopsWorld, setPlannedWorkfaceLoopsWorld] = useState([]); // [{ faceIndex, loop: [{x,y}...] }]
+  // 智能规划：工作面悬停 Tooltip（仅 UI 派生，不触发任何重算；位置固定，避免 mousemove 频繁 setState）
+  const [planningWorkfaceHover, setPlanningWorkfaceHover] = useState(null); // { faceIndex:number }
+  const planningWorkfaceTooltipRef = useRef(null);
+  const planningWorkfaceTooltipRafRef = useRef(0);
+  const planningWorkfaceTooltipLastClientRef = useRef({ x: null, y: null });
   const [showPlanningBoundaryOverlay, setShowPlanningBoundaryOverlay] = useState(false);
   const [generatedPoints, setGeneratedPoints] = useState(null);
   // 智能规划：工作面宽度范围仅首次计算回填，后续保持用户选择（需纳入清空/撤回）
@@ -147,6 +1731,9 @@ const App = () => {
   const [odiVizRange, setOdiVizRange] = useState({ min: '', max: '' }); // string inputs
   // 含水层扰动场景：ODI 自然邻域插值输出平滑度（0=不平滑；越大越丝滑）
   const [aquiferOdiSmoothPasses, setAquiferOdiSmoothPasses] = useState(2); // 0~6
+  // 地表下沉 / 上行开采：平滑度（目前仅用于 UI 预留，不接入业务计算逻辑）
+  const [surfaceOdiSmoothPasses, setSurfaceOdiSmoothPasses] = useState(2); // 0~6
+  const [upwardOdiSmoothPasses, setUpwardOdiSmoothPasses] = useState(2); // 0~6
   const [showMainMapCoordinates, setShowMainMapCoordinates] = useState(true);
   const [crosshair, setCrosshair] = useState({
     active: false,
@@ -4622,6 +6209,7 @@ const App = () => {
 
   const handleMainMapMouseLeave = () => {
     setCrosshair((p) => (p.active ? { ...p, active: false } : p));
+    setPlanningWorkfaceHover(null);
   };
 
   const handleMainMapClick = (evt) => {
@@ -4751,6 +6339,192 @@ const App = () => {
     return computeNonSelfIntersectingLoop(boundaryData, (p) => p?.x, (p) => p?.y);
   }, [hasBoundaryData, boundaryData]);
 
+  // 工程效率模式：轴向/煤柱/面宽/边界等输入变化时，自动触发重算（或命中缓存切换）。
+  // 注意：`boundaryLoopWorld` 在文件更靠后的位置声明（useMemo），因此该 hook 必须放在它之后。
+  const efficiencyAutoRecomputeDebounceRef = useRef(null);
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    if (planningOptMode !== 'efficiency') return;
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    const cacheKey = buildEfficiencyCacheKey();
+    setPlanningEfficiencyCacheKey(cacheKey);
+
+    // 若 cache 中已有结果，直接切换（不必再次计算）
+    const cached = efficiencyCacheRef.current.get(cacheKey);
+    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedSig = String(
+      cached?.selectedSig
+      || cached?.result?.bestKey
+      || cached?.result?.selectedCandidateKey
+      || cached?.result?.bestSignature
+      || (cached?.result?.candidates?.[0]?.signature ?? '')
+      || ''
+    );
+    const cachedLooksConsistent = cached?.result?.ok
+      && cachedAxis === axisNow
+      && cachedSig.startsWith(`${axisNow}|`);
+
+    if (cachedLooksConsistent) {
+      // 避免重复 setState 抖动：若当前已是同 key 的结果就不重复应用
+      if (String(planningEfficiencyResult?.cacheKey ?? '') !== String(cacheKey)) {
+        setPlanningEfficiencyResult(cached.result);
+        const sig = cached.selectedSig
+          || cached.result.bestKey
+          || cached.result.selectedCandidateKey
+          || cached.result.bestSignature
+          || (cached.result.candidates?.[0]?.signature ?? '');
+        applyEfficiencyCandidateBySignature(sig, cached.result);
+        setPlanningEfficiencyPreview(null);
+        setPlanningEfficiencyPreviewBusy(false);
+      }
+      return;
+    }
+
+    if (cached && !cachedLooksConsistent) {
+      try {
+        efficiencyCacheRef.current.delete(cacheKey);
+      } catch {
+        // ignore
+      }
+    }
+
+    // 输入变化后做一次 debounce：先 fast 快速出图，再后台 refine full。
+    // 目的：切换 y 轴 / 调整煤柱范围时，不必等待 full 才看到变化。
+    if (planningEfficiencyBusy) return;
+    if (!efficiencyWorkerRef.current) return;
+
+    if (efficiencyAutoRecomputeDebounceRef.current) clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
+    efficiencyAutoRecomputeDebounceRef.current = setTimeout(() => {
+      // fast 计算只为“快速出图”，不应频繁抖动 busy 文案；因此后台执行。
+      requestComputeEfficiency({ force: true, fast: true, refine: true, background: true });
+    }, 220);
+
+    return () => {
+      if (efficiencyAutoRecomputeDebounceRef.current) {
+        clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
+        efficiencyAutoRecomputeDebounceRef.current = null;
+      }
+    };
+  }, [
+    mainViewMode,
+    planningOptMode,
+    boundaryLoopWorld,
+    planningParams?.roadwayOrientation,
+    planningParams?.boundaryPillarMin,
+    planningParams?.boundaryPillarMax,
+    planningParams?.boundaryPillarTarget,
+    planningParams?.coalPillarMin,
+    planningParams?.coalPillarMax,
+    planningParams?.coalPillarTarget,
+    planningParams?.faceWidthMin,
+    planningParams?.faceWidthMax,
+    planningParams?.faceWidthDefMin,
+    planningParams?.faceWidthDefMax,
+    planningParams?.faceAdvanceMax,
+    planningEfficiencyBusy,
+  ]);
+
+  // 资源回收模式：轴向/煤柱/面宽/厚度/密度/边界等输入变化时，自动触发重算（或命中缓存切换）。
+  const recoveryAutoRecomputeDebounceRef = useRef(null);
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    if (planningOptMode !== 'recovery') return;
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    const cacheKey = buildRecoveryCacheKey();
+    setPlanningRecoveryCacheKey(cacheKey);
+
+    const cached = recoveryCacheRef.current.get(cacheKey);
+    const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedSig = String(
+      cached?.selectedSig
+      || cached?.result?.bestKey
+      || cached?.result?.selectedCandidateKey
+      || cached?.result?.bestSignature
+      || (cached?.result?.candidates?.[0]?.signature ?? '')
+      || ''
+    );
+    const cachedLooksConsistent = cached?.result?.ok
+      && cachedAxis === axisNow
+      && cachedSig.startsWith(`${axisNow}|`);
+
+    if (cachedLooksConsistent) {
+      if (String(planningRecoveryResult?.cacheKey ?? '') !== String(cacheKey)) {
+        setPlanningRecoveryResult(cached.result);
+        const sig = cached.selectedSig
+          || cached.result.bestKey
+          || cached.result.selectedCandidateKey
+          || cached.result.bestSignature
+          || (cached.result.candidates?.[0]?.signature ?? '');
+        applyRecoveryCandidateBySignature(sig, cached.result);
+      }
+      return;
+    }
+
+    if (cached && !cachedLooksConsistent) {
+      try {
+        recoveryCacheRef.current.delete(cacheKey);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (planningRecoveryBusy) return;
+    if (!resourceWorkerRef.current) return;
+
+    if (recoveryAutoRecomputeDebounceRef.current) clearTimeout(recoveryAutoRecomputeDebounceRef.current);
+    recoveryAutoRecomputeDebounceRef.current = setTimeout(() => {
+      // recovery 的 per-face 设计在 worker 端会禁用 fastMode；因此这里直接 full compute。
+      requestComputeRecovery({ force: true, fast: false, refine: false, background: true });
+    }, 220);
+
+    return () => {
+      if (recoveryAutoRecomputeDebounceRef.current) {
+        clearTimeout(recoveryAutoRecomputeDebounceRef.current);
+        recoveryAutoRecomputeDebounceRef.current = null;
+      }
+    };
+  }, [
+    mainViewMode,
+    planningOptMode,
+    boundaryLoopWorld,
+    planningParams?.roadwayOrientation,
+    planningParams?.boundaryPillarMin,
+    planningParams?.boundaryPillarMax,
+    planningParams?.boundaryPillarTarget,
+    planningParams?.coalPillarMin,
+    planningParams?.coalPillarMax,
+    planningParams?.coalPillarTarget,
+    planningParams?.faceWidthMin,
+    planningParams?.faceWidthMax,
+    planningParams?.faceWidthDefMin,
+    planningParams?.faceWidthDefMax,
+    planningParams?.faceAdvanceMax,
+    planningParams?.seamThickness,
+    planningParams?.coalDensity,
+    boreholeParamSamples?.CoalThk,
+    planningRecoveryBusy,
+  ]);
+
+  const planningEfficiencySelectedCandidate = useMemo(() => {
+    const r = planningEfficiencyResult;
+    const list = Array.isArray(r?.candidates) ? r.candidates : [];
+    if (!r?.ok || !list.length) return null;
+    const sig = String(planningEfficiencySelectedSig || r.bestSignature || list[0]?.signature || '');
+    return list.find((c) => String(c?.signature) === sig) ?? list[0] ?? null;
+  }, [planningEfficiencyResult, planningEfficiencySelectedSig]);
+
+  const planningRecoverySelectedCandidate = useMemo(() => {
+    const r = planningRecoveryResult;
+    const list = Array.isArray(r?.candidates) ? r.candidates : [];
+    if (!r?.ok || !list.length) return null;
+    const sig = String(planningRecoverySelectedSig || r.bestSignature || list[0]?.signature || '');
+    return list.find((c) => String(c?.signature) === sig) ?? list[0] ?? null;
+  }, [planningRecoveryResult, planningRecoverySelectedSig]);
+
   // 智能规划：粉色覆盖层使用“边界煤柱确定值”对采区边界内缩后的范围
   const planningBoundaryOverlayLoop = useMemo(() => {
     if (!showPlanningBoundaryOverlay) return [];
@@ -4763,10 +6537,16 @@ const App = () => {
       return Number.isFinite(n) ? Math.max(0, n) : null;
     };
 
+    const overrideWb = (mainViewMode === 'planning' && (planningOptMode === 'efficiency' || planningOptMode === 'recovery'))
+      ? parsePositive(planningInnerOmegaOverrideWb)
+      : null;
+
     const target = parsePositive(planningParams?.boundaryPillarTarget);
     const minV = parsePositive(planningParams?.boundaryPillarMin);
     const maxV = parsePositive(planningParams?.boundaryPillarMax);
-    const shrinkDist = target ?? (minV != null && maxV != null ? (minV + maxV) / 2 : 0);
+    const shrinkDist = overrideWb != null
+      ? overrideWb
+      : (target ?? (minV != null && maxV != null ? (minV + maxV) / 2 : 0));
 
     const buildJstsPolygonFromLoop = (loop) => {
       const pts = (loop ?? [])
@@ -4855,9 +6635,44 @@ const App = () => {
     hasBoundaryData,
     boundaryLoopWorld,
     combinedPointsForBounds,
+    mainViewMode,
+    planningOptMode,
+    planningInnerOmegaOverrideWb,
     planningParams?.boundaryPillarTarget,
     planningParams?.boundaryPillarMin,
     planningParams?.boundaryPillarMax,
+  ]);
+
+  // 智能规划：覆盖层数据源（efficiency/recovery：严格用 worker 返回的 innerOmega loops；其他模式：沿用本地 buffer 结果）
+  const planningOmegaOverlayLoops = useMemo(() => {
+    if (!showPlanningBoundaryOverlay) return [];
+
+    if (mainViewMode === 'planning' && (planningOptMode === 'efficiency' || planningOptMode === 'recovery')) {
+      const r = (planningOptMode === 'recovery') ? planningRecoveryResult : planningEfficiencyResult;
+      const loopsW = Array.isArray(r?.omegaRender?.loops)
+        ? r.omegaRender.loops
+        : (Array.isArray(r?.omegaRender?.innerOmegaLoopWorld) ? [r.omegaRender.innerOmegaLoopWorld] : []);
+      if (!loopsW.length) return [];
+      if (!combinedPointsForBounds?.length) return [];
+
+      return loopsW
+        .map((loopW) => {
+          const loop = Array.isArray(loopW) ? loopW : [];
+          if (loop.length < 3) return null;
+          return normalizeCoords(loop, combinedPointsForBounds).map((p) => ({ nx: p.nx, ny: p.ny }));
+        })
+        .filter((l) => Array.isArray(l) && l.length >= 3);
+    }
+
+    return (planningBoundaryOverlayLoop.length >= 3) ? [planningBoundaryOverlayLoop] : [];
+  }, [
+    showPlanningBoundaryOverlay,
+    mainViewMode,
+    planningOptMode,
+    planningEfficiencyResult,
+    planningRecoveryResult,
+    combinedPointsForBounds,
+    planningBoundaryOverlayLoop,
   ]);
 
   useEffect(() => {
@@ -4868,6 +6683,24 @@ const App = () => {
     setShowPlanningBoundaryOverlay(false);
     setHasInitializedFaceWidthRange(false);
     setPlanningPreStartSnapshot(null);
+    setPlanningEfficiencyResult(null);
+    setPlanningEfficiencyCacheKey('');
+    setPlanningEfficiencySelectedSig('');
+    setPlanningRecoveryResult(null);
+    setPlanningRecoveryCacheKey('');
+    setPlanningRecoverySelectedSig('');
+    setPlanningInnerOmegaOverrideWb(null);
+    planningHasStartedRef.current = false;
+    try {
+      efficiencyCacheRef.current?.clear?.();
+    } catch {
+      // ignore
+    }
+    try {
+      recoveryCacheRef.current?.clear?.();
+    } catch {
+      // ignore
+    }
     setMeasureEnabled(false);
     setMeasurePoints([]);
   }, [boundaryLoopWorld]);
@@ -5373,6 +7206,46 @@ const App = () => {
       }
 
       setShowPlanningBoundaryOverlay(true);
+
+      // 工程效率最优：优先采用候选寻优 + 点击联动（矩形等宽）
+      const roadwayDirEff = String(planningParams.roadwayOrientation ?? 'x');
+      const advanceAxisEff = roadwayDirEff === 'y' ? 'y' : 'x';
+      setPlanningAdvanceAxis(advanceAxisEff);
+
+      // 每次点击都按“多目标规划优化方案”的当前选项卡执行
+
+      // 工作面宽度默认范围（空值时归一化到工程默认）
+      setPlanningParams((p) => {
+        const fwMin = Number(p?.faceWidthMin);
+        const fwMax = Number(p?.faceWidthMax);
+        const needMin = !(Number.isFinite(fwMin) && fwMin > 0);
+        const needMax = !(Number.isFinite(fwMax) && fwMax > 0);
+        if (!needMin && !needMax) return p;
+        return {
+          ...p,
+          faceWidthMin: needMin ? '100' : p.faceWidthMin,
+          faceWidthMax: needMax ? '350' : p.faceWidthMax,
+        };
+      });
+
+      setPlanningInnerOmegaOverrideWb(null);
+      setPlanningEfficiencySelectedSig('');
+      setPlanningRecoverySelectedSig('');
+
+      // 单击即出图：先 fast 再 refine full
+      // fast 阶段非常快，若触发 busy 会造成候选表右侧“计算中…”闪烁；改为后台执行。
+      if (planningOptMode === 'efficiency') {
+        requestComputeEfficiency({ force: true, fast: true, refine: true, background: true });
+        return;
+      }
+      if (planningOptMode === 'recovery') {
+        // recovery：直接 full compute（fast 预览会导致候选=1 且 per-face 被禁用）
+        requestComputeRecovery({ force: true, fast: false, refine: false, background: true });
+        return;
+      }
+
+      window.alert('当前优化目标暂未接入计算：请先选择“工程效率最优”或“资源回收最优”。');
+      return;
 
       // 工程约束：工作面宽度默认范围（按需求先固定）
       const faceWidthEngMin = 100;
@@ -5895,6 +7768,164 @@ const App = () => {
       })
       .filter(Boolean);
   }, [plannedWorkfaceLoopsWorld, combinedPointsForBounds]);
+
+  const safeLoopNoClosure = (loop) => {
+    const pts = Array.isArray(loop) ? loop.filter((p) => Number.isFinite(Number(p?.x)) && Number.isFinite(Number(p?.y))).map((p) => ({ x: Number(p.x), y: Number(p.y) })) : [];
+    if (pts.length >= 2) {
+      const a = pts[0];
+      const b = pts[pts.length - 1];
+      if (Math.abs(a.x - b.x) <= 1e-12 && Math.abs(a.y - b.y) <= 1e-12) pts.pop();
+    }
+    return pts;
+  };
+
+  const bboxOfLoop = (loop) => {
+    const pts = safeLoopNoClosure(loop);
+    if (!pts.length) return null;
+    let minX = pts[0].x;
+    let maxX = pts[0].x;
+    let minY = pts[0].y;
+    let maxY = pts[0].y;
+    for (const p of pts) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, maxX, minY, maxY };
+  };
+
+  const areaShoelace = (loop) => {
+    const pts = safeLoopNoClosure(loop);
+    if (pts.length < 3) return null;
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      s += a.x * b.y - b.x * a.y;
+    }
+    const area = Math.abs(s) / 2;
+    return Number.isFinite(area) ? area : null;
+  };
+
+  const fmtOrDash = (v, digits) => {
+    const n = (typeof v === 'string' && v.trim() === '') ? NaN : Number(v);
+    return Number.isFinite(n) ? n.toFixed(digits) : '—';
+  };
+
+  const schedulePlanningWorkfaceTooltipMove = (clientX, clientY) => {
+    const x = Number(clientX);
+    const y = Number(clientY);
+    if (!(Number.isFinite(x) && Number.isFinite(y))) return;
+    planningWorkfaceTooltipLastClientRef.current = { x, y };
+    if (planningWorkfaceTooltipRafRef.current) return;
+    planningWorkfaceTooltipRafRef.current = requestAnimationFrame(() => {
+      planningWorkfaceTooltipRafRef.current = 0;
+      const el = planningWorkfaceTooltipRef.current;
+      const container = mainMapContainerRef.current;
+      if (!el || !container) return;
+      const rect = container.getBoundingClientRect?.();
+      if (!rect) return;
+      const tipRect = el.getBoundingClientRect?.();
+      const tipW = tipRect?.width || 0;
+      const tipH = tipRect?.height || 0;
+
+      const pad = 10;
+      const ox = 14;
+      const oy = 14;
+      let px = (x - rect.left) + ox;
+      let py = (y - rect.top) + oy;
+      const maxX = Math.max(pad, rect.width - pad - tipW);
+      const maxY = Math.max(pad, rect.height - pad - tipH);
+      px = Math.max(pad, Math.min(maxX, px));
+      py = Math.max(pad, Math.min(maxY, py));
+      el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
+    });
+  };
+
+  const handlePlannedWorkfaceMouseEnter = (e, faceIndex) => {
+    const fi = Number(faceIndex);
+    if (!Number.isFinite(fi) || fi < 1) return;
+    setPlanningWorkfaceHover({ faceIndex: fi });
+    schedulePlanningWorkfaceTooltipMove(e?.clientX, e?.clientY);
+  };
+  const handlePlannedWorkfaceMouseMove = (e) => {
+    schedulePlanningWorkfaceTooltipMove(e?.clientX, e?.clientY);
+  };
+  const handlePlannedWorkfaceMouseLeave = () => {
+    setPlanningWorkfaceHover(null);
+  };
+
+  const planningWorkfaceTooltipData = useMemo(() => {
+    const fi = Number(planningWorkfaceHover?.faceIndex);
+    if (!(Number.isFinite(fi) && fi >= 1)) return null;
+
+    const isRec = planningOptMode === 'recovery';
+    const result = isRec ? planningRecoveryResult : planningEfficiencyResult;
+    const candidate = isRec ? planningRecoverySelectedCandidate : planningEfficiencySelectedCandidate;
+    const axis = String(planningAdvanceAxis ?? result?.axis ?? candidate?.axis ?? 'x') || 'x';
+
+    const loopW = (Array.isArray(plannedWorkfaceLoopsWorld)
+      ? plannedWorkfaceLoopsWorld.find((x) => Number(x?.faceIndex) === fi)?.loop
+      : null);
+    const bb = bboxOfLoop(loopW);
+    if (!bb) return { faceIndex: fi, B_m: null, L_m: null, A_face_m2: null };
+
+    const toFiniteNum = (x) => {
+      const n = (typeof x === 'string' && x.trim() === '') ? NaN : Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
+    const bList = Array.isArray(candidate?.BList)
+      ? candidate.BList
+      : (Array.isArray(candidate?.metrics?.BList) ? candidate.metrics.BList : null);
+    const bFace = Array.isArray(bList) ? toFiniteNum(bList[fi - 1]) : null;
+    const B_m = (bFace != null) ? bFace : (toFiniteNum(candidate?.B) ?? toFiniteNum(result?.B));
+    const ws_m = (toFiniteNum(candidate?.ws) ?? toFiniteNum(result?.ws));
+
+    const L_m = axis === 'y'
+      ? (bb.maxY - bb.minY)
+      : (bb.maxX - bb.minX);
+
+    const A_face_m2 = areaShoelace(loopW);
+    const abnormalFaces = Array.isArray(candidate?.abnormalFaces)
+      ? candidate.abnormalFaces
+      : (Array.isArray(candidate?.metrics?.abnormalFaces) ? candidate.metrics.abnormalFaces : []);
+    const abnormal = Array.isArray(abnormalFaces)
+      ? abnormalFaces.some((x) => Number(x?.faceIndex) === fi)
+      : false;
+    return {
+      faceIndex: fi,
+      B_m,
+      L_m,
+      A_face_m2,
+      abnormal,
+    };
+  }, [
+    planningWorkfaceHover,
+    plannedWorkfaceLoopsWorld,
+    planningOptMode,
+    planningEfficiencySelectedCandidate,
+    planningEfficiencyResult,
+    planningRecoverySelectedCandidate,
+    planningRecoveryResult,
+    planningAdvanceAxis,
+  ]);
+
+  useEffect(() => {
+    // Tooltip 显示时，尝试用最近一次鼠标位置进行定位（避免首次出现位置跳到 (0,0)）。
+    if (!planningWorkfaceHover) return;
+    const last = planningWorkfaceTooltipLastClientRef.current;
+    if (Number.isFinite(last?.x) && Number.isFinite(last?.y)) {
+      schedulePlanningWorkfaceTooltipMove(last.x, last.y);
+    }
+    return () => {
+      if (planningWorkfaceTooltipRafRef.current) {
+        cancelAnimationFrame(planningWorkfaceTooltipRafRef.current);
+        planningWorkfaceTooltipRafRef.current = 0;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningWorkfaceHover]);
 
   const generatedAllPoints = useMemo(() => {
     if (!generatedPoints) return [];
@@ -6545,7 +8576,7 @@ const App = () => {
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col p-6 space-y-6 overflow-y-auto">
+        <div ref={mainCenterScrollRef} className="flex-1 flex flex-col p-6 space-y-6 overflow-y-auto">
           {mainViewMode === 'geology' ? (
             <>
               <div className="flex items-center justify-between">
@@ -6693,400 +8724,214 @@ const App = () => {
                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm">
                     {mainViewMode === 'planning' ? '采区规划图' : '覆岩扰动 (ODI) 分布图'}
                  </h3>
-                 {showMainMap && (
-                   <>
-                     <div className="h-4 w-px bg-slate-200"></div>
-                     {!hasSpatialData && (
-                       <div className="flex gap-4">
-                          <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">
-                            <span className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_5px_rgba(59,130,246,0.5)]"></span> 高强度扰动区
-                          </div>
-                          <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">
-                            <span className="w-2 h-2 rounded-full bg-blue-100 border border-blue-200"></span> 低强度扰动区
-                          </div>
-                       </div>
-                     )}
-                   </>
-                 )}
+                 {showMainMap && null}
                </div>
                <div className="flex gap-2 items-center">
                  {showMainMap && (
-                   <>
+                   <div
+                     className="flex flex-nowrap items-center justify-end gap-x-3 gap-y-0 overflow-x-auto max-w-full"
+                     onClick={(e) => e.stopPropagation()}
+                   >
+                     <div className="flex items-center gap-2">
+                       <select
+                         className="bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
+                         value={odiVizPalette}
+                         onChange={(e) => setOdiVizPalette(e.target.value)}
+                         title="ODI 色带"
+                       >
+                         {Object.keys(paletteStops).map((k) => (
+                           <option key={k} value={k}>{k}</option>
+                         ))}
+                       </select>
+                     </div>
+
+                     <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
+
+                     <div className="flex items-center gap-1">
+                       <div className="text-[11px] text-slate-500 font-bold">分级</div>
+                       <input
+                         type="range"
+                         min={3}
+                         max={10}
+                         step={1}
+                         value={odiVizSteps}
+                         onChange={(e) => setOdiVizSteps(Number(e.target.value))}
+                         className="w-24"
+                         title="颜色分级数量（3~10）"
+                       />
+                       <div className="text-[11px] text-slate-600 font-mono w-5 -ml-2 text-right">{odiVizSteps}</div>
+                     </div>
+
+                     <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
+
+                     <div className="flex items-center gap-2">
+                       <div className="text-[11px] text-slate-500 font-bold">区间</div>
+                       <input
+                         type="number"
+                         step="0.01"
+                         min={0}
+                         max={1}
+                         placeholder="Min"
+                         value={odiVizRange.min}
+                         onChange={(e) => setOdiVizRange((p) => ({ ...p, min: e.target.value }))}
+                         className="w-20 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
+                         title="最小值（留空=自动）"
+                       />
+                       <span className="text-[11px] text-slate-400 font-mono">~</span>
+                       <input
+                         type="number"
+                         step="0.01"
+                         min={0}
+                         max={1}
+                         placeholder="Max"
+                         value={odiVizRange.max}
+                         onChange={(e) => setOdiVizRange((p) => ({ ...p, max: e.target.value }))}
+                         className="w-20 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
+                         title="最大值（留空=自动）"
+                       />
+                     </div>
+
+                     <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
+
+                     {(['aquifer', 'surface', 'upward'].includes(activeTab)) && (
+                       <>
+                         <SmoothnessSlider
+                           value={activeTab === 'surface' ? surfaceOdiSmoothPasses : (activeTab === 'upward' ? upwardOdiSmoothPasses : aquiferOdiSmoothPasses)}
+                           onChange={(v) => {
+                             if (activeTab === 'surface') setSurfaceOdiSmoothPasses(v);
+                             else if (activeTab === 'upward') setUpwardOdiSmoothPasses(v);
+                             else setAquiferOdiSmoothPasses(v);
+                           }}
+                           label="平滑度"
+                           title={activeTab === 'surface'
+                             ? '地表下沉场景：平滑度（UI预留，后续可接入插值/后处理）'
+                             : (activeTab === 'upward'
+                               ? '上行开采场景：平滑度（UI预留，后续可接入插值/后处理）'
+                               : '含水层场景：ODI 自然邻域插值平滑度（0=不平滑，越大越丝滑）')}
+                         />
+                         <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
+                       </>
+                     )}
+
                      <button
-                       className="p-1.5 hover:bg-slate-100 rounded text-slate-400"
-                       title={isMainMapFullscreen ? '退出全屏' : '全屏查看'}
-                       onClick={(e) => {
-                         e.stopPropagation();
-                         handleToggleMainMapFullscreen();
-                       }}
+                       className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                         showMainMapCoordinates ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                       }`}
+                       onClick={() => setShowMainMapCoordinates((v) => !v)}
+                       title={showMainMapCoordinates ? '隐藏主图坐标刻度与读数' : '显示主图坐标刻度与读数'}
                      >
-                       <Maximize2 size={16} />
+                       {showMainMapCoordinates ? '隐藏坐标' : '显示坐标'}
                      </button>
 
-                     <div className="relative" onClick={(e) => e.stopPropagation()}>
-                       <button
-                         data-main-map-export-button
-                         className="p-1.5 hover:bg-slate-100 rounded text-slate-400 text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3"
-                         onClick={() => {
-                           setShowMainMapLabelsMenu(false);
-                           setShowMainMapExportMenu((v) => !v);
-                         }}
-                       >
-                         导出
-                       </button>
-                       {showMainMapExportMenu && (
-                         <div
-                           data-main-map-export-menu
-                           className="absolute right-0 mt-2 w-44 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
-                         >
-                           <button
-                             className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
-                             onClick={() => {
-                               setShowMainMapExportMenu(false);
-                               exportMainMapPng();
-                             }}
-                           >
-                             导出 PNG
-                           </button>
-                           <button
-                             className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${paramExtractionResult?.points?.length ? 'text-slate-700' : 'text-slate-400 cursor-not-allowed'}`}
-                             disabled={!paramExtractionResult?.points?.length}
-                             title={paramExtractionResult?.points?.length ? '导出 CSV：评价点全参数 + ODI' : '请先完成“全参插值提取 / 地质插值提取”'}
-                             onClick={() => {
-                               setShowMainMapExportMenu(false);
-                               exportEvalPointsFullParamsWithOdiCsv();
-                             }}
-                           >
-                             导出 CSV（全参数+ODI）
-                           </button>
-                         </div>
-                       )}
-                     </div>
+                     <button
+                       className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                         (!hasSpatialData || !spatialBounds)
+                           ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                           : (measureEnabled ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50')
+                       }`}
+                       onClick={() => {
+                         if (!hasSpatialData || !spatialBounds) return;
+                         setMeasurePoints([]);
+                         setMeasureEnabled((v) => !v);
+                       }}
+                       disabled={!hasSpatialData || !spatialBounds}
+                       title={(!hasSpatialData || !spatialBounds) ? '请先导入空间数据（边界/钻孔/工作面/实测）' : (measureEnabled ? '关闭测量（Esc）' : '开启测量：在图上点击两点')}
+                       type="button"
+                     >
+                       测量
+                     </button>
 
-                      <button
-                        className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                          hasWorkingFaceData
-                            ? (showWorkfaceOutline ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50')
-                            : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (!hasWorkingFaceData) return;
-                          setShowMainMapExportMenu(false);
-                          setShowMainMapLabelsMenu(false);
-                          setShowWorkfaceOutline((v) => !v);
-                        }}
-                        disabled={!hasWorkingFaceData}
-                        title={hasWorkingFaceData ? `工作面虚线圈定开关（已识别 ${workfaceCount} 个工作面）` : '请先导入工作面坐标数据'}
-                        type="button"
-                      >
-                        工作面标记
-                      </button>
-
-                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                      <div className="relative" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          data-main-map-labels-button
-                          className="p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors bg-white text-slate-600 hover:bg-slate-50"
-                          onClick={() => {
-                            setShowMainMapExportMenu(false);
-                            setShowMainMapLabelsMenu((v) => !v);
-                          }}
-                          title="标签显示/隐藏"
-                          type="button"
-                        >
-                          标签
-                        </button>
-                        {showMainMapLabelsMenu && (
-                          <div
-                            data-main-map-labels-menu
-                            className="absolute right-0 mt-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
-                          >
-                            <button
-                              className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
-                              onClick={() => setShowBoundaryLabels((v) => !v)}
-                              type="button"
-                            >
-                              <span>采区边界标签</span>
-                              <span className="text-[10px] text-slate-400">{showBoundaryLabels ? '显示' : '隐藏'}</span>
-                            </button>
-                            <button
-                              className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
-                              onClick={() => setShowDrillholeLabels((v) => !v)}
-                              type="button"
-                            >
-                              <span>地质钻孔标签</span>
-                              <span className="text-[10px] text-slate-400">{showDrillholeLabels ? '显示' : '隐藏'}</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                          showMeasuredPoints
-                            ? 'bg-slate-900 text-white'
-                            : 'bg-white text-slate-600 hover:bg-slate-50'
-                        }`}
-                        onClick={() => setShowMeasuredPoints((v) => !v)}
-                        title="实测点显示/隐藏"
-                      >
-                        实测点
-                      </button>
-
-                       {/* 图层开关：紧挨标签按钮 */}
-                       <div className="flex items-center gap-1 ml-1">
+                     {measureEnabled && (
+                       <div className="flex items-center gap-1 whitespace-nowrap shrink-0">
                          <button
-                           className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                             showLayerInterpolation ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+                           className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                             measureAxis === 'h' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
                            }`}
-                           onClick={() => setShowLayerInterpolation((v) => !v)}
-                           title="插值背景（ODI 热力）开关"
+                           onClick={() => setMeasureAxis('h')}
+                           title="显示水平距离（ΔX）"
+                           type="button"
                          >
-                           插值
+                           水平
                          </button>
                          <button
-                           className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                             showLayerDrillholes ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+                           className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                             measureAxis === 'v' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
                            }`}
-                           onClick={() => setShowLayerDrillholes((v) => !v)}
-                           title="地质钻孔点图层开关"
+                           onClick={() => setMeasureAxis('v')}
+                           title="显示垂直距离（ΔY）"
+                           type="button"
                          >
-                           钻孔
+                           垂直
                          </button>
-                         <div className="flex items-center gap-1">
-                           <button
-                             className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
-                               showLayerEvalPoints ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
-                             }`}
-                                 onClick={() =>
-                                   setShowLayerEvalPoints((v) => {
-                                     const next = !v;
-                                     // “评价点”=四类评价点总开关：边界点/定位点/边线点/中心点
-                                     setShowEvalBoundaryPoints(next);
-                                     setShowEvalWorkfaceLocPoints(next);
-                                     setShowEvalEdgeCtrlPoints(next);
-                                     setShowEvalCenterCtrlPoints(next);
-                                     return next;
-                                   })
-                                 }
-                             title="工作面评价点图层开关"
-                           >
-                             评价点
-                           </button>
-                           {showLayerEvalPoints && (
-                             <div className="flex items-center gap-1">
-                               <button
-                                 className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                   showEvalBoundaryPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                 }`}
-                                 onClick={() => setShowEvalBoundaryPoints((v) => !v)}
-                                 title="评价点：边界点（灰）"
-                               >
-                                 边界点
-                               </button>
-                               <button
-                                 className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                   showEvalWorkfaceLocPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                 }`}
-                                 onClick={() => setShowEvalWorkfaceLocPoints((v) => !v)}
-                                 title="评价点：工作面定位点（粉）"
-                               >
-                                 定位点
-                               </button>
-                               <button
-                                 className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                   showEvalEdgeCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                 }`}
-                                 onClick={() => setShowEvalEdgeCtrlPoints((v) => !v)}
-                                 title="评价点：边线控制点（绿）"
-                               >
-                                 边线点
-                               </button>
-                               <button
-                                 className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                   showEvalCenterCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                 }`}
-                                 onClick={() => setShowEvalCenterCtrlPoints((v) => !v)}
-                                 title="评价点：中心控制点（红）"
-                               >
-                                 中心点
-                               </button>
-                             </div>
-                           )}
-                         </div>
+                         <button
+                           className="px-2 py-1 rounded text-[10px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                           onClick={() => setMeasurePoints([])}
+                           title="清空已选点"
+                           type="button"
+                         >
+                           重置
+                         </button>
                        </div>
-                     </div>
-                   </>
+                     )}
+                   </div>
                  )}
                  <button className="p-1 hover:bg-slate-200 rounded transition-colors">
                    {showMainMap ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
                  </button>
                </div>
             </div>
-
-            {/* 上部横向动态可视化配置模块（放在本图模块内） */}
-            {showMainMap && (
-              <div className="px-4 py-3 border-b border-slate-100 bg-white" onClick={(e) => e.stopPropagation()}>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
-                      value={odiVizPalette}
-                      onChange={(e) => setOdiVizPalette(e.target.value)}
-                      title="ODI 色带"
-                    >
-                      {Object.keys(paletteStops).map((k) => (
-                        <option key={k} value={k}>{k}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="text-[11px] text-slate-500 font-bold">分级</div>
-                    <input
-                      type="range"
-                      min={3}
-                      max={10}
-                      step={1}
-                      value={odiVizSteps}
-                      onChange={(e) => setOdiVizSteps(Number(e.target.value))}
-                      className="w-28"
-                      title="颜色分级数量（3~10）"
-                    />
-                    <div className="text-[11px] text-slate-600 font-mono w-7 text-right">{odiVizSteps}</div>
-                  </div>
-
-                  <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="text-[11px] text-slate-500 font-bold">区间</div>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min={0}
-                      max={1}
-                      placeholder="Min"
-                      value={odiVizRange.min}
-                      onChange={(e) => setOdiVizRange((p) => ({ ...p, min: e.target.value }))}
-                      className="w-20 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
-                      title="最小值（留空=自动）"
-                    />
-                    <span className="text-[11px] text-slate-400 font-mono">~</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min={0}
-                      max={1}
-                      placeholder="Max"
-                      value={odiVizRange.max}
-                      onChange={(e) => setOdiVizRange((p) => ({ ...p, max: e.target.value }))}
-                      className="w-20 bg-white border border-slate-200 rounded px-2 py-1 text-xs text-slate-700"
-                      title="最大值（留空=自动）"
-                    />
-                    <div className="text-[10px] text-slate-400">区间外透明</div>
-                  </div>
-
-                  <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
-
-                  {activeTab === 'aquifer' && (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <div className="text-[11px] text-slate-500 font-bold">平滑度</div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={6}
-                          step={1}
-                          value={aquiferOdiSmoothPasses}
-                          onChange={(e) => setAquiferOdiSmoothPasses(Number(e.target.value))}
-                          className="w-24"
-                          title="含水层场景：ODI 自然邻域插值平滑度（0=不平滑，越大越丝滑）"
-                        />
-                        <div className="text-[11px] text-slate-600 font-mono w-7 text-right">{aquiferOdiSmoothPasses}</div>
-                      </div>
-
-                      <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
-                    </>
-                  )}
-
-                  <button
-                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                      showMainMapCoordinates ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                    }`}
-                    onClick={() => setShowMainMapCoordinates((v) => !v)}
-                    title={showMainMapCoordinates ? '隐藏主图坐标刻度与读数' : '显示主图坐标刻度与读数'}
-                  >
-                    {showMainMapCoordinates ? '隐藏坐标' : '显示坐标'}
-                  </button>
-
-                  <button
-                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                      (!hasSpatialData || !spatialBounds)
-                        ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
-                        : (measureEnabled ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50')
-                    }`}
-                    onClick={() => {
-                      if (!hasSpatialData || !spatialBounds) return;
-                      setMeasurePoints([]);
-                      setMeasureEnabled((v) => !v);
-                    }}
-                    disabled={!hasSpatialData || !spatialBounds}
-                    title={(!hasSpatialData || !spatialBounds) ? '请先导入空间数据（边界/钻孔/工作面/实测）' : (measureEnabled ? '关闭测量（Esc）' : '开启测量：在图上点击两点')}
-                    type="button"
-                  >
-                    测量
-                  </button>
-
-                  {measureEnabled && (
-                    <div className="flex items-center gap-1">
-                      <button
-                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                          measureAxis === 'h' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
-                        }`}
-                        onClick={() => setMeasureAxis('h')}
-                        title="显示水平距离（ΔX）"
-                        type="button"
-                      >
-                        水平
-                      </button>
-                      <button
-                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                          measureAxis === 'v' ? 'bg-blue-600 border-blue-600 text-white hover:bg-blue-700' : 'bg-white text-slate-600 hover:bg-slate-50'
-                        }`}
-                        onClick={() => setMeasureAxis('v')}
-                        title="显示垂直距离（ΔY）"
-                        type="button"
-                      >
-                        垂直
-                      </button>
-                      <button
-                        className="px-2 py-1 rounded text-[10px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                        onClick={() => setMeasurePoints([])}
-                        title="清空已选点"
-                        type="button"
-                      >
-                        重置
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
             
             {showMainMap && (
-              <div className="flex-1 flex items-center justify-center p-4 relative">
-                <svg
-                  ref={mainMapSvgRef}
-                  viewBox="0 0 800 500"
-                  className="w-full h-full drop-shadow-2xl transition-transform duration-700 group-hover:scale-[1.01]"
-                  onMouseMove={handleMainMapMouseMove}
-                  onMouseLeave={handleMainMapMouseLeave}
-                  onClick={handleMainMapClick}
-                  style={measureEnabled ? { cursor: 'crosshair' } : undefined}
-                >
+              <div
+                className="flex-1 flex items-center justify-center p-3 relative"
+              >
+                {/* 智能规划：工作面悬停 Tooltip（蓝色工作面） */}
+                {mainViewMode === 'planning' && planningWorkfaceHover && planningWorkfaceTooltipData && (
+                  <div
+                    ref={planningWorkfaceTooltipRef}
+                    className="absolute z-40 pointer-events-none"
+                    style={{ left: 0, top: 0, transform: 'translate3d(12px, 12px, 0)' }}
+                  >
+                    <div className="bg-white/95 backdrop-blur-sm border border-slate-200 rounded-lg shadow-lg px-3 py-2 inline-block w-fit max-w-[360px]">
+                      <div className="text-[11px] text-slate-700 font-mono whitespace-nowrap">
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                          <span className="text-slate-500">工作面编号：</span>
+                          <span className="text-left">{`No. ${planningWorkfaceTooltipData.faceIndex}`}</span>
+
+                          <span className="text-slate-500">工作面宽度（m）：</span>
+                          <span className="text-left">{fmtOrDash(planningWorkfaceTooltipData.B_m, 2)}</span>
+
+                          <span className="text-slate-500">推进长度（m）：</span>
+                          <span className="text-left">{fmtOrDash(planningWorkfaceTooltipData.L_m, 2)}</span>
+
+                          <span className="text-slate-500">工作面面积（m²）：</span>
+                          <span className="text-left">{fmtOrDash(planningWorkfaceTooltipData.A_face_m2, 2)}</span>
+
+                          <span className="text-slate-500">异常标记：</span>
+                          <span className={planningWorkfaceTooltipData.abnormal ? 'text-left text-red-700 font-bold' : 'text-left text-slate-700'}>
+                            {planningWorkfaceTooltipData.abnormal ? '裁剪后非矩形' : '正常'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 图显示容器：仅包裹 SVG，本次仅增加 bottom spacing（不移动下部图例、不改父级布局、不用 transform） */}
+                <div className="flex items-center justify-center w-full h-full mb-6 pl-6">
+                  <svg
+                    ref={mainMapSvgRef}
+                    viewBox="0 0 800 500"
+                    className="w-[96%] h-[96%] drop-shadow-2xl transition-all duration-300"
+                    onMouseMove={handleMainMapMouseMove}
+                    onMouseLeave={handleMainMapMouseLeave}
+                    onClick={handleMainMapClick}
+                    style={{
+                      ...(measureEnabled ? { cursor: 'crosshair' } : null),
+                      // 允许坐标刻度文本在 viewBox 外渲染，避免左侧长坐标被裁剪
+                      overflow: 'visible',
+                    }}
+                  >
                   <defs>
                     <radialGradient id="planning-boundary-overlay" cx="50%" cy="50%" r="0.85">
                       <stop offset="0%" stopColor="#f472b6" stopOpacity="0.35" />
@@ -7181,21 +9026,24 @@ const App = () => {
                   )}
                   {hasSpatialData ? (
                     <g>
-                      {showPlanningBoundaryOverlay && mainViewMode === 'planning' && hasBoundaryData && planningBoundaryOverlayLoop.length >= 3 && (
-                        (() => {
-                          const pathD = planningBoundaryOverlayLoop
-                            .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`)
-                            .join(' ');
-                          return (
-                            <path
-                              d={`${pathD} Z`}
-                              fill="url(#planning-boundary-overlay)"
-                              opacity="0.85"
-                              stroke="none"
-                              pointerEvents="none"
-                            />
-                          );
-                        })()
+                      {showPlanningBoundaryOverlay && mainViewMode === 'planning' && hasBoundaryData && planningOmegaOverlayLoops.length >= 1 && (
+                        <g pointerEvents="none">
+                          {planningOmegaOverlayLoops.map((loop, i) => {
+                            const pathD = (loop ?? [])
+                              .map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`)
+                              .join(' ');
+                            if (!pathD) return null;
+                            return (
+                              <path
+                                key={`planning-omega-${i}`}
+                                d={`${pathD} Z`}
+                                fill="url(#planning-boundary-overlay)"
+                                opacity="0.85"
+                                stroke="none"
+                              />
+                            );
+                          })}
+                        </g>
                       )}
                       {/* 采区边界虚线（连接全部边界点；自动消除相交） */}
                       {hasBoundaryData && normalizedBoundaryLoop.length >= 2 && (
@@ -7255,6 +9103,9 @@ const App = () => {
                                 stroke="#2563eb"
                                 strokeWidth="2"
                                 strokeOpacity="0.7"
+                                onMouseEnter={(e) => handlePlannedWorkfaceMouseEnter(e, wf.faceIndex)}
+                                onMouseMove={handlePlannedWorkfaceMouseMove}
+                                onMouseLeave={handlePlannedWorkfaceMouseLeave}
                               />
                             );
                           })}
@@ -7436,7 +9287,8 @@ const App = () => {
                       ))}
                     </>
                   )}
-                </svg>
+                  </svg>
+                </div>
 
                 {/* 动态图例：有哪类点就显示哪类 */}
                 {(() => {
@@ -7455,14 +9307,237 @@ const App = () => {
                   if (!items.length) return null;
 
                   return (
-                    <div className="absolute left-4 right-4 bottom-2 z-20 pointer-events-none">
-                      <div className="bg-white/70 rounded px-3 py-2 flex flex-wrap gap-x-4 gap-y-2">
-                        {items.map((it) => (
-                          <div key={it.key} className="flex items-center gap-2 text-[11px] text-slate-600 font-medium">
-                            <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: it.color }} />
-                            <span className="tracking-wide">{it.label}</span>
+                    <div className="absolute left-4 right-4 bottom-2 z-30 flex items-end justify-between gap-4">
+                      <div className="pointer-events-none">
+                        <div className="bg-white/70 rounded px-3 py-2 flex flex-wrap gap-x-4 gap-y-2">
+                          {items.map((it) => (
+                            <div key={it.key} className="flex items-center gap-2 text-[11px] text-slate-600 font-medium">
+                              <span className="inline-block w-2.5 h-2.5 rounded-full" style={{ backgroundColor: it.color }} />
+                              <span className="tracking-wide">{it.label}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* bottomActionBar：放大/导出/工作面标记/图层/重点（与图例同排，右侧右对齐） */}
+                      <div className="pointer-events-auto flex flex-wrap items-center justify-end gap-2">
+                        <button
+                          className="p-1.5 hover:bg-white/60 rounded text-slate-500 border border-slate-200 bg-white/70 backdrop-blur-sm"
+                          title={isMainMapFullscreen ? '退出全屏' : '全屏查看'}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleMainMapFullscreen();
+                          }}
+                          type="button"
+                        >
+                          <Maximize2 size={16} />
+                        </button>
+
+                        <div className="relative" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            data-main-map-export-button
+                            className="p-1.5 rounded text-slate-600 text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors bg-white/70 hover:bg-white"
+                            onClick={() => {
+                              setShowMainMapLabelsMenu(false);
+                              setShowMainMapExportMenu((v) => !v);
+                            }}
+                            type="button"
+                          >
+                            导出
+                          </button>
+                          {showMainMapExportMenu && (
+                            <div
+                              data-main-map-export-menu
+                              className="absolute right-0 bottom-full mb-2 w-44 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                            >
+                              <button
+                                className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
+                                onClick={() => {
+                                  setShowMainMapExportMenu(false);
+                                  exportMainMapPng();
+                                }}
+                                type="button"
+                              >
+                                导出 PNG
+                              </button>
+                              <button
+                                className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${paramExtractionResult?.points?.length ? 'text-slate-700' : 'text-slate-400 cursor-not-allowed'}`}
+                                disabled={!paramExtractionResult?.points?.length}
+                                title={paramExtractionResult?.points?.length ? '导出 CSV：评价点全参数 + ODI' : '请先完成“全参插值提取 / 地质插值提取”'}
+                                onClick={() => {
+                                  setShowMainMapExportMenu(false);
+                                  exportEvalPointsFullParamsWithOdiCsv();
+                                }}
+                                type="button"
+                              >
+                                导出 CSV（全参数+ODI）
+                              </button>
+                            </div>
+                          )}
+                        </div>
+
+                        <button
+                          className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                            hasWorkingFaceData
+                              ? (showWorkfaceOutline ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-700 hover:bg-white')
+                              : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!hasWorkingFaceData) return;
+                            setShowMainMapExportMenu(false);
+                            setShowMainMapLabelsMenu(false);
+                            setShowWorkfaceOutline((v) => !v);
+                          }}
+                          disabled={!hasWorkingFaceData}
+                          title={hasWorkingFaceData ? `工作面虚线圈定开关（已识别 ${workfaceCount} 个工作面）` : '请先导入工作面坐标数据'}
+                          type="button"
+                        >
+                          工作面标记
+                        </button>
+
+                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                          <div className="relative" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              data-main-map-labels-button
+                              className="p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors bg-white/70 text-slate-700 hover:bg-white"
+                              onClick={() => {
+                                setShowMainMapExportMenu(false);
+                                setShowMainMapLabelsMenu((v) => !v);
+                              }}
+                              title="标签显示/隐藏"
+                              type="button"
+                            >
+                              标签
+                            </button>
+                            {showMainMapLabelsMenu && (
+                              <div
+                                data-main-map-labels-menu
+                                className="absolute right-0 bottom-full mb-2 w-48 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                              >
+                                <button
+                                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
+                                  onClick={() => setShowBoundaryLabels((v) => !v)}
+                                  type="button"
+                                >
+                                  <span>采区边界标签</span>
+                                  <span className="text-[10px] text-slate-400">{showBoundaryLabels ? '显示' : '隐藏'}</span>
+                                </button>
+                                <button
+                                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
+                                  onClick={() => setShowDrillholeLabels((v) => !v)}
+                                  type="button"
+                                >
+                                  <span>地质钻孔标签</span>
+                                  <span className="text-[10px] text-slate-400">{showDrillholeLabels ? '显示' : '隐藏'}</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        ))}
+
+                          <button
+                            className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                              showMeasuredPoints
+                                ? 'bg-slate-900 text-white'
+                                : 'bg-white/70 text-slate-700 hover:bg-white'
+                            }`}
+                            onClick={() => setShowMeasuredPoints((v) => !v)}
+                            title="实测点显示/隐藏"
+                            type="button"
+                          >
+                            实测点
+                          </button>
+
+                          {/* 图层开关 */}
+                          <div className="flex items-center gap-1 ml-1">
+                            <button
+                              className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                                showLayerInterpolation ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-700 hover:bg-white'
+                              }`}
+                              onClick={() => setShowLayerInterpolation((v) => !v)}
+                              title="插值背景（ODI 热力）开关"
+                              type="button"
+                            >
+                              插值
+                            </button>
+                            <button
+                              className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                                showLayerDrillholes ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-700 hover:bg-white'
+                              }`}
+                              onClick={() => setShowLayerDrillholes((v) => !v)}
+                              title="地质钻孔点图层开关"
+                              type="button"
+                            >
+                              钻孔
+                            </button>
+                            <div className="flex items-center gap-1">
+                              <button
+                                className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
+                                  showLayerEvalPoints ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-700 hover:bg-white'
+                                }`}
+                                onClick={() =>
+                                  setShowLayerEvalPoints((v) => {
+                                    const next = !v;
+                                    // “评价点”=四类评价点总开关：边界点/定位点/边线点/中心点
+                                    setShowEvalBoundaryPoints(next);
+                                    setShowEvalWorkfaceLocPoints(next);
+                                    setShowEvalEdgeCtrlPoints(next);
+                                    setShowEvalCenterCtrlPoints(next);
+                                    return next;
+                                  })
+                                }
+                                title="工作面评价点图层开关"
+                                type="button"
+                              >
+                                评价点
+                              </button>
+                              {showLayerEvalPoints && (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                      showEvalBoundaryPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                    }`}
+                                    onClick={() => setShowEvalBoundaryPoints((v) => !v)}
+                                    title="评价点：边界点（灰）"
+                                    type="button"
+                                  >
+                                    边界点
+                                  </button>
+                                  <button
+                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                      showEvalWorkfaceLocPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                    }`}
+                                    onClick={() => setShowEvalWorkfaceLocPoints((v) => !v)}
+                                    title="评价点：工作面定位点（粉）"
+                                    type="button"
+                                  >
+                                    定位点
+                                  </button>
+                                  <button
+                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                      showEvalEdgeCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                    }`}
+                                    onClick={() => setShowEvalEdgeCtrlPoints((v) => !v)}
+                                    title="评价点：边线控制点（绿）"
+                                    type="button"
+                                  >
+                                    边线点
+                                  </button>
+                                  <button
+                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                      showEvalCenterCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                    }`}
+                                    onClick={() => setShowEvalCenterCtrlPoints((v) => !v)}
+                                    title="评价点：中心控制点（红）"
+                                    type="button"
+                                  >
+                                    中心点
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   );
@@ -7490,6 +9565,329 @@ const App = () => {
           </div>
             </>
           )}
+
+          {mainViewMode === 'planning' && (
+            <div ref={planningOptPanelAnchorRef} style={{ scrollMarginTop: 24 }}>
+              <MultiObjectivePlanPanel
+                value={planningOptMode}
+                onChange={handlePlanningOptModeChange}
+                weights={planningOptWeights}
+                onWeightsChange={setPlanningOptWeights}
+                defaultCollapsed={false}
+                showSummaryWhenCollapsed={false}
+              />
+
+              {planningOptMode === 'efficiency' && (
+                <section className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">工程效率候选对比表</div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        口径：覆盖率 = 回采面积 / 可采区面积（边界煤柱内缩后范围）。点击行可联动更新粉色可采区与矩形工作面。
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {planningEfficiencyBusy && (
+                        <div className="text-[10px] text-slate-400 font-mono">计算中…</div>
+                      )}
+                      {planningEfficiencyResult?.ok && (
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {!planningEfficiencyResult && (
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”，或调整煤柱/面宽范围以生成候选。</div>
+                  )}
+
+                  {planningEfficiencyResult && !planningEfficiencyResult.ok && (
+                    <div className="p-4 text-[11px] text-amber-700 bg-amber-50 border-t border-amber-100">
+                      {String(planningEfficiencyResult?.message ?? '工程效率计算失败')}
+                    </div>
+                  )}
+
+                  {planningEfficiencyResult?.ok && (
+                    <div className="w-full">
+                      <div className="w-full overflow-x-auto">
+                      <table className="w-full table-fixed text-[11px]">
+                        <thead className="sticky top-0 bg-white border-b border-slate-100">
+                          <tr>
+                            <th className="w-12 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">序号</th>
+                            <th className="w-16 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
+                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
+                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m）</th>
+                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
+                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
+                            <th className="w-24 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
+                            <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
+                            <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                            <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(planningEfficiencyResult?.table?.rows ?? []).map((r) => {
+                            const sig = String(r?.signature ?? '');
+                            const active = sig && sig === planningEfficiencySelectedSig;
+                            const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
+                            const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
+                            const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+                            const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+
+                            return (
+                              <tr
+                                key={sig || `row-${r?.rank}`}
+                                className={
+                                  `border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ` +
+                                  (active ? 'bg-pink-50/60' : 'hover:bg-slate-50')
+                                }
+                                onClick={() => handleSelectEfficiencyCandidate(sig)}
+                                title="点击：联动绘图"
+                              >
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{r?.rank ?? '--'}</td>
+                                <td className="py-2 px-2 text-center">
+                                  <input
+                                    type="radio"
+                                    name="planning-efficiency-choice"
+                                    checked={Boolean(active)}
+                                    onChange={() => handleSelectEfficiencyCandidate(sig)}
+                                    onClick={(e) => e.stopPropagation()}
+                                    aria-label="选择方案"
+                                  />
+                                </td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-bold">{r?.N ?? '--'}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.B)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
+                                <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.efficiencyScore)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {planningOptMode === 'recovery' && (
+                <section className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">资源回收结果（默认仅展示最优方案）</div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        口径：优先最大化总储量（t）；若无厚度输入则退化为“有效回采面积/覆盖率最大化”。允许工作面超出粉色可采区Ω，按裁剪后的有效面积计分与排序。点击行可联动更新粉色可采区与工作面。
+                      </div>
+                      {planningRecoveryResult?.ok && planningRecoveryResult?.stats && planningRecoveryResult?.stats?.hasThickness === false && (
+                        <div className="mt-1 text-[11px] text-amber-700">当前未检测到厚度输入：已按覆盖率进行排序（退化模式）。</div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {planningRecoveryBusy && (
+                        <div className="text-[10px] text-slate-400 font-mono">计算中…</div>
+                      )}
+                      {planningRecoveryResult?.ok && (
+                        <>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            候选：{planningRecoveryResult?.stats?.topK ?? 0} / {planningRecoveryResult?.stats?.candidateCount ?? 0}
+                          </div>
+                          <button
+                            type="button"
+                            className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                            onClick={openRecoveryDebugModal}
+                            title="打开调试弹窗，可复制请求/回包/Top10候选的关键字段"
+                          >
+                            调试数据
+                          </button>
+                          {Array.isArray(planningRecoveryResult?.table?.rows) && planningRecoveryResult.table.rows.length > 1 && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                              onClick={() => setPlanningRecoveryShowAllCandidates((v) => !v)}
+                              title="默认仅展示最优方案；可展开查看TopK候选对比表"
+                            >
+                              {planningRecoveryShowAllCandidates ? '仅显示最优' : '展开候选'}
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {!planningRecoveryResult && (
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”，或调整煤柱/面宽范围以生成候选。</div>
+                  )}
+
+                  {planningRecoveryResult && !planningRecoveryResult.ok && (
+                    <div className="p-4 text-[11px] text-amber-700 bg-amber-50 border-t border-amber-100">
+                      {String(planningRecoveryResult?.message ?? '资源回收计算失败')}
+                    </div>
+                  )}
+
+                  {planningRecoveryResult?.ok && (
+                    <div className="w-full">
+                      <div className="w-full overflow-x-auto">
+                        <table className="w-full table-fixed text-[11px]">
+                          <thead className="sticky top-0 bg-white border-b border-slate-100">
+                            <tr>
+                              <th className="w-12 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">序号</th>
+                              <th className="w-16 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
+                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
+                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m，范围）</th>
+                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">推进长度 L（m，范围）</th>
+                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">异常面（裁剪后非矩形）</th>
+                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
+                              <th className="w-28 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
+                              <th className="w-24 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
+                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
+                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                              <th className="w-40 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（t）</th>
+                              <th className="w-32 text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">资源回收评分</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(() => {
+                              const rows0 = planningRecoveryResult?.table?.rows ?? [];
+                              const rows = planningRecoveryShowAllCandidates ? rows0 : rows0.slice(0, 1);
+
+                              return rows.map((r) => {
+                              const sig = String(r?.signature ?? '');
+                              const active = sig && sig === planningRecoverySelectedSig;
+                              const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
+                              const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
+                              const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+                              const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+
+                              return (
+                                <tr
+                                  key={sig || `row-${r?.rank}`}
+                                  className={
+                                    `border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ` +
+                                    (active ? 'bg-pink-50/60' : 'hover:bg-slate-50')
+                                  }
+                                  onClick={() => handleSelectRecoveryCandidate(sig)}
+                                  title="点击：联动绘图"
+                                >
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{r?.rank ?? '--'}</td>
+                                  <td className="py-2 px-2 text-center">
+                                    <input
+                                      type="radio"
+                                      name="planning-recovery-choice"
+                                      checked={Boolean(active)}
+                                      onChange={() => handleSelectRecoveryCandidate(sig)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      aria-label="选择方案"
+                                    />
+                                  </td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-bold">{r?.N ?? '--'}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">
+                                    {(() => {
+                                      const b0 = Number(r?.BMin);
+                                      const b1 = Number(r?.BMax);
+                                      if (Number.isFinite(b0) && Number.isFinite(b1)) {
+                                        if (Math.abs(b0 - b1) <= 1e-6) return fmt1(b0);
+                                        return `${fmt1(b0)}~${fmt1(b1)}`;
+                                      }
+                                      return fmt1(r?.B);
+                                    })()}
+                                  </td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">
+                                    {(() => {
+                                      const l0 = Number(r?.minL);
+                                      const l1 = Number(r?.maxL);
+                                      if (Number.isFinite(l0) && Number.isFinite(l1)) {
+                                        if (Math.abs(l0 - l1) <= 1e-6) return fmt1(l0);
+                                        return `${fmt1(l0)}~${fmt1(l1)}`;
+                                      }
+                                      return '--';
+                                    })()}
+                                  </td>
+                                  <td
+                                    className={
+                                      `py-2 px-2 text-center font-mono ` +
+                                      ((Number(r?.abnormalFaceCount) > 0) ? 'text-red-700 font-bold' : 'text-slate-700')
+                                    }
+                                    title={(Number(r?.abnormalFaceCount) > 0 && String(r?.abnormalFaceIndices || ''))
+                                      ? `异常面编号：${String(r.abnormalFaceIndices)}`
+                                      : ''}
+                                  >
+                                    {(() => {
+                                      const k = Number(r?.abnormalFaceCount);
+                                      if (!Number.isFinite(k)) return '--';
+                                      if (k <= 0) return '0';
+                                      const idx = String(r?.abnormalFaceIndices || '');
+                                      return idx ? `${Math.round(k)}（${idx}）` : String(Math.round(k));
+                                    })()}
+                                  </td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.tonnageTotal)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.recoveryScore)}</td>
+                                </tr>
+                              );
+                              });
+                            })()}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {planningRecoveryDebugOpen && (
+                    <div
+                      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4"
+                      role="dialog"
+                      aria-modal="true"
+                      onMouseDown={(e) => {
+                        if (e.target === e.currentTarget) setPlanningRecoveryDebugOpen(false);
+                      }}
+                    >
+                      <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+                        <div className="p-3 border-b border-slate-100 flex items-center justify-between">
+                          <div className="text-[12px] font-bold text-slate-700">资源回收调试数据（可复制）</div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              onClick={copyRecoveryDebugText}
+                            >
+                              复制JSON
+                            </button>
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                              onClick={() => setPlanningRecoveryDebugOpen(false)}
+                            >
+                              关闭
+                            </button>
+                          </div>
+                        </div>
+                        <div className="p-3">
+                          <textarea
+                            className="w-full h-[70vh] font-mono text-[11px] rounded border border-slate-200 p-2 text-slate-700"
+                            readOnly
+                            value={String(planningRecoveryDebugText ?? '')}
+                          />
+                          <div className="mt-2 text-[11px] text-slate-500">
+                            提示：把这段JSON完整复制发我即可（包含请求参数、fast标记、Top10签名、dlt/theta/bL、minInRatio/面积等）。
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
+          )}
+
           {mainViewMode === 'odi' && (
             <>
               {/* 实测分级对应分析（主图 ↔ 误差趋势之间，可折叠） */}
@@ -8387,30 +10785,14 @@ const App = () => {
             <div className="p-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
               <div className="space-y-5">
 
-                {/* A: 生产规模 */}
-                <div className="bg-slate-50 p-5 rounded-[2rem] border border-slate-100 transition-all hover:bg-white hover:shadow-md">
-                  <div className="flex items-center gap-2 mb-4">
-                    <ClipboardCheck size={14} className="text-blue-600" />
-                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">生产规模配置</span>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[12px] font-black text-slate-400 uppercase">矿井生产能力（万吨/年）</label>
-                    <input
-                      type="number"
-                      value={planningParams.mineCapacity}
-                      onChange={(e) => setPlanningParams((p) => ({ ...p, mineCapacity: e.target.value }))}
-                      className="w-full bg-white border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 shadow-sm transition-all"
-                    />
-                  </div>
-                </div>
-
-                {/* B: 回采规模与生产效率 */}
+                {/* B2: 开采方式 */}
                 <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2">
-                    <BarChart3 size={14} className="text-blue-500" />
-                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">回采规模与生产效率</span>
+                    <DraftingCompass size={14} className="text-blue-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">资源赋存与开采方式</span>
                   </div>
 
+                  {/* 0) 煤层平均厚度 + 煤的容重（从“回采规模与生产效率”迁移至此，置顶） */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-[12px] font-black text-slate-400">煤层平均厚度（m）</label>
@@ -8432,40 +10814,7 @@ const App = () => {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-[12px] font-black text-slate-400">采出率（0~1）</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-2">
-                        <label className="text-[12px] font-black text-slate-400">最小值</label>
-                        <input
-                          type="number"
-                          value={planningParams.recoveryRateMin}
-                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMin: e.target.value }))}
-                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
-                          placeholder="Min"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-[12px] font-black text-slate-400">最大值</label>
-                        <input
-                          type="number"
-                          value={planningParams.recoveryRateMax}
-                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMax: e.target.value }))}
-                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
-                          placeholder="Max"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                </div>
-
-                {/* B2: 开采方式 */}
-                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
-                  <div className="flex items-center gap-2">
-                    <DraftingCompass size={14} className="text-blue-500" />
-                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">开采方式</span>
-                  </div>
+                  <div className="h-px bg-slate-100"></div>
 
                   {/* 1) 大巷空间位置 */}
                   <div className="space-y-2">
@@ -8484,8 +10833,6 @@ const App = () => {
 
                   {/* 2) 采煤方法选择 */}
                   <div className="space-y-3">
-                    <div className="text-[12px] font-black text-slate-400">采煤方法选择</div>
-
                     <div className="space-y-2">
                       <label className="text-[12px] font-black text-slate-400">采煤方法</label>
                       <select
@@ -8613,8 +10960,22 @@ const App = () => {
                     const nMaxRaw = Number(planningParams.faceCountSuggestedMax);
                     const hasRange = Number.isFinite(nMinRaw) && Number.isFinite(nMaxRaw) && nMaxRaw >= nMinRaw && nMaxRaw >= 1;
 
-                    const minBound = hasRange ? Math.max(1, Math.round(nMinRaw)) : 1;
-                    const maxBound = hasRange ? Math.max(1, Math.round(nMaxRaw)) : 200;
+                    const effHasRange = Boolean(
+                      planningOptMode === 'efficiency'
+                      && planningEfficiencyResult?.ok
+                      && Array.isArray(planningEfficiencyResult?.nRange?.nValues)
+                      && planningEfficiencyResult.nRange.nValues.length > 0
+                    );
+                    const effNValues = effHasRange
+                      ? (planningEfficiencyResult.nRange.nValues ?? [])
+                        .map((x) => Math.round(Number(x)))
+                        .filter((x) => Number.isFinite(x) && x >= 1)
+                      : [];
+                    const effMinBound = effHasRange ? Math.max(1, Math.round(Number(planningEfficiencyResult.nRange.nMin))) : null;
+                    const effMaxBound = effHasRange ? Math.max(1, Math.round(Number(planningEfficiencyResult.nRange.nMax))) : null;
+
+                    const minBound = effHasRange ? effMinBound : (hasRange ? Math.max(1, Math.round(nMinRaw)) : 1);
+                    const maxBound = effHasRange ? effMaxBound : (hasRange ? Math.max(1, Math.round(nMaxRaw)) : 200);
 
                     const clampN = (v) => {
                       const n = Math.round(Number(v));
@@ -8625,9 +10986,26 @@ const App = () => {
                     const nSel = planningParams.faceCountSelected;
                     const nSelSafe = (() => {
                       if (String(nSel ?? '').trim() !== '') return clampN(nSel);
-                      if (hasRange) return clampN((minBound + maxBound) / 2);
+                      if (effHasRange || hasRange) return clampN((minBound + maxBound) / 2);
                       return minBound;
                     })();
+
+                    const applyNChange = (nextRaw) => {
+                      const v = clampN(nextRaw);
+                      setPlanningParams((p) => ({ ...p, faceCountSelected: String(v) }));
+
+                      if (!effHasRange) {
+                        applyPlannedFaceCountSelection(v);
+                        return;
+                      }
+
+                      // efficiency：若 N 可行则直接切换候选；否则走预览（1B/2A/3B/4A）
+                      if (effNValues.includes(v)) {
+                        selectEfficiencyByN(v);
+                        return;
+                      }
+                      requestEfficiencyPreview(v);
+                    };
 
                     return (
                       <div className="space-y-2">
@@ -8643,9 +11021,7 @@ const App = () => {
                             step={1}
                             value={nSelSafe}
                             onChange={(e) => {
-                              const v = clampN(e.target.value);
-                              setPlanningParams((p) => ({ ...p, faceCountSelected: String(v) }));
-                              applyPlannedFaceCountSelection(v);
+                              applyNChange(e.target.value);
                             }}
                             className="flex-1"
                           />
@@ -8656,17 +11032,41 @@ const App = () => {
                             step={1}
                             value={nSelSafe}
                             onChange={(e) => {
-                              const v = clampN(e.target.value);
-                              setPlanningParams((p) => ({ ...p, faceCountSelected: String(v) }));
-                              applyPlannedFaceCountSelection(v);
+                              applyNChange(e.target.value);
                             }}
                             className="w-20 bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
-                            title="调节后会自动用可行解集重绘规划工作面"
+                            title={effHasRange ? '工程效率模式：可行N直接切换；不可行N触发预览（不重算最优）' : '调节后会自动用可行解集重绘规划工作面'}
                           />
                         </div>
                         <div className="text-[10px] text-slate-400">
-                          {hasRange ? '默认方案：N 取可行范围的均值；调节后将自动选取最接近的可行 N 并重绘。' : '提示：尚未生成可行范围时，提供默认范围 1~200 供预设。'}
+                          {effHasRange
+                            ? `工程效率模式：可行N直接切换（不重算）；不可行N将生成预览布局（非最优）。可行 N：${effNValues.join(' / ')}`
+                            : (hasRange ? '默认方案：N 取可行范围的均值；调节后将自动选取最接近的可行 N 并重绘。' : '提示：尚未生成可行范围时，提供默认范围 1~200 供预设。')}
                         </div>
+
+                        {effHasRange && (
+                          <div className="text-[10px] mt-1">
+                            {planningEfficiencyPreviewBusy && (
+                              <span className="text-slate-400 font-mono">预览计算中…</span>
+                            )}
+                            {!planningEfficiencyPreviewBusy
+                              && planningEfficiencyPreview?.preview
+                              && Number(planningEfficiencyPreview?.targetN) === Number(nSelSafe)
+                              && (
+                                planningEfficiencyPreview?.ok
+                                  ? (
+                                    <span className="text-slate-500">
+                                      预览：N={planningEfficiencyPreview?.candidate?.N ?? nSelSafe}，B={Number(planningEfficiencyPreview?.candidate?.B ?? 0).toFixed(1)}，w_s={Number(planningEfficiencyPreview?.candidate?.ws ?? 0).toFixed(1)}，覆盖率={Number(planningEfficiencyPreview?.candidate?.coverageRatio ?? 0).toFixed(4)}（非最优；点击“工程效率最优”可重算）
+                                    </span>
+                                  )
+                                  : (
+                                    <span className="text-amber-700">
+                                      {String(planningEfficiencyPreview?.message || '该N无法布置，图形保持当前方案')}
+                                    </span>
+                                  )
+                              )}
+                          </div>
+                        )}
                       </div>
                     );
                   })()}
@@ -8706,6 +11106,27 @@ const App = () => {
                         />
                       </div>
                     </div>
+
+                    {(() => {
+                      const fw = getFaceWidthRange();
+                      const rawMin = (fw.rawMin == null ? '' : String(fw.rawMin));
+                      const rawMax = (fw.rawMax == null ? '' : String(fw.rawMax));
+                      const rawMinDisp = rawMin.trim() === '' ? '未输入' : rawMin;
+                      const rawMaxDisp = rawMax.trim() === '' ? '未输入' : rawMax;
+                      const warn = Array.isArray(fw.warnings) ? fw.warnings.filter(Boolean) : [];
+                      return (
+                        <div className="space-y-1">
+                          <div className="text-[10px] text-slate-400 font-bold">
+                            输入：{rawMinDisp} ~ {rawMaxDisp}；规范化：{Number(fw.min).toFixed(1)} ~ {Number(fw.max).toFixed(1)}（默认：{fw.defMin} ~ {fw.defMax}）
+                          </div>
+                          {warn.length > 0 && (
+                            <div className="text-[10px] text-amber-700 font-black">
+                              {warn.join('；')}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="space-y-2">
@@ -8742,6 +11163,10 @@ const App = () => {
                 >
                   <Zap size={18} className="text-white/90" /> 启动智能采区规划
                 </button>
+
+                {DEBUG_PANEL && (
+                  <PlanningDebugPanel snapshot={planningDebugSnapshot} />
+                )}
               </div>
             </div>
           </div>
@@ -8767,30 +11192,82 @@ const App = () => {
             />
           </button>
 
-          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('succession') ? 'max-h-[500px]' : 'max-h-0'}`}>
-            <div className="px-5 pb-5 space-y-4">
-              {[
-                { name: '巷道准备期', days: 45, pct: 0.35, bar: 'bg-orange-500' },
-                { name: '工作面回采期', days: 180, pct: 0.72, bar: 'bg-blue-500' },
-                { name: '接续空窗期', days: 20, pct: 0.18, bar: 'bg-red-500' },
-              ].map((item) => (
-                <div key={item.name} className="bg-white rounded-xl border border-slate-200 p-4">
-                  <div className="flex items-center justify-between text-xs">
-                    <div className="font-bold text-slate-700">{item.name}</div>
-                    <div className="font-mono text-slate-600">{item.days} 天</div>
-                  </div>
-                  <div className="mt-2 h-2 w-full bg-slate-200 rounded-full overflow-hidden">
-                    <div className={`h-full ${item.bar}`} style={{ width: `${Math.round(item.pct * 100)}%` }}></div>
-                  </div>
-                </div>
-              ))}
+          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('succession') ? 'max-h-[calc(100vh-120px)]' : 'max-h-0'}`}>
+            <div className="p-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
+              <div className="space-y-5">
 
-              <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 flex items-start gap-2">
-                <AlertTriangle size={16} className="text-orange-600 mt-0.5" />
-                <div className="min-w-0">
-                  <div className="text-xs font-bold text-orange-700">风险提示：接续空窗期过长将显著抬升生产组织风险</div>
-                  <div className="mt-1 text-[10px] text-orange-700/80">建议提前锁定接续资源，避免关键节点延误造成产量波动。</div>
+                {/* 从“采区参数编辑器”迁移：生产规模配置 */}
+                <div className="bg-slate-50 p-5 rounded-[2rem] border border-slate-100 transition-all hover:bg-white hover:shadow-md">
+                  <div className="flex items-center gap-2 mb-4">
+                    <ClipboardCheck size={14} className="text-blue-600" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">生产规模配置</span>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400 uppercase">矿井生产能力（万吨/年）</label>
+                    <input
+                      type="number"
+                      value={planningParams.mineCapacity}
+                      onChange={(e) => setPlanningParams((p) => ({ ...p, mineCapacity: e.target.value }))}
+                      className="w-full bg-white border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 shadow-sm transition-all"
+                    />
+                  </div>
                 </div>
+
+                {/* 从“采区参数编辑器”迁移：回采规模与生产效率 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <BarChart3 size={14} className="text-blue-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">回采规模与生产效率</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">煤层平均厚度（m）</label>
+                      <input
+                        type="number"
+                        value={planningParams.seamThickness}
+                        onChange={(e) => setPlanningParams((p) => ({ ...p, seamThickness: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">煤的容重（t/m³）</label>
+                      <input
+                        type="number"
+                        value={planningParams.coalDensity}
+                        onChange={(e) => setPlanningParams((p) => ({ ...p, coalDensity: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">采出率（0~1）</label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最小值</label>
+                        <input
+                          type="number"
+                          value={planningParams.recoveryRateMin}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMin: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Min"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-[12px] font-black text-slate-400">最大值</label>
+                        <input
+                          type="number"
+                          value={planningParams.recoveryRateMax}
+                          onChange={(e) => setPlanningParams((p) => ({ ...p, recoveryRateMax: e.target.value }))}
+                          className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                          placeholder="Max"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>
