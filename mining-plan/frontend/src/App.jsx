@@ -108,6 +108,8 @@ const App = () => {
   const efficiencyReqSeqRef = useRef(0);
   const efficiencyPendingRefineKeyRef = useRef('');
   const efficiencyPendingRefineAxisRef = useRef('');
+  // 记录“正在计算中的请求”对应的 cacheKey：用于按钮二次点击时判断是否需要重算。
+  const efficiencyInFlightKeyRef = useRef('');
   // 记住“用户手动选择的候选方案”（按 cacheKey 维度），避免 refine/full 回包把选中态强行覆盖回 best。
   const efficiencySelectedSigByKeyRef = useRef(new Map());
 
@@ -136,6 +138,7 @@ const App = () => {
   const recoveryReqSeqRef = useRef(0);
   const recoveryPendingRefineKeyRef = useRef('');
   const recoveryPendingRefineAxisRef = useRef('');
+  const recoveryInFlightKeyRef = useRef('');
   const recoverySelectedSigByKeyRef = useRef(new Map());
 
   const [planningRecoveryBusy, setPlanningRecoveryBusy] = useState(false);
@@ -1487,6 +1490,8 @@ const App = () => {
       }));
     }
 
+    // 标记“正在计算”的 key（用于二次点击判断是否需要重算）
+    efficiencyInFlightKeyRef.current = String(cacheKey);
     efficiencyWorkerRef.current.postMessage(msg);
   };
 
@@ -1807,6 +1812,7 @@ const App = () => {
       }));
     }
 
+    recoveryInFlightKeyRef.current = String(cacheKey);
     resourceWorkerRef.current.postMessage(msg);
   };
 
@@ -8017,10 +8023,8 @@ const App = () => {
         hasInitializedFaceWidthRange,
       });
 
-      // 切换到规划视图并清空旧结果
+      // 切换到规划视图（是否清空旧结果取决于“是否需要重算”）
       switchMainViewModeWithRightPanel('planning');
-      setPlannedWorkfaceLoopsWorld([]);
-      setPlannedWorkfaceUnionLoopsWorld([]);
 
       if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
         window.alert('请先导入采区边界坐标数据。');
@@ -8050,14 +8054,17 @@ const App = () => {
         };
       });
 
-      setPlanningInnerOmegaOverrideWb(null);
-      setPlanningEfficiencySelectedSig('');
-      setPlanningRecoverySelectedSig('');
-
-      // 单击即出图：工程效率仅精算（关闭 fast）。
+      // 计算触发策略（按你的要求）：
+      // - 若数据没修改：再次点击只“继续/复用”（busy 则继续显示进度；非 busy 则复用当前结果/缓存）。
+      // - 若数据已修改：再次点击重新计算。
       if (planningOptMode === 'efficiency') {
-        // 若上一轮仍在计算中：再次点击只做“继续显示进度”，不重启计算（否则会重置 reqSeq/progress）。
-        if (planningEfficiencyBusy) {
+        const currentKey = String(buildEfficiencyCacheKey());
+        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+        const lastShownKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
+        const dataChanged = Boolean((planningEfficiencyBusy && inFlightKey) ? (currentKey !== inFlightKey) : (lastShownKey ? (currentKey !== lastShownKey) : true));
+
+        // 1) 没改数据且仍在算：继续显示当前进度（不重启计算）
+        if (planningEfficiencyBusy && !dataChanged) {
           try {
             const p = planningEfficiencyProgress;
             const pct = Number(p?.percent);
@@ -8101,12 +8108,29 @@ const App = () => {
           }
           return;
         }
-        // 点击“启动智能采区规划”属于用户显式触发：使用前台计算，确保显示进度与“计算中…”提示。
+
+        // 2) 没改数据且不在算：复用当前结果/缓存（不强制重算）
+        if (!planningEfficiencyBusy && !dataChanged) {
+          requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
+          return;
+        }
+
+        // 3) 数据已修改：重算（清空旧图/选中态更符合预期）
+        setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
+        setPlanningInnerOmegaOverrideWb(null);
+        setPlanningEfficiencySelectedSig('');
         requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
       }
       if (planningOptMode === 'recovery') {
-        if (planningRecoveryBusy) {
+        const currentKey = String(buildRecoveryCacheKey());
+        const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+        const lastShownKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
+        const dataChanged = Boolean((planningRecoveryBusy && inFlightKey) ? (currentKey !== inFlightKey) : (lastShownKey ? (currentKey !== lastShownKey) : true));
+
+        // 1) 没改数据且仍在算：继续显示当前进度
+        if (planningRecoveryBusy && !dataChanged) {
           try {
             const p = planningRecoveryProgress;
             const pct = Number(p?.percent);
@@ -8145,7 +8169,18 @@ const App = () => {
           }
           return;
         }
-        // recovery：直接 full compute（fast 预览会导致候选=1 且 per-face 被禁用）
+
+        // 2) 没改数据且不在算：复用当前结果/缓存
+        if (!planningRecoveryBusy && !dataChanged) {
+          requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
+          return;
+        }
+
+        // 3) 数据已修改：重算
+        setPlannedWorkfaceLoopsWorld([]);
+        setPlannedWorkfaceUnionLoopsWorld([]);
+        setPlanningInnerOmegaOverrideWb(null);
+        setPlanningRecoverySelectedSig('');
         requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
       }
