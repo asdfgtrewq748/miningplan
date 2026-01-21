@@ -2388,11 +2388,33 @@ const App = () => {
     if (mainViewMode !== 'planning') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
     if (m === 'efficiency') {
-      // 显式切换：展示“计算中…”更符合用户预期
+      // 显式切换：
+      // - 若工程效率正在计算同一输入，不要重复发起新请求（否则会自增 reqSeq，progress 全被过滤，UI卡在0%）。
+      // - 若已有同一输入的 ok 结果，也不强制重算。
+      try {
+        const currentKey = String(buildEfficiencyCacheKey());
+        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+        const lastKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
+        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDateOk = Boolean(!planningEfficiencyBusy && planningEfficiencyResult?.ok && lastKey && currentKey === lastKey);
+        if (isComputingSame || isUpToDateOk) return;
+      } catch {
+        // ignore
+      }
       requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
       return;
     }
     if (m === 'recovery') {
+      try {
+        const currentKey = String(buildRecoveryCacheKey());
+        const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+        const lastKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
+        const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDateOk = Boolean(!planningRecoveryBusy && planningRecoveryResult?.ok && lastKey && currentKey === lastKey);
+        if (isComputingSame || isUpToDateOk) return;
+      } catch {
+        // ignore
+      }
       requestComputeRecovery({ force: true, fast: true, refine: true, background: false });
     }
   };
@@ -8031,23 +8053,20 @@ const App = () => {
 
       setShowPlanningBoundaryOverlay(true);
 
-      // 二次点击策略：先判断“是否需要重算”，若不需要则不要触发任何额外 setState，
-      // 否则可能引发 cacheKeyRef 更新/进度被过滤，导致用户看到“进度不显示”。
+      // 二次点击策略：
+      // - 若仍在计算同一输入：继续当前进度（不要触发任何额外 setState，避免进度链路被打断）。
+      // - 若已算完但参数未变：允许再次点击强制重算（用户期望“第二次点击也有进度反馈”）。
       if (planningOptMode === 'efficiency') {
         const currentKey = String(buildEfficiencyCacheKey());
         const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
-        const lastShownKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
         const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDate = Boolean(!planningEfficiencyBusy && lastShownKey && currentKey === lastShownKey);
-        if (isComputingSame || isUpToDate) return;
+        if (isComputingSame) return;
       }
       if (planningOptMode === 'recovery') {
         const currentKey = String(buildRecoveryCacheKey());
         const inFlightKey = String(recoveryInFlightKeyRef.current || '');
-        const lastShownKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
         const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDate = Boolean(!planningRecoveryBusy && lastShownKey && currentKey === lastShownKey);
-        if (isComputingSame || isUpToDate) return;
+        if (isComputingSame) return;
       }
 
       // 工程效率最优：优先采用候选寻优 + 点击联动（矩形等宽）
