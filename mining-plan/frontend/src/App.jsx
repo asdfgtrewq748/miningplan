@@ -1939,9 +1939,11 @@ const App = () => {
         console.error('mismatch', { uiMode, requestId: payloadSeq, error: errMsg, responseMode: payload?.mode, cacheKey: payloadKey });
         workerError('[worker] response-assert-failed', { uiMode, reqSeq: payloadSeq, cacheKey: payloadKey, error: errMsg });
         if (isRecovery) {
+          recoveryInFlightKeyRef.current = '';
           setPlanningRecoveryBusy(false);
           setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: errMsg, failedReason: errMsg, candidates: [] });
         } else {
+          efficiencyInFlightKeyRef.current = '';
           setPlanningEfficiencyBusy(false);
           setPlanningEfficiencyResult({ ok: false, mode: 'smart-efficiency', message: errMsg, failedReason: errMsg, candidates: [] });
           setPlanningEfficiencyPreview(null);
@@ -1997,9 +1999,11 @@ const App = () => {
       }
 
       if (isRecovery) {
+        recoveryInFlightKeyRef.current = '';
         setPlanningRecoveryBusy(false);
         setPlanningRecoveryProgress(null);
       } else {
+        efficiencyInFlightKeyRef.current = '';
         setPlanningEfficiencyBusy(false);
         setPlanningEfficiencyProgress(null);
       }
@@ -2168,7 +2172,8 @@ const App = () => {
           const latestSeq = efficiencyReqSeqRef.current;
           if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) return;
           const payloadKey = String(payload?.cacheKey ?? '');
-          const latestKey = String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || '');
+          const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+          const latestKey = inFlightKey || String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || '');
           if (payloadKey && latestKey && payloadKey !== latestKey) return;
           const now = Date.now();
           if (now - (planningEfficiencyProgressLastTsRef.current || 0) < 120) return;
@@ -2233,7 +2238,8 @@ const App = () => {
           const latestSeq = recoveryReqSeqRef.current;
           if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) return;
           const payloadKey = String(payload?.cacheKey ?? '');
-          const latestKey = String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || '');
+          const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+          const latestKey = inFlightKey || String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || '');
           if (payloadKey && latestKey && payloadKey !== latestKey) return;
           const now = Date.now();
           if (now - (planningRecoveryProgressLastTsRef.current || 0) < 120) return;
@@ -7167,6 +7173,9 @@ const App = () => {
     if (planningOptMode !== 'efficiency') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
+    // 关键：计算进行中不要改写 cacheKeyRef，否则会导致 worker progress 被当成“旧 key”过滤掉。
+    if (planningEfficiencyBusy) return;
+
     const cacheKey = buildEfficiencyCacheKey();
     planningEfficiencyCacheKeyRef.current = String(cacheKey);
     setPlanningEfficiencyCacheKey(cacheKey);
@@ -7212,7 +7221,6 @@ const App = () => {
     }
 
     // 输入变化后做一次 debounce：后台 full compute（关闭 fast，仅输出精算结果）。
-    if (planningEfficiencyBusy) return;
     if (!efficiencyWorkerRef.current) return;
 
     if (efficiencyAutoRecomputeDebounceRef.current) clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
@@ -7251,6 +7259,8 @@ const App = () => {
     if (mainViewMode !== 'planning') return;
     if (planningOptMode !== 'recovery') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    if (planningRecoveryBusy) return;
 
     const cacheKey = buildRecoveryCacheKey();
     planningRecoveryCacheKeyRef.current = String(cacheKey);
@@ -7292,7 +7302,6 @@ const App = () => {
       }
     }
 
-    if (planningRecoveryBusy) return;
     if (!resourceWorkerRef.current) return;
 
     if (recoveryAutoRecomputeDebounceRef.current) clearTimeout(recoveryAutoRecomputeDebounceRef.current);
