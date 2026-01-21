@@ -8056,11 +8056,95 @@ const App = () => {
 
       // 单击即出图：工程效率仅精算（关闭 fast）。
       if (planningOptMode === 'efficiency') {
+        // 若上一轮仍在计算中：再次点击只做“继续显示进度”，不重启计算（否则会重置 reqSeq/progress）。
+        if (planningEfficiencyBusy) {
+          try {
+            const p = planningEfficiencyProgress;
+            const pct = Number(p?.percent);
+            const tried = Number(p?.attemptedCombos);
+            const ok = Number(p?.feasibleCombos);
+            const phase = String(p?.phase ?? '').trim();
+            const wsI = Number(p?.wsIndex);
+            const wsT = Number(p?.wsTotal);
+            const nI = Number(p?.nIndex);
+            const nT = Number(p?.nTotal);
+            const parts = [];
+            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+            if (Number.isFinite(wsI) && Number.isFinite(wsT) && wsT >= 1) parts.push(`ws ${Math.max(1, Math.round(wsI))}/${Math.round(wsT)}`);
+            if (Number.isFinite(nI) && Number.isFinite(nT) && nT >= 1) parts.push(`N ${Math.max(1, Math.round(nI))}/${Math.round(nT)}`);
+            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+            if (phase) parts.push(phase);
+            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+            const msg1 = `计算中…${suffix}`;
+            setPlanningEfficiencyResult((prev) => {
+              if (prev?.ok) return prev;
+              const prevKey = String(prev?.cacheKey ?? '');
+              const keyNow = String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || buildEfficiencyCacheKey());
+              const cacheKey = prevKey || keyNow;
+              return {
+                ok: false,
+                mode: 'smart-efficiency',
+                message: msg1,
+                failedReason: '',
+                reqSeq: efficiencyReqSeqRef.current,
+                cacheKey,
+                axis: (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x',
+                fast: false,
+                candidates: [],
+                omegaRender: prev?.omegaRender ?? null,
+                omegaArea: prev?.omegaArea ?? null,
+              };
+            });
+          } catch {
+            // ignore
+          }
+          return;
+        }
         // 点击“启动智能采区规划”属于用户显式触发：使用前台计算，确保显示进度与“计算中…”提示。
         requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
       }
       if (planningOptMode === 'recovery') {
+        if (planningRecoveryBusy) {
+          try {
+            const p = planningRecoveryProgress;
+            const pct = Number(p?.percent);
+            const tried = Number(p?.attemptedCombos);
+            const ok = Number(p?.feasibleCombos);
+            const phase = String(p?.phase ?? '').trim();
+            const parts = [];
+            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
+            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
+            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
+            if (phase) parts.push(phase);
+            const suffix = parts.length ? `（${parts.join('，')}）` : '';
+            const msg1 = `计算中…${suffix}`;
+            setPlanningRecoveryResult((prev) => {
+              if (prev?.ok) return prev;
+              const prevKey = String(prev?.cacheKey ?? '');
+              const keyNow = String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || buildRecoveryCacheKey());
+              const cacheKey = prevKey || keyNow;
+              return {
+                ok: false,
+                mode: 'smart-resource',
+                message: msg1,
+                failedReason: '',
+                reqSeq: recoveryReqSeqRef.current,
+                cacheKey,
+                axis: (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x',
+                fast: false,
+                candidates: [],
+                tonnageTotal: 0,
+                omegaRender: prev?.omegaRender ?? null,
+                omegaArea: prev?.omegaArea ?? null,
+              };
+            });
+          } catch {
+            // ignore
+          }
+          return;
+        }
         // recovery：直接 full compute（fast 预览会导致候选=1 且 per-face 被禁用）
         requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
