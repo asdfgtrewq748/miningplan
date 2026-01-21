@@ -25,6 +25,36 @@
 				"panel": "dedicated",
 				"clear": false
 			}
+		},
+		{
+			"label": "后端：FastAPI（自动热更新）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\backend_python'; & 'G:\\桌面\\miningplan\\mining-plan\\backend_python\\.venv\\Scripts\\python.exe' -m uvicorn main:app --host 0.0.0.0 --port 3001 --reload"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "前端：构建dist（用于局域网访问3001）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\frontend'; npm.cmd run build"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }

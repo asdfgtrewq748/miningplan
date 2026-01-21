@@ -1,4 +1,17 @@
-const API_BASE = 'http://localhost:3001/api';
+const DEFAULT_API_HOST = (() => {
+  try {
+    return globalThis?.location?.hostname || 'localhost';
+  } catch {
+    return 'localhost';
+  }
+})();
+
+// 支持通过 .env 覆盖：
+// - VITE_API_BASE: 完整 base（例如 http://10.4.81.4:3001/api）
+// - VITE_API_HOST / VITE_API_PORT: 仅覆盖 host/port
+const API_HOST = (import.meta?.env?.VITE_API_HOST || DEFAULT_API_HOST);
+const API_PORT = String(import.meta?.env?.VITE_API_PORT || '3001');
+const API_BASE = (import.meta?.env?.VITE_API_BASE || `http://${API_HOST}:${API_PORT}/api`);
 
 // ==================== 通用请求封装（带重试机制）====================
 
@@ -18,13 +31,14 @@ class ApiError extends Error {
  * @param {number} maxRetries - 最大重试次数（默认3次）
  * @param {number} retryDelay - 重试延迟基数（毫秒，会指数增长）
  */
-async function apiRequest(url, options = {}, maxRetries = 3, retryDelay = 1000) {
+async function apiRequest(url, options = {}, maxRetries = 3, retryDelay = 1000, timeoutMs = 30000) {
   let lastError;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000); // 30秒超时
+      const tMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000;
+      const timeout = setTimeout(() => controller.abort(), tMs);
 
       const res = await fetch(url, {
         ...options,
@@ -92,6 +106,54 @@ async function apiPost(endpoint, data = {}) {
     body: JSON.stringify(data),
   });
   return res.json();
+}
+
+async function apiPostWithTimeout(endpoint, data = {}, timeoutMs = 30000) {
+  const res = await apiRequest(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }, 3, 1000, timeoutMs);
+  return res.json();
+}
+
+// ==================== 规划优化（Smart Resource）====================
+
+/**
+ * smart-resource：把吨位/厚度与 TONNAGE 排序放到后端
+ * - 输入：候选（含 render loops）+ thickness
+ * - 输出：rankedSignatures + tonnageBySignature + recoveryScoreBySignature
+ */
+export async function smartResourceTonnageSort({ cacheKey, candidates, thickness, topK = 10, sampleStepM = null }) {
+  return apiPost('/planning/smart-resource/tonnage', {
+    cacheKey,
+    candidates,
+    thickness,
+    topK,
+    sampleStepM,
+  });
+}
+
+// ==================== 规划优化（Smart Efficiency）====================
+
+/**
+ * smart-efficiency：后端执行（复用前端 worker 算法口径）
+ * - 输入：与前端 worker compute payload 一致
+ * - 输出：与前端 worker result payload 一致
+ */
+export async function smartEfficiencyCompute(payload) {
+  // smart-efficiency 可能较重：放宽超时，避免 30s 误判失败。
+  return apiPostWithTimeout('/planning/smart-efficiency/compute', payload ?? {}, 120000);
+}
+
+/**
+ * smart-resource：后端执行（复用前端 worker 算法口径）
+ * - 输入：与前端 worker compute payload 一致
+ * - 输出：与前端 worker result payload 一致
+ */
+export async function smartResourceCompute(payload) {
+  // smart-resource 可能较重：放宽超时，避免 30s 误判失败。
+  return apiPostWithTimeout('/planning/smart-resource/compute', payload ?? {}, 120000);
 }
 
 /**

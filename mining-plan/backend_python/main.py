@@ -1,25 +1,43 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import uvicorn
 import os
 import time
 from datetime import datetime
+from pathlib import Path
 
-from routers import upload, boreholes, design, score, boundary, geology, succession, gnn_geology
+from routers import upload, boreholes, design, score, boundary, geology, succession, gnn_geology, planning
 from store import store
 from utils.logger import logger, log_api_request
 
 app = FastAPI(title="Mining Design System API", version="2.1")
 
+DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
 # 配置 CORS - 从环境变量读取允许的域名，默认为本地开发地址
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+    if o.strip()
+]
+
+# 允许局域网 IP 访问前端 dev server（例如 http://10.4.81.4:5173）
+# 可通过环境变量覆盖，例如：ALLOWED_ORIGIN_REGEX=^http://(localhost|127\\.0\\.0\\.1|10\\.\\d+\\.\\d+\\.\\d+):5173$
+ALLOWED_ORIGIN_REGEX = os.getenv(
+    "ALLOWED_ORIGIN_REGEX",
+    r"^http://(localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3}):5173$",
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
+    # 允许 OPTIONS 预检，否则浏览器在 POST/JSON 时可能表现为“拒绝访问/跨域失败”
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -45,10 +63,18 @@ app.include_router(boundary.router, prefix="/api/boundary", tags=["Boundary"])
 app.include_router(geology.router, prefix="/api/geology", tags=["Geology"])
 app.include_router(succession.router, prefix="/api/succession", tags=["Succession"])
 app.include_router(gnn_geology.router, prefix="/api/gnn", tags=["GNN Geology"])
+app.include_router(planning.router, prefix="/api", tags=["Planning"])
 
 
 @app.get("/")
 async def root():
+    try:
+        index_html = DIST_DIR / "index.html"
+        if index_html.exists() and index_html.is_file():
+            return FileResponse(str(index_html))
+    except Exception:
+        # ignore
+        pass
     return {"message": "Mining Design System Python Backend is running", "version": "2.1"}
 
 
@@ -61,6 +87,11 @@ async def health_check():
         "version": "2.1",
         "database": "sqlite"
     }
+
+
+@app.get("/api/health")
+async def api_health_check():
+    return await health_check()
 
 
 @app.get("/api/project")
@@ -82,3 +113,13 @@ if __name__ == "__main__":
     logger.info(f"允许的CORS域名: {ALLOWED_ORIGINS}")
     logger.info("="*50)
     uvicorn.run("main:app", host="0.0.0.0", port=3001, reload=True)
+
+
+# 可选：在同一端口(3001)上直接提供前端静态页面（用于局域网/演示环境，避免 5173 被拦）
+# 说明：必须放在所有 /api 路由之后，避免静态挂载吞掉 API。
+try:
+    if DIST_DIR.exists() and DIST_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="frontend")
+except Exception:
+    # ignore
+    pass

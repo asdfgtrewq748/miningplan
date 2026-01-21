@@ -47,6 +47,7 @@ import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
 import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
 import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
+import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort } from './api.js';
 
 const DEFAULT_PLANNING_PARAMS = {
   mineCapacity: '',
@@ -101,6 +102,9 @@ const App = () => {
   const [planningOptMode, setPlanningOptMode] = useState('efficiency'); // 'efficiency' | 'disturbance' | 'recovery' | 'weighted'
   const [planningOptWeights, setPlanningOptWeights] = useState({ efficiency: 0.34, disturbance: 0.33, recovery: 0.33 });
 
+  // Worker 代际：用于在 worker 崩溃/卡死后强制重建（避免 busy/inFlightKey 永久卡住导致“怎么点都不算”）
+  const [planningWorkerGen, setPlanningWorkerGen] = useState(0);
+
   // 工程效率最优（候选 + 缓存 + 联动绘图）
   const efficiencyWorkerRef = useRef(null);
   const resourceWorkerRef = useRef(null);
@@ -113,6 +117,16 @@ const App = () => {
   // 记住“用户手动选择的候选方案”（按 cacheKey 维度），避免 refine/full 回包把选中态强行覆盖回 best。
   const efficiencySelectedSigByKeyRef = useRef(new Map());
 
+  // Worker 超时兜底：若 worker 未回任何 progress/result，自动复位并重建 worker
+  const efficiencyWatchdogRef = useRef({ timer: null, reqSeq: 0, cacheKey: '' });
+
+  // smart-efficiency 后端执行：
+  // - result handler ref：让后端回包注入不依赖 worker.onmessage 绑定时序
+  // - progress timer：后端无 progress 时提供“伪进度”避免 UI 卡死感
+  const efficiencyResultHandlerRef = useRef(null);
+  const efficiencyBackendProgressRef = useRef({ timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' });
+  const efficiencyForceTop1Ref = useRef({ reqSeq: 0, cacheKey: '' });
+
   const [planningEfficiencyBusy, setPlanningEfficiencyBusy] = useState(false);
   const [planningEfficiencyResult, setPlanningEfficiencyResult] = useState(null);
   const [planningEfficiencyCacheKey, setPlanningEfficiencyCacheKey] = useState('');
@@ -120,8 +134,67 @@ const App = () => {
   const planningEfficiencyCacheKeyRef = useRef('');
   const [planningEfficiencySelectedSig, setPlanningEfficiencySelectedSig] = useState('');
   const [planningInnerOmegaOverrideWb, setPlanningInnerOmegaOverrideWb] = useState(null);
+
+  // 智能规划：展示图层按模式隔离（避免后台回包/切换模式时互相污染展示）
+  const planningDisplayByModeRef = useRef({
+    efficiency: { loops: [], unionLoops: [], innerOmegaWb: null, showBoundaryOverlay: true, showOutline: true },
+    recovery: { loops: [], unionLoops: [], innerOmegaWb: null, showBoundaryOverlay: true, showOutline: true },
+  });
+
+  const setPlanningDisplayForMode = (mode, next, { applyIfActive = true } = {}) => {
+    const m = (String(mode) === 'recovery') ? 'recovery' : 'efficiency';
+    const prev = planningDisplayByModeRef.current?.[m] ?? {};
+    const merged = {
+      loops: Object.prototype.hasOwnProperty.call(next ?? {}, 'loops') ? (next?.loops ?? []) : (prev?.loops ?? []),
+      unionLoops: Object.prototype.hasOwnProperty.call(next ?? {}, 'unionLoops') ? (next?.unionLoops ?? []) : (prev?.unionLoops ?? []),
+      innerOmegaWb: Object.prototype.hasOwnProperty.call(next ?? {}, 'innerOmegaWb') ? (next?.innerOmegaWb ?? null) : (prev?.innerOmegaWb ?? null),
+      showBoundaryOverlay: Object.prototype.hasOwnProperty.call(next ?? {}, 'showBoundaryOverlay') ? Boolean(next?.showBoundaryOverlay) : Boolean(prev?.showBoundaryOverlay),
+      showOutline: Object.prototype.hasOwnProperty.call(next ?? {}, 'showOutline') ? Boolean(next?.showOutline) : Boolean(prev?.showOutline),
+    };
+    planningDisplayByModeRef.current = {
+      ...(planningDisplayByModeRef.current ?? {}),
+      [m]: merged,
+    };
+
+    if (!applyIfActive) return;
+    if (mainViewMode !== 'planning') return;
+    if (planningOptMode !== m) return;
+
+    try {
+      setPlannedWorkfaceLoopsWorld(cloneJson(merged.loops ?? []));
+      setPlannedWorkfaceUnionLoopsWorld(cloneJson(merged.unionLoops ?? []));
+      setPlanningInnerOmegaOverrideWb(merged.innerOmegaWb ?? null);
+      if (merged.showOutline) setShowWorkfaceOutline(true);
+      if (merged.showBoundaryOverlay) setShowPlanningBoundaryOverlay(true);
+    } catch {
+      // ignore
+    }
+  };
+
+  const applyPlanningDisplayForActiveMode = () => {
+    const m = (String(planningOptMode) === 'recovery') ? 'recovery' : 'efficiency';
+    const cur = planningDisplayByModeRef.current?.[m] ?? { loops: [], unionLoops: [], innerOmegaWb: null, showBoundaryOverlay: true, showOutline: true };
+    try {
+      setPlannedWorkfaceLoopsWorld(cloneJson(cur.loops ?? []));
+      setPlannedWorkfaceUnionLoopsWorld(cloneJson(cur.unionLoops ?? []));
+      setPlanningInnerOmegaOverrideWb(cur.innerOmegaWb ?? null);
+      setShowWorkfaceOutline(Boolean(cur.showOutline));
+      setShowPlanningBoundaryOverlay(Boolean(cur.showBoundaryOverlay));
+    } catch {
+      // ignore
+    }
+  };
+
+  // 切换“工程效率/资源回收”时，只切换展示，不让另一模式的旧图层串到当前模块
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    applyPlanningDisplayForActiveMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainViewMode, planningOptMode]);
+
   const [planningEfficiencyShowAllCandidates, setPlanningEfficiencyShowAllCandidates] = useState(false);
   const [planningEfficiencyProgress, setPlanningEfficiencyProgress] = useState(null);
+  const [planningEfficiencyComputeSource, setPlanningEfficiencyComputeSource] = useState(''); // backend | worker | cache
   const planningEfficiencyProgressLastTsRef = useRef(0);
   // 显式点击触发时：至少展示一小段时间的“计算中…”，避免结果过快返回导致肉眼看不到。
   const planningEfficiencyMinBusyUntilRef = useRef(0);
@@ -140,6 +213,22 @@ const App = () => {
   const recoveryPendingRefineAxisRef = useRef('');
   const recoveryInFlightKeyRef = useRef('');
   const recoverySelectedSigByKeyRef = useRef(new Map());
+  // 资源回收：记录“用户是否手动改选过候选”（按 cacheKey）。
+  // 注意：recoverySelectedSigByKeyRef 既会被自动选中写入，也会被手动选择写入；
+  // 因此需要单独的 userTouched 标记，才能在“计算完成默认Top1 / TONNAGE重排自动跟随”时不误判。
+  const recoveryUserTouchedSelectionByKeyRef = useRef(new Map());
+  // 资源回收：候选惰性补残煤（按 cacheKey + signature + tier 维度去重）
+  const recoveryRefineInFlightRef = useRef(new Map());
+  const [planningRecoveryRefineBusyBySig, setPlanningRecoveryRefineBusyBySig] = useState({});
+  const [planningRecoveryRefineLastBySig, setPlanningRecoveryRefineLastBySig] = useState({});
+
+  const recoveryWatchdogRef = useRef({ timer: null, reqSeq: 0, cacheKey: '' });
+
+  // smart-resource 后端执行（与 smart-efficiency 同策略）
+  const recoveryResultHandlerRef = useRef(null);
+  const recoveryBackendProgressRef = useRef({ timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' });
+  const recoveryForceTop1Ref = useRef({ reqSeq: 0, cacheKey: '' });
+  const recoveryAutoSelectAfterTonnageRef = useRef({ reqSeq: 0, cacheKey: '', sig: '' });
 
   const [planningRecoveryBusy, setPlanningRecoveryBusy] = useState(false);
   const [planningRecoveryResult, setPlanningRecoveryResult] = useState(null);
@@ -148,6 +237,7 @@ const App = () => {
   const [planningRecoverySelectedSig, setPlanningRecoverySelectedSig] = useState('');
   const [planningRecoveryShowAllCandidates, setPlanningRecoveryShowAllCandidates] = useState(false);
   const [planningRecoveryProgress, setPlanningRecoveryProgress] = useState(null);
+  const [planningRecoveryComputeSource, setPlanningRecoveryComputeSource] = useState(''); // backend | worker | cache
   const planningRecoveryProgressLastTsRef = useRef(0);
   const planningRecoveryMinBusyUntilRef = useRef(0);
   const planningRecoveryMinBusyReqSeqRef = useRef(0);
@@ -157,6 +247,9 @@ const App = () => {
   const recoveryLastResponseRef = useRef(null);
   const [planningRecoveryDebugOpen, setPlanningRecoveryDebugOpen] = useState(false);
   const [planningRecoveryDebugText, setPlanningRecoveryDebugText] = useState('');
+
+  // 后端 TONNAGE 排序：避免过期回包覆盖新结果
+  const recoveryTonnageSeqRef = useRef(0);
 
   // “启动智能采区规划”：首次默认工程效率；后续按多目标 tab 选择触发
   const planningHasStartedRef = useRef(false);
@@ -602,47 +695,215 @@ const App = () => {
     }
   };
 
-  const applyRecoveryCandidateBySignature = (sig, result) => {
+  const applyRecoveryCandidateBySignature = (sig, result, { preferPatched = false } = {}) => {
     const r = result ?? planningRecoveryResult;
     if (!r?.candidates?.length) return;
     const picked = r.candidates.find((c) => String(c?.signature) === String(sig)) ?? r.candidates[0];
     if (!picked) return;
 
-    try {
-      const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
-      const nRange = r?.nRange;
-      setPlanningParams((p) => ({
-        ...p,
-        faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
-        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
-        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
-      }));
-    } catch {
-      // ignore
+    const isActive = (mainViewMode === 'planning' && planningOptMode === 'recovery');
+
+    if (isActive) {
+      try {
+        const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
+        const nRange = r?.nRange;
+        setPlanningParams((p) => ({
+          ...p,
+          faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
+          faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
+          faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
+        }));
+      } catch {
+        // ignore
+      }
     }
 
     setPlanningRecoverySelectedSig(String(picked.signature ?? ''));
-    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+    const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
+    if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
-    let loops = [];
-    // 资源回收验收口径：必须裁剪到粉色 Ω 内再展示（超出部分不画）
-    if (Array.isArray(picked?.render?.clippedFacesLoops) && picked.render.clippedFacesLoops.length) {
-      loops = picked.render.clippedFacesLoops;
-    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld) && picked.render.plannedWorkfaceLoopsWorld.length) {
-      loops = picked.render.plannedWorkfaceLoopsWorld;
-    } else if (Array.isArray(picked?.render?.rectLoops)) {
-      loops = picked.render.rectLoops
-        .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
-        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
-    } else if (Array.isArray(picked?.render?.facesLoops)) {
-      loops = picked.render.facesLoops;
+    const render = (preferPatched && picked?.renderPatched && typeof picked.renderPatched === 'object')
+      ? picked.renderPatched
+      : (picked?.render ?? {});
+
+    // 兼容：后端/worker 可能把 loops 挂在 candidate 顶层（facesLoops / plannedWorkfaceLoopsWorld / plannedUnionLoopsWorld）。
+    // 若这里取不到 loops，会导致“已选中但图上不显示”（plannedWorkfaceLoopsWorld 为空）。
+    const candLoopsWorld = (() => {
+      const fromRender = (rr) => {
+        if (Array.isArray(rr?.clippedFacesLoops) && rr.clippedFacesLoops.length) return rr.clippedFacesLoops;
+        if (Array.isArray(rr?.plannedWorkfaceLoopsWorld) && rr.plannedWorkfaceLoopsWorld.length) return rr.plannedWorkfaceLoopsWorld;
+        if (Array.isArray(rr?.facesLoops) && rr.facesLoops.length) return rr.facesLoops;
+        if (Array.isArray(rr?.rectLoops) && rr.rectLoops.length) {
+          return rr.rectLoops
+            .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+            .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+        }
+        return [];
+      };
+
+      // 资源回收验收口径：优先裁剪到粉色 Ω 内再展示（超出部分不画）。
+      const a = fromRender(render);
+      if (a.length) return a;
+      if (Array.isArray(picked?.facesLoops) && picked.facesLoops.length) return picked.facesLoops;
+      if (Array.isArray(picked?.plannedWorkfaceLoopsWorld) && picked.plannedWorkfaceLoopsWorld.length) return picked.plannedWorkfaceLoopsWorld;
+      if (Array.isArray(picked?.clippedFacesLoops) && picked.clippedFacesLoops.length) return picked.clippedFacesLoops;
+      return [];
+    })();
+
+    const unionLoops = (() => {
+      if (Array.isArray(render?.plannedUnionLoopsWorld)) return render.plannedUnionLoopsWorld;
+      if (Array.isArray(picked?.plannedUnionLoopsWorld)) return picked.plannedUnionLoopsWorld;
+      return [];
+    })();
+
+    const loops = candLoopsWorld;
+    setPlanningDisplayForMode('recovery', {
+      loops,
+      unionLoops,
+      innerOmegaWb,
+      showOutline: true,
+      showBoundaryOverlay: true,
+    }, { applyIfActive: true });
+    if (isActive) {
+      setShowWorkfaceOutline(true);
+      setShowPlanningBoundaryOverlay(true);
     }
-    setPlannedWorkfaceLoopsWorld(cloneJson(loops));
-    // 绘制：用 union 外轮廓覆盖 stroke，可消除相邻工作面共享边导致的重线
-    const unionLoops = Array.isArray(picked?.render?.plannedUnionLoopsWorld) ? picked.render.plannedUnionLoopsWorld : [];
-    setPlannedWorkfaceUnionLoopsWorld(cloneJson(unionLoops));
-    setShowWorkfaceOutline(true);
-    setShowPlanningBoundaryOverlay(true);
+  };
+
+  const normalizeRecoveryPayloadForUI = (payload) => {
+    const p = payload;
+    if (!p?.ok) return p;
+
+    const rows0 = (p?.table && typeof p.table === 'object' && Array.isArray(p.table.rows)) ? p.table.rows.slice() : [];
+    const cand0 = Array.isArray(p?.candidates) ? p.candidates.slice() : [];
+
+    const fullCoverMinPct = 99.5;
+    const isQualifiedRow = (row) => {
+      const covPct = Number(row?.coveragePct);
+      if (Number.isFinite(covPct)) return covPct >= (fullCoverMinPct - 1e-6);
+      const covRatio = Number(row?.coverageRatio);
+      if (Number.isFinite(covRatio)) return covRatio >= (0.995 - 1e-9);
+      return row?.fullCoverAchieved === true;
+    };
+    const numOr = (v, fallback = 0) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+
+    const rowsSorted = (() => {
+      if (!rows0.length) return rows0;
+
+      // 优先尊重 worker 的“排序后 topK”（rows.rank / candidates 顺序已是最优口径）。
+      // 否则会出现：workerBestKey 与 UI 默认展示不一致（看起来“没显示最优”）。
+      const hasRank = rows0.some((row) => Number.isFinite(Number(row?.rank)));
+      if (hasRank) {
+        const decorated = rows0.map((row, i) => ({ row, i, rank: Number(row?.rank) }));
+        decorated.sort((a, b) => (
+          (a.rank - b.rank)
+          || (a.i - b.i)
+        ));
+        return decorated.map((x) => x.row);
+      }
+
+      // 兼容旧回包：无 rank 时才使用启发式排序。
+      const decorated = rows0.map((row, i) => ({
+        row,
+        i,
+        ok: isQualifiedRow(row) ? 1 : 0,
+        score: numOr(row?.recoveryScore, -Infinity),
+        cov: numOr(row?.coveragePct, -Infinity),
+        ton: numOr(row?.tonnageTotal, -Infinity),
+        n: numOr(row?.N, Infinity),
+      }));
+      decorated.sort((a, b) => (
+        (b.ok - a.ok)
+        || (b.score - a.score)
+        || (b.cov - a.cov)
+        || (b.ton - a.ton)
+        || (a.n - b.n)
+        || (a.i - b.i)
+      ));
+      return decorated.map((x) => x.row);
+    })();
+
+    const candidatesSorted = (() => {
+      if (!cand0.length) return cand0;
+      if (!rowsSorted.length) return cand0;
+      const pos = new Map();
+      for (let i = 0; i < rowsSorted.length; i++) {
+        const sig = String(rowsSorted[i]?.signature ?? '').trim();
+        if (sig) pos.set(sig, i);
+      }
+      const decorated = cand0.map((c, i) => {
+        const sig = String(c?.signature ?? '').trim();
+        const p0 = pos.has(sig) ? Number(pos.get(sig)) : Infinity;
+        return { c, i, p: p0 };
+      });
+      decorated.sort((a, b) => (a.p - b.p) || (a.i - b.i));
+      return decorated.map((x) => x.c);
+    })();
+
+    const nextTable = (p?.table && typeof p.table === 'object')
+      ? { ...(p.table ?? {}), rows: rowsSorted }
+      : p?.table;
+
+    return {
+      ...(p ?? {}),
+      candidates: candidatesSorted,
+      table: nextTable,
+    };
+  };
+
+  const requestRefineRecoveryCandidate = (signature, tier = 'LIGHT') => {
+    const sig = String(signature ?? '').trim();
+    if (!sig) return;
+    if (!resourceWorkerRef.current) return;
+
+    const cacheKey = planningRecoveryCacheKey || buildRecoveryCacheKey();
+    if (!cacheKey) return;
+
+    const tierNorm = String(tier ?? 'LIGHT').toUpperCase().trim();
+    const k = `${cacheKey}|${sig}|${tierNorm}`;
+    if (recoveryRefineInFlightRef.current.get(k)) return;
+
+    recoveryRefineInFlightRef.current.set(k, true);
+    setPlanningRecoveryRefineBusyBySig((prev) => ({ ...(prev ?? {}), [sig]: tierNorm }));
+    workerLog('[worker][recovery] postMessage(refine)', { cacheKey, signature: sig, tier: tierNorm });
+
+    resourceWorkerRef.current.postMessage({
+      type: 'refine',
+      payload: {
+        cacheKey,
+        signature: sig,
+        tier: tierNorm,
+      },
+    });
+  };
+
+  const formatRecoveryPatchReason = ({ tier, achieved, reasonCode, fallbackReason, busyTier }) => {
+    const code = String(reasonCode || '').trim();
+    const fb = String(fallbackReason || '').trim();
+    const t = String(tier || 'NONE').trim();
+    const bt = String(busyTier || '').trim();
+
+    if (bt) return `补残煤中(${bt})…`;
+
+    const labels = {
+      ALREADY_FULL_COVER: '已达标无需补残煤',
+      OMEGA_POLY_MISSING: '缺少Ω边界数据',
+      FACES_LOOPS_EMPTY: '缺少裁剪工作面多边形',
+      RESIDUAL_EMPTY: '残煤为空（无需补/几何退化）',
+      RESIDUAL_POLYS_EMPTY: '残煤几何提取失败（差分后多边形退化）',
+      EFF0_NULL: '基线覆盖率计算失败（几何异常）',
+      CACHE_MISS: '缓存未命中（结果已被刷新）',
+      CAND_NOT_FOUND: '候选未找到（签名不匹配）',
+      ALREADY_REFINED: '已补到更高预算（无需重复）',
+    };
+    const label = labels[code] || (code ? code : fb);
+
+    if (t && t !== 'NONE') {
+      if (achieved === true) return `补残煤:${t}（达标）${label ? `：${label}` : ''}`;
+      if (achieved === false) return `补残煤:${t}（未达标）${label ? `：${label}` : ''}`;
+      return `补残煤:${t}${label ? `：${label}` : ''}`;
+    }
+    return label ? `未补：${label}` : '未补';
   };
 
   const buildRecoveryDebugCopyPayload = (result, selectedSig) => {
@@ -763,6 +1024,11 @@ const App = () => {
         sumAbsDeltaDeg: (c?.sumAbsDeltaDeg ?? m?.sumAbsDeltaDeg ?? null),
         smoothnessDeg: (c?.smoothnessDeg ?? m?.smoothnessDeg ?? null),
         fullCoverPatch: (m?.fullCoverPatch ?? null),
+
+        // Scheme C：base+patched 双版本补残煤信息
+        patchBudgetTier: (c?.patchBudgetTier ?? null),
+        fullCoverAchieved_patched: (Object.prototype.hasOwnProperty.call(c ?? {}, 'fullCoverAchieved_patched') ? c.fullCoverAchieved_patched : null),
+        patchStats: (m?.patchStats ?? null),
 
         // 诊断：排查“煤柱区边界短线/重线”
         renderStats: {
@@ -1112,22 +1378,27 @@ const App = () => {
     const picked = r.candidates.find((c) => String(c?.signature) === String(sig)) ?? r.candidates[0];
     if (!picked) return;
 
+    const isActive = (mainViewMode === 'planning' && planningOptMode === 'efficiency');
+
     // 方案C：回填“采区参数编辑器”的工作面个数滑块（仅用于显示/切换，不参与 cacheKey）
-    try {
-      const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
-      const nRange = r?.nRange;
-      setPlanningParams((p) => ({
-        ...p,
-        faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
-        faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
-        faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
-      }));
-    } catch {
-      // ignore
+    if (isActive) {
+      try {
+        const pickedN = Number(picked?.N ?? picked?.metrics?.faceCount);
+        const nRange = r?.nRange;
+        setPlanningParams((p) => ({
+          ...p,
+          faceCountSelected: Number.isFinite(pickedN) ? String(Math.min(20, Math.max(1, Math.round(pickedN)))) : p.faceCountSelected,
+          faceCountSuggestedMin: (nRange?.nMin != null && Number.isFinite(Number(nRange.nMin))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMin))))) : p.faceCountSuggestedMin,
+          faceCountSuggestedMax: (nRange?.nMax != null && Number.isFinite(Number(nRange.nMax))) ? String(Math.min(20, Math.max(1, Math.round(Number(nRange.nMax))))) : p.faceCountSuggestedMax,
+        }));
+      } catch {
+        // ignore
+      }
     }
 
     setPlanningEfficiencySelectedSig(String(picked.signature ?? ''));
-    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+    const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
+    if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
     // 工程效率最优：蓝色图层必须使用“设计矩形”（规则矩形），裁切多边形仅解释不参与评分。
     let loops = [];
@@ -1140,10 +1411,17 @@ const App = () => {
     } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld)) {
       loops = picked.render.plannedWorkfaceLoopsWorld;
     }
-    setPlannedWorkfaceLoopsWorld(cloneJson(loops));
-    setPlannedWorkfaceUnionLoopsWorld([]);
-    setShowWorkfaceOutline(true);
-    setShowPlanningBoundaryOverlay(true);
+    setPlanningDisplayForMode('efficiency', {
+      loops,
+      unionLoops: [],
+      innerOmegaWb,
+      showOutline: true,
+      showBoundaryOverlay: true,
+    }, { applyIfActive: true });
+    if (isActive) {
+      setShowWorkfaceOutline(true);
+      setShowPlanningBoundaryOverlay(true);
+    }
 
     // 开发期自检输出：看不到时先确认“算出来”还是“没画出来”。
     try {
@@ -1168,8 +1446,11 @@ const App = () => {
     const picked = candidate;
     if (!picked) return;
 
+    const isActive = (mainViewMode === 'planning' && planningOptMode === 'efficiency');
+
     // 预览不改变“真实候选选中态”（4A），只更新绘图层
-    setPlanningInnerOmegaOverrideWb(Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null);
+    const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
+    if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
     let loops = [];
     if (Array.isArray(picked?.render?.rectLoops)) {
@@ -1183,10 +1464,18 @@ const App = () => {
     }
 
     if (Array.isArray(loops) && loops.length > 0) {
-      setPlannedWorkfaceLoopsWorld(cloneJson(loops));
-      setPlannedWorkfaceUnionLoopsWorld([]);
-      setShowWorkfaceOutline(true);
-      setShowPlanningBoundaryOverlay(true);
+      // preview 也写入 efficiency 的展示缓存，但只在 active 时应用到主图
+      setPlanningDisplayForMode('efficiency', {
+        loops,
+        unionLoops: [],
+        innerOmegaWb,
+        showOutline: true,
+        showBoundaryOverlay: true,
+      }, { applyIfActive: true });
+      if (isActive) {
+        setShowWorkfaceOutline(true);
+        setShowPlanningBoundaryOverlay(true);
+      }
     }
   };
 
@@ -1206,6 +1495,21 @@ const App = () => {
     const cacheKey = buildEfficiencyCacheKey();
     planningEfficiencyCacheKeyRef.current = String(cacheKey);
     setPlanningEfficiencyCacheKey(cacheKey);
+
+    // 用户显式点击触发：默认展示 Top1 方案（不恢复历史手动选择）
+    // 说明：否则同一 cacheKey 下曾手选过的方案会被“记忆选中态”覆盖，表现为“不默认显示第一个”。
+    const explicitForeground = Boolean(force && !background);
+    if (explicitForeground) {
+      try {
+        efficiencySelectedSigByKeyRef.current.delete(cacheKey);
+        const cached0 = efficiencyCacheRef.current.get(cacheKey);
+        if (cached0?.selectedSig) {
+          efficiencyCacheRef.current.set(cacheKey, { ...cached0, selectedSig: '' });
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     // 关闭 fast：不再使用 fast+refine 流程
     if (fastFinal && refineFinal) {
@@ -1267,8 +1571,7 @@ const App = () => {
 
     // 用户显式点击“启动智能采区规划”时，即使 cacheKey 不变也应重新计算，避免第二次点击直接命中缓存导致
     // UI 不出现“计算中…”（看起来像没响应）。
-    const explicitForeground = Boolean(force && !background);
-    const ignoreCacheFinal = Boolean(ignoreCache || explicitForeground);
+    const ignoreCacheFinal = Boolean(ignoreCache);
 
     const cached = ignoreCacheFinal ? null : efficiencyCacheRef.current.get(cacheKey);
     // 重要：历史版本曾出现 request.axis=y 但返回 axis=x 的错误缓存；这里做一致性校验避免“错缓存复活”。
@@ -1292,6 +1595,7 @@ const App = () => {
 
     if (!ignoreCacheFinal && cachedLooksConsistent) {
       workerLog('[worker][efficiency] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
+      setPlanningEfficiencyComputeSource('cache');
       setPlanningEfficiencyResult(cached.result);
       try {
         efficiencyLastResponseRef.current = cached.result;
@@ -1360,6 +1664,13 @@ const App = () => {
 
     const reqSeq = (efficiencyReqSeqRef.current += 1);
     if (explicitForeground) {
+      try {
+        efficiencyForceTop1Ref.current = { reqSeq, cacheKey: String(cacheKey) };
+      } catch {
+        // ignore
+      }
+    }
+    if (explicitForeground) {
       planningEfficiencyMinBusyUntilRef.current = Date.now() + 260;
       planningEfficiencyMinBusyReqSeqRef.current = reqSeq;
     }
@@ -1367,6 +1678,7 @@ const App = () => {
     setPlanningEfficiencyBusy(true);
     setPlanningEfficiencyProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
     planningEfficiencyProgressLastTsRef.current = 0;
+    setPlanningEfficiencyComputeSource('backend');
 
     // 计算触发时尽量保证“计算中…”提示条可见：
     // - 前台触发：总是置为“计算中”，避免 UI/调试面板继续展示上一轮响应，同时清空旧图。
@@ -1375,8 +1687,7 @@ const App = () => {
     if (shouldClearLayers) {
       try {
         setPlanningEfficiencySelectedSig('');
-        setPlannedWorkfaceLoopsWorld([]);
-        setPlannedWorkfaceUnionLoopsWorld([]);
+        setPlanningDisplayForMode('efficiency', { loops: [], unionLoops: [], innerOmegaWb: null }, { applyIfActive: true });
       } catch {
         // ignore
       }
@@ -1492,6 +1803,264 @@ const App = () => {
 
     // 标记“正在计算”的 key（用于二次点击判断是否需要重算）
     efficiencyInFlightKeyRef.current = String(cacheKey);
+
+    // watchdog：若 worker 卡死/无回包，避免 busy 永久为 true 导致后续点击全部被短路
+    try {
+      const wd = efficiencyWatchdogRef.current;
+      if (wd?.timer) clearTimeout(wd.timer);
+      const reqSeqNow = reqSeq;
+      const cacheKeyNow = String(cacheKey);
+      efficiencyWatchdogRef.current = {
+        timer: setTimeout(() => {
+          try {
+            const latestSeq = Number(efficiencyReqSeqRef.current);
+            const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+            if (Number.isFinite(latestSeq) && reqSeqNow !== latestSeq) return;
+            if (!inFlightKey) return;
+            if (inFlightKey && inFlightKey !== cacheKeyNow) return;
+
+            console.error('[worker][efficiency] watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+            efficiencyInFlightKeyRef.current = '';
+            setPlanningEfficiencyBusy(false);
+            setPlanningEfficiencyProgress(null);
+            setPlanningEfficiencyPreview(null);
+            setPlanningEfficiencyPreviewBusy(false);
+            setPlanningEfficiencyResult({
+              ok: false,
+              mode: 'smart-efficiency',
+              message: '工程效率计算超时：worker 无响应（已自动重建）。请再次点击计算。',
+              failedReason: 'WORKER_TIMEOUT',
+              candidates: [],
+            });
+            setPlanningWorkerGen((g) => g + 1);
+            efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+        }, 45000),
+        reqSeq: reqSeqNow,
+        cacheKey: cacheKeyNow,
+      };
+    } catch {
+      // ignore
+    }
+    // 2026-01-21：工程效率最优优先走后端 compute（复用前端 worker 算法口径），失败回退到前端 worker。
+    // 说明：为了最大程度复用现有 UI/缓存/绘图/断言逻辑，这里把后端回包“注入”到现有 worker.onmessage handler。
+    try {
+      const tryBackend = async () => {
+        const workerAtStart = efficiencyWorkerRef.current;
+
+        const fallbackToWorker = (reason) => {
+          setPlanningEfficiencyComputeSource('worker');
+          try {
+            const w = workerAtStart || efficiencyWorkerRef.current;
+            if (w && typeof w.postMessage === 'function') {
+              w.postMessage(msg);
+              return;
+            }
+          } catch (e) {
+            console.warn('[smart-efficiency] fallback postMessage failed', e);
+          }
+
+          // 极端情况：worker 已被重建为 null（或被 terminate）且尚未就绪
+          console.error('[smart-efficiency] fallback failed: worker missing', { reqSeq, cacheKey, axis, reason });
+          try {
+            efficiencyInFlightKeyRef.current = '';
+          } catch {
+            // ignore
+          }
+          setPlanningEfficiencyBusy(false);
+          setPlanningEfficiencyProgress(null);
+          setPlanningEfficiencyPreview(null);
+          setPlanningEfficiencyPreviewBusy(false);
+          setPlanningEfficiencyResult({
+            ok: false,
+            mode: 'smart-efficiency',
+            message: '工程效率计算失败：worker 未就绪（可能刚被重建）。请再次点击计算。',
+            failedReason: 'WORKER_MISSING',
+            candidates: [],
+          });
+          // 触发代际重建，确保 worker 重新创建并绑定 handler
+          try {
+            setPlanningWorkerGen((g) => g + 1);
+          } catch {
+            // ignore
+          }
+        };
+
+        try {
+          console.log('[smart-efficiency] backend compute start', { reqSeq, cacheKey, axis });
+
+          // 后端无 progress 回包：用“伪进度”驱动 UI，并把 watchdog 延长到匹配后端超时。
+          try {
+            const bp0 = efficiencyBackendProgressRef.current;
+            if (bp0?.timer) clearInterval(bp0.timer);
+            efficiencyBackendProgressRef.current = { timer: null, startedAt: Date.now(), reqSeq, cacheKey: String(cacheKey) };
+
+            // 覆盖默认 45s watchdog（后端请求最大 120s），避免误触发导致“图不出”。
+            const wd = efficiencyWatchdogRef.current;
+            if (wd?.timer) clearTimeout(wd.timer);
+            const reqSeqNow = reqSeq;
+            const cacheKeyNow = String(cacheKey);
+            efficiencyWatchdogRef.current = {
+              timer: setTimeout(() => {
+                try {
+                  const latestSeq = Number(efficiencyReqSeqRef.current);
+                  const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+                  if (Number.isFinite(latestSeq) && reqSeqNow !== latestSeq) return;
+                  if (!inFlightKey) return;
+                  if (inFlightKey && inFlightKey !== cacheKeyNow) return;
+
+                  console.error('[smart-efficiency] backend watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+                  efficiencyInFlightKeyRef.current = '';
+                  setPlanningEfficiencyBusy(false);
+                  setPlanningEfficiencyProgress(null);
+                  setPlanningEfficiencyPreview(null);
+                  setPlanningEfficiencyPreviewBusy(false);
+                  setPlanningEfficiencyResult({
+                    ok: false,
+                    mode: 'smart-efficiency',
+                    message: '工程效率计算超时：后端无响应。请再次点击计算，或稍后重试。',
+                    failedReason: 'BACKEND_TIMEOUT',
+                    candidates: [],
+                  });
+                  efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+                } catch {
+                  // ignore
+                }
+              }, 130000),
+              reqSeq: reqSeqNow,
+              cacheKey: cacheKeyNow,
+            };
+
+            const t = setInterval(() => {
+              try {
+                const bp = efficiencyBackendProgressRef.current;
+                if (!bp?.startedAt) return;
+                if (bp.reqSeq !== reqSeqNow) return;
+                if (bp.cacheKey && bp.cacheKey !== cacheKeyNow) return;
+
+                const elapsedMs = Date.now() - bp.startedAt;
+                const pct = Math.max(0, Math.min(95, Math.round((elapsedMs / 40000) * 95)));
+                setPlanningEfficiencyProgress((prev) => ({
+                  ...(prev ?? {}),
+                  percent: pct,
+                  attemptedCombos: prev?.attemptedCombos ?? 0,
+                  feasibleCombos: prev?.feasibleCombos ?? 0,
+                  phase: '后端计算中',
+                }));
+                setPlanningEfficiencyResult((prev) => {
+                  if (!prev || prev.ok) return prev;
+                  if (Number(prev?.reqSeq) !== reqSeqNow) return prev;
+                  const prevKey = String(prev?.cacheKey ?? '');
+                  if (prevKey && prevKey !== cacheKeyNow) return prev;
+                  const nextMsg = `计算中…（${pct}%，后端计算中）`;
+                  const msg0 = String(prev?.message ?? '');
+                  return (msg0 === nextMsg) ? prev : { ...prev, message: nextMsg };
+                });
+              } catch {
+                // ignore
+              }
+            }, 250);
+            efficiencyBackendProgressRef.current = { ...efficiencyBackendProgressRef.current, timer: t };
+          } catch {
+            // ignore
+          }
+
+          const respPayload = await smartEfficiencyCompute(msg.payload);
+
+          // 停止伪进度
+          try {
+            const bp = efficiencyBackendProgressRef.current;
+            if (bp?.timer) clearInterval(bp.timer);
+            efficiencyBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+
+          const handler = efficiencyResultHandlerRef.current;
+          if (typeof handler === 'function') {
+            console.log('[smart-efficiency] backend compute ok (inject to result handler)', { reqSeq, cacheKey });
+            handler(respPayload);
+            return;
+          }
+
+          const handler2 = efficiencyWorkerRef.current?.onmessage;
+          if (typeof handler2 === 'function') {
+            console.log('[smart-efficiency] backend compute ok (inject to worker.onmessage)', { reqSeq, cacheKey });
+            handler2({ data: { type: 'result', payload: respPayload } });
+            return;
+          }
+
+          // 极端兜底：handler 都缺失，则回退 worker
+          console.warn('[smart-efficiency] backend ok but handler missing, fallback to worker', { reqSeq, cacheKey });
+          fallbackToWorker('HANDLER_MISSING');
+        } catch (e) {
+          console.warn('[smart-efficiency] backend compute failed, fallback to worker', e);
+
+          // 停止伪进度（避免与 worker progress 打架）
+          try {
+            const bp = efficiencyBackendProgressRef.current;
+            if (bp?.timer) clearInterval(bp.timer);
+            efficiencyBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+
+          // 回退到 worker：恢复默认 watchdog 窗口（无 progress 更快兜底）
+          try {
+            const wd = efficiencyWatchdogRef.current;
+            if (wd?.timer) clearTimeout(wd.timer);
+            const reqSeqNow = reqSeq;
+            const cacheKeyNow = String(cacheKey);
+            efficiencyWatchdogRef.current = {
+              timer: setTimeout(() => {
+                try {
+                  const latestSeq = Number(efficiencyReqSeqRef.current);
+                  const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+                  if (Number.isFinite(latestSeq) && reqSeqNow !== latestSeq) return;
+                  if (!inFlightKey) return;
+                  if (inFlightKey && inFlightKey !== cacheKeyNow) return;
+
+                  console.error('[worker][efficiency] watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+                  efficiencyInFlightKeyRef.current = '';
+                  setPlanningEfficiencyBusy(false);
+                  setPlanningEfficiencyProgress(null);
+                  setPlanningEfficiencyPreview(null);
+                  setPlanningEfficiencyPreviewBusy(false);
+                  setPlanningEfficiencyResult({
+                    ok: false,
+                    mode: 'smart-efficiency',
+                    message: '工程效率计算超时：worker 无响应（已自动重建）。请再次点击计算。',
+                    failedReason: 'WORKER_TIMEOUT',
+                    candidates: [],
+                  });
+                  setPlanningWorkerGen((g) => g + 1);
+                  efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+                } catch {
+                  // ignore
+                }
+              }, 45000),
+              reqSeq: reqSeqNow,
+              cacheKey: cacheKeyNow,
+            };
+          } catch {
+            // ignore
+          }
+
+          fallbackToWorker('BACKEND_FAILED');
+        }
+      };
+      // 后台重算也走后端（不阻塞 UI 绘图逻辑，最终回包仍由 handler 统一处理）
+      tryBackend().catch((e) => {
+        console.warn('[smart-efficiency] backend compute unexpected rejection', e);
+      });
+      return;
+    } catch {
+      // ignore
+    }
+
+    // fallback（理论上不会走到这里）
     efficiencyWorkerRef.current.postMessage(msg);
   };
 
@@ -1510,6 +2079,7 @@ const App = () => {
     // 否则会一直显示上次手动选的旧方案（例如未补残煤的版本）。
     try {
       recoverySelectedSigByKeyRef.current.delete(cacheKey);
+      recoveryUserTouchedSelectionByKeyRef.current.delete(cacheKey);
       const cached0 = recoveryCacheRef.current.get(cacheKey);
       if (cached0?.selectedSig) {
         recoveryCacheRef.current.set(cacheKey, { ...cached0, selectedSig: '' });
@@ -1526,7 +2096,7 @@ const App = () => {
     }
 
     const explicitForeground = Boolean(force && !background);
-    const ignoreCacheFinal = Boolean(ignoreCache || explicitForeground);
+    const ignoreCacheFinal = Boolean(ignoreCache);
     const cached = ignoreCacheFinal ? null : recoveryCacheRef.current.get(cacheKey);
     workerLog('[worker][recovery] cache-check', { cacheKey, axisNow, force: Boolean(force), fast: Boolean(fast), refine: Boolean(refine), background: Boolean(background) });
     const cachedAxis = String(cached?.result?.axis ?? '');
@@ -1546,34 +2116,33 @@ const App = () => {
 
     if (!ignoreCacheFinal && cachedLooksConsistent) {
       workerLog('[worker][recovery] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
-      setPlanningRecoveryResult(cached.result);
+      setPlanningRecoveryComputeSource('cache');
+      const res = normalizeRecoveryPayloadForUI(cached.result);
+      setPlanningRecoveryResult(res);
       try {
-        recoveryLastResponseRef.current = cached.result;
+        recoveryLastResponseRef.current = res;
       } catch {
         // ignore
       }
-      const rememberedSig = String(recoverySelectedSigByKeyRef.current.get(cacheKey) || '');
-      const rememberedOk = Boolean(
-        rememberedSig
-        && Array.isArray(cached?.result?.candidates)
-        && cached.result.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
-      );
-
-      const sig = (rememberedOk ? rememberedSig : (
-        cached.selectedSig
+      const sig = String(
+        res?.candidates?.[0]?.signature
+        || res?.table?.rows?.[0]?.signature
+        || cached.selectedSig
         || cached.result.bestKey
         || cached.result.selectedCandidateKey
         || cached.result.bestSignature
-        || (cached.result.candidates?.[0]?.signature ?? '')
-      ));
+        || ''
+      );
 
       if (sig) {
         recoverySelectedSigByKeyRef.current.set(cacheKey, String(sig));
+        // cache 命中属于“自动展示”，不算用户手动改选
+        recoveryUserTouchedSelectionByKeyRef.current.delete(cacheKey);
         if (cached?.selectedSig !== String(sig)) {
-          recoveryCacheRef.current.set(cacheKey, { ...cached, selectedSig: String(sig) });
+          recoveryCacheRef.current.set(cacheKey, { ...cached, result: res, selectedSig: String(sig) });
         }
       }
-      applyRecoveryCandidateBySignature(sig, cached.result);
+      applyRecoveryCandidateBySignature(sig, res);
       return;
     }
 
@@ -1633,18 +2202,25 @@ const App = () => {
 
     const reqSeq = (recoveryReqSeqRef.current += 1);
     if (explicitForeground) {
+      try {
+        recoveryForceTop1Ref.current = { reqSeq, cacheKey: String(cacheKey) };
+      } catch {
+        // ignore
+      }
+    }
+    if (explicitForeground) {
       planningRecoveryMinBusyUntilRef.current = Date.now() + 260;
       planningRecoveryMinBusyReqSeqRef.current = reqSeq;
     }
     setPlanningRecoveryBusy(true);
     setPlanningRecoveryProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
     planningRecoveryProgressLastTsRef.current = 0;
+    setPlanningRecoveryComputeSource('backend');
 
     // 计算耗时较长时，旧图会造成误判；这里在真正发起 compute 时先清空绘图层。
     try {
       setPlanningRecoverySelectedSig('');
-      setPlannedWorkfaceLoopsWorld([]);
-      setPlannedWorkfaceUnionLoopsWorld([]);
+      setPlanningDisplayForMode('recovery', { loops: [], unionLoops: [], innerOmegaWb: null }, { applyIfActive: true });
     } catch {
       // ignore
     }
@@ -1813,6 +2389,203 @@ const App = () => {
     }
 
     recoveryInFlightKeyRef.current = String(cacheKey);
+
+    try {
+      const wd = recoveryWatchdogRef.current;
+      if (wd?.timer) clearTimeout(wd.timer);
+      const reqSeqNow = reqSeq;
+      const cacheKeyNow = String(cacheKey);
+      recoveryWatchdogRef.current = {
+        timer: setTimeout(() => {
+          try {
+            const latestSeq = Number(recoveryReqSeqRef.current);
+            const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+            if (Number.isFinite(latestSeq) && reqSeqNow !== latestSeq) return;
+            if (!inFlightKey) return;
+            if (inFlightKey && inFlightKey !== cacheKeyNow) return;
+
+            console.error('[worker][recovery] watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+            recoveryInFlightKeyRef.current = '';
+            setPlanningRecoveryBusy(false);
+            setPlanningRecoveryProgress(null);
+            setPlanningRecoveryResult({
+              ok: false,
+              mode: 'smart-resource',
+              message: '资源回收计算超时：worker 无响应（已自动重建）。请再次点击计算。',
+              failedReason: 'WORKER_TIMEOUT',
+              candidates: [],
+            });
+            setPlanningRecoveryRefineBusyBySig({});
+            setPlanningRecoveryRefineLastBySig({});
+            try {
+              recoveryRefineInFlightRef.current.clear();
+            } catch {
+              // ignore
+            }
+            setPlanningWorkerGen((g) => g + 1);
+            recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+        }, 60000),
+        reqSeq: reqSeqNow,
+        cacheKey: cacheKeyNow,
+      };
+    } catch {
+      // ignore
+    }
+    // 2026-01-21：资源回收最优优先走后端 compute（复用前端 worker 算法口径），失败回退到前端 worker。
+    try {
+      const tryBackend = async () => {
+        const workerAtStart = resourceWorkerRef.current;
+
+        const fallbackToWorker = (reason) => {
+          setPlanningRecoveryComputeSource('worker');
+          try {
+            const w = workerAtStart || resourceWorkerRef.current;
+            if (w && typeof w.postMessage === 'function') {
+              w.postMessage(msg);
+              return;
+            }
+          } catch (e) {
+            console.warn('[smart-resource] fallback postMessage failed', e);
+          }
+
+          console.error('[smart-resource] fallback failed: worker missing', { reason, reqSeq, cacheKey });
+          try {
+            recoveryInFlightKeyRef.current = '';
+          } catch {
+            // ignore
+          }
+          setPlanningRecoveryBusy(false);
+          setPlanningRecoveryProgress(null);
+          setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: '资源回收计算失败：worker 未就绪（可能刚被重建）。请再次点击计算。', failedReason: 'WORKER_MISSING', candidates: [], tonnageTotal: 0 });
+          try {
+            setPlanningWorkerGen((g) => g + 1);
+          } catch {
+            // ignore
+          }
+        };
+
+        try {
+          console.log('[smart-resource] backend compute start', { reqSeq, cacheKey, axis });
+
+          // 后端无 progress 回包：伪进度 + 延长 watchdog
+          try {
+            const bp0 = recoveryBackendProgressRef.current;
+            if (bp0?.timer) clearInterval(bp0.timer);
+            recoveryBackendProgressRef.current = { timer: null, startedAt: Date.now(), reqSeq, cacheKey: String(cacheKey) };
+
+            const wd = recoveryWatchdogRef.current;
+            if (wd?.timer) clearTimeout(wd.timer);
+            const reqSeqNow = reqSeq;
+            const cacheKeyNow = String(cacheKey);
+            recoveryWatchdogRef.current = {
+              timer: setTimeout(() => {
+                try {
+                  const latestSeq = Number(recoveryReqSeqRef.current);
+                  const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+                  if (Number.isFinite(latestSeq) && reqSeqNow !== latestSeq) return;
+                  if (!inFlightKey) return;
+                  if (inFlightKey && inFlightKey !== cacheKeyNow) return;
+
+                  console.error('[smart-resource] backend watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+                  recoveryInFlightKeyRef.current = '';
+                  setPlanningRecoveryBusy(false);
+                  setPlanningRecoveryProgress(null);
+                  setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: '资源回收计算超时：后端无响应。请再次点击计算，或稍后重试。', failedReason: 'BACKEND_TIMEOUT', candidates: [], tonnageTotal: 0 });
+                  recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+                } catch {
+                  // ignore
+                }
+              }, 130000),
+              reqSeq: reqSeqNow,
+              cacheKey: cacheKeyNow,
+            };
+
+            const t = setInterval(() => {
+              try {
+                const bp = recoveryBackendProgressRef.current;
+                if (!bp?.startedAt) return;
+                if (bp.reqSeq !== reqSeqNow) return;
+                if (bp.cacheKey && bp.cacheKey !== cacheKeyNow) return;
+
+                const elapsedMs = Date.now() - bp.startedAt;
+                const pct = Math.max(0, Math.min(95, Math.round((elapsedMs / 40000) * 95)));
+                setPlanningRecoveryProgress((prev) => ({
+                  ...(prev ?? {}),
+                  percent: pct,
+                  attemptedCombos: prev?.attemptedCombos ?? 0,
+                  feasibleCombos: prev?.feasibleCombos ?? 0,
+                  phase: '后端计算中',
+                }));
+                setPlanningRecoveryResult((prev) => {
+                  if (!prev || prev.ok) return prev;
+                  if (Number(prev?.reqSeq) !== reqSeqNow) return prev;
+                  const prevKey = String(prev?.cacheKey ?? '');
+                  if (prevKey && prevKey !== cacheKeyNow) return prev;
+                  const nextMsg = `计算中…（${pct}%，后端计算中）`;
+                  const msg0 = String(prev?.message ?? '');
+                  return (msg0 === nextMsg) ? prev : { ...prev, message: nextMsg };
+                });
+              } catch {
+                // ignore
+              }
+            }, 250);
+            recoveryBackendProgressRef.current = { ...recoveryBackendProgressRef.current, timer: t };
+          } catch {
+            // ignore
+          }
+
+          const respPayload = await smartResourceCompute(msg.payload);
+
+          // 停止伪进度
+          try {
+            const bp = recoveryBackendProgressRef.current;
+            if (bp?.timer) clearInterval(bp.timer);
+            recoveryBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+
+          const handler = recoveryResultHandlerRef.current;
+          if (typeof handler === 'function') {
+            console.log('[smart-resource] backend compute ok (inject to result handler)', { reqSeq, cacheKey });
+            handler(respPayload);
+            return;
+          }
+
+          const handler2 = resourceWorkerRef.current?.onmessage;
+          if (typeof handler2 === 'function') {
+            console.log('[smart-resource] backend compute ok (inject to worker.onmessage)', { reqSeq, cacheKey });
+            handler2({ data: { type: 'result', payload: respPayload } });
+            return;
+          }
+
+          console.warn('[smart-resource] backend ok but handler missing, fallback to worker', { reqSeq, cacheKey });
+          fallbackToWorker('HANDLER_MISSING');
+        } catch (e) {
+          console.warn('[smart-resource] backend compute failed, fallback to worker', e);
+          try {
+            const bp = recoveryBackendProgressRef.current;
+            if (bp?.timer) clearInterval(bp.timer);
+            recoveryBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+          } catch {
+            // ignore
+          }
+          fallbackToWorker('BACKEND_FAILED');
+        }
+      };
+
+      tryBackend().catch((e) => {
+        console.warn('[smart-resource] backend compute unexpected rejection', e);
+      });
+      return;
+    } catch {
+      // ignore
+    }
+
+    // fallback（理论上不会走到这里）
     resourceWorkerRef.current.postMessage(msg);
   };
 
@@ -1869,6 +2642,21 @@ const App = () => {
   useEffect(() => {
     const terminateWorkers = () => {
       try {
+        const wd1 = efficiencyWatchdogRef.current;
+        if (wd1?.timer) clearTimeout(wd1.timer);
+      } catch {
+        // ignore
+      }
+      try {
+        const wd2 = recoveryWatchdogRef.current;
+        if (wd2?.timer) clearTimeout(wd2.timer);
+      } catch {
+        // ignore
+      }
+      efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+      recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+
+      try {
         efficiencyWorkerRef.current?.terminate?.();
       } catch {
         // ignore
@@ -1921,6 +2709,34 @@ const App = () => {
       const payloadKey = String(payload?.cacheKey ?? '');
       const payloadFast = Boolean(payload?.fast);
 
+      // 后端 compute 一旦进入 result handler，必须停止“伪进度”（否则 UI 会一直显示计算中）
+      try {
+        if (!isRecovery) {
+          const bp = efficiencyBackendProgressRef.current;
+          if (bp?.timer) clearInterval(bp.timer);
+          efficiencyBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+        } else {
+          const bp = recoveryBackendProgressRef.current;
+          if (bp?.timer) clearInterval(bp.timer);
+          recoveryBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+        }
+      } catch {
+        // ignore
+      }
+
+      // 当前请求的 result 一到达就清 watchdog，避免“结果应用延迟”期间误触发 timeout
+      try {
+        const latestSeq0 = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
+        if (!Number.isFinite(payloadSeq) || payloadSeq === latestSeq0) {
+          const wdRef = isRecovery ? recoveryWatchdogRef : efficiencyWatchdogRef;
+          const wd = wdRef.current;
+          if (wd?.timer) clearTimeout(wd.timer);
+          wdRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+        }
+      } catch {
+        // ignore
+      }
+
       try {
         assertPlanningResponse(uiMode, payload);
         console.log('end', { uiMode, requestId: payloadSeq, mode: payload?.mode, cacheKey: payloadKey });
@@ -1957,20 +2773,21 @@ const App = () => {
       if (Number.isFinite(payloadSeq) && payloadSeq !== latestSeq) {
         workerWarn('[worker] discard-stale', { uiMode, payloadSeq, latestSeq, cacheKey: payloadKey, fast: payloadFast, ok: Boolean(payload?.ok) });
         if (!payloadFast && payload?.ok && payloadKey) {
-          const workerBestSig = (payload.candidates?.[0]?.signature ?? '')
-            || payload.bestKey
-            || payload.selectedCandidateKey
-            || payload.bestSignature
+          const payloadUi = isRecovery ? normalizeRecoveryPayloadForUI(payload) : payload;
+          const workerBestSig = (payloadUi.candidates?.[0]?.signature ?? '')
+            || payloadUi.bestKey
+            || payloadUi.selectedCandidateKey
+            || payloadUi.bestSignature
             || '';
 
           const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(payloadKey) || '');
           const rememberedOk = Boolean(
             rememberedSig
-            && Array.isArray(payload?.candidates)
-            && payload.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+            && Array.isArray(payloadUi?.candidates)
+            && payloadUi.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
           );
-          const preferredSig = String((rememberedOk ? rememberedSig : (workerBestSig || '')));
-          (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(payloadKey, { result: payload, selectedSig: preferredSig });
+          const preferredSig = String((isRecovery ? (workerBestSig || '') : (rememberedOk ? rememberedSig : (workerBestSig || ''))));
+          (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(payloadKey, { result: payloadUi, selectedSig: preferredSig });
         }
         return;
       }
@@ -2008,14 +2825,27 @@ const App = () => {
         setPlanningEfficiencyProgress(null);
       }
 
-      if (!payload?.ok) {
-        if (isRecovery) setPlanningRecoveryResult(payload);
-        else setPlanningEfficiencyResult(payload);
+      const payloadUi = isRecovery ? normalizeRecoveryPayloadForUI(payload) : payload;
+
+      if (!payloadUi?.ok) {
+        if (isRecovery) setPlanningRecoveryResult(payloadUi);
+        else setPlanningEfficiencyResult(payloadUi);
+
+        // recovery compute 失败：清理补残煤状态，避免残留
+        if (isRecovery) {
+          setPlanningRecoveryRefineBusyBySig({});
+          setPlanningRecoveryRefineLastBySig({});
+          try {
+            recoveryRefineInFlightRef.current.clear();
+          } catch {
+            // ignore
+          }
+        }
 
         // 关键：即使 candidates=0 / ok=false，只要 worker 已生成 innerOmega，就必须显示粉色可采区
         // 用于诊断“参数过严导致无可行条带组合”的情况。
         try {
-          const omegaLoopsW = getOmegaLoopsFromResult(payload);
+          const omegaLoopsW = getOmegaLoopsFromResult(payloadUi);
           if (omegaLoopsW.length > 0) setShowPlanningBoundaryOverlay(true);
         } catch {
           // ignore
@@ -2023,8 +2853,7 @@ const App = () => {
 
         if (isRecovery) setPlanningRecoverySelectedSig('');
         else setPlanningEfficiencySelectedSig('');
-        setPlannedWorkfaceLoopsWorld([]);
-        setPlannedWorkfaceUnionLoopsWorld([]);
+        setPlanningDisplayForMode(isRecovery ? 'recovery' : 'efficiency', { loops: [], unionLoops: [], innerOmegaWb: null }, { applyIfActive: true });
 
         // efficiency compute 失败：清理预览状态
         if (!isRecovery) {
@@ -2037,50 +2866,265 @@ const App = () => {
             ...(prev ?? {}),
             ts: Date.now(),
             mode: 'smart-efficiency',
-            response: buildEfficiencyDebugResponseSummary(payload, planningEfficiencySelectedSig),
-            lastError: String(payload?.message ?? '工程效率计算失败'),
+            response: buildEfficiencyDebugResponseSummary(payloadUi, planningEfficiencySelectedSig),
+            lastError: String(payloadUi?.message ?? '工程效率计算失败'),
           }));
         }
         return;
       }
 
       const cacheKey = payloadKey || (isRecovery ? buildRecoveryCacheKey() : buildEfficiencyCacheKey());
-      const workerBestSig = (payload.candidates?.[0]?.signature ?? '')
-        || payload.bestKey
-        || payload.selectedCandidateKey
-        || payload.bestSignature
-        || '';
+      const workerBestSig = isRecovery
+        ? (payloadUi.bestKey || payloadUi.selectedCandidateKey || payloadUi.bestSignature || (payloadUi.candidates?.[0]?.signature ?? '') || '')
+        : ((payloadUi.candidates?.[0]?.signature ?? '') || payloadUi.bestKey || payloadUi.selectedCandidateKey || payloadUi.bestSignature || '');
+
+      // 显式点击触发：强制默认展示 Top1（不恢复 rememberedSig）
+      let forceTop1Hit = false;
+      try {
+        const g = isRecovery ? recoveryForceTop1Ref.current : efficiencyForceTop1Ref.current;
+        forceTop1Hit = Boolean(
+          !payloadFast
+          && Number.isFinite(payloadSeq)
+          && Number(payloadSeq) === Number(g?.reqSeq)
+          && String(g?.cacheKey || '') === String(cacheKey)
+        );
+      } catch {
+        forceTop1Hit = false;
+      }
 
       // 优先恢复用户在该 cacheKey 下的手动选择（若仍存在于候选集中）
       const rememberedSig = String((isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).get(cacheKey) || '');
       const rememberedOk = Boolean(
         rememberedSig
-        && Array.isArray(payload?.candidates)
-        && payload.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
+        && Array.isArray(payloadUi?.candidates)
+        && payloadUi.candidates.some((c) => String(c?.signature ?? '') === rememberedSig)
       );
-      const preferredSig = String((rememberedOk ? rememberedSig : (workerBestSig || '')));
+      const preferredSig0 = String((isRecovery ? (workerBestSig || '') : (rememberedOk ? rememberedSig : (workerBestSig || ''))));
+      const preferredSig = String(forceTop1Hit ? (workerBestSig || preferredSig0) : preferredSig0);
 
       // fast 结果只用于“快速出图”，不进入主缓存，避免阻塞 full compute
       if (!payloadFast) {
-        (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(cacheKey, { result: payload, selectedSig: preferredSig });
+        (isRecovery ? recoveryCacheRef.current : efficiencyCacheRef.current).set(cacheKey, { result: payloadUi, selectedSig: preferredSig });
         if (preferredSig) (isRecovery ? recoverySelectedSigByKeyRef.current : efficiencySelectedSigByKeyRef.current).set(cacheKey, preferredSig);
+        // compute 完成后的默认选中属于“自动展示”，不算用户手动改选
+        if (isRecovery) {
+          try {
+            recoveryUserTouchedSelectionByKeyRef.current.delete(cacheKey);
+          } catch {
+            // ignore
+          }
+        }
       }
       if (isRecovery) {
-        setPlanningRecoveryResult(payload);
+        // 新一轮 compute 结果：补残煤状态重新开始计
+        setPlanningRecoveryRefineBusyBySig({});
+        setPlanningRecoveryRefineLastBySig({});
         try {
-          recoveryLastResponseRef.current = payload;
+          recoveryRefineInFlightRef.current.clear();
         } catch {
           // ignore
         }
-        applyRecoveryCandidateBySignature(preferredSig, payload);
+        setPlanningRecoveryResult(payloadUi);
+        try {
+          recoveryLastResponseRef.current = payloadUi;
+        } catch {
+          // ignore
+        }
+        // Scheme C：先画 base，再异步替换 patched（若 Top3 预处理已给出）。
+        applyRecoveryCandidateBySignature(preferredSig, payloadUi, { preferPatched: false });
+        try {
+          const picked = Array.isArray(payloadUi?.candidates)
+            ? (payloadUi.candidates.find((c) => String(c?.signature ?? '') === String(preferredSig)) ?? payloadUi.candidates[0])
+            : null;
+          const hasPatched = Boolean(picked?.renderPatched && (Array.isArray(picked?.renderPatched?.clippedFacesLoops) || Array.isArray(picked?.renderPatched?.plannedWorkfaceLoopsWorld)));
+          if (hasPatched) {
+            setTimeout(() => applyRecoveryCandidateBySignature(preferredSig, payloadUi, { preferPatched: true }), 0);
+          }
+        } catch {
+          // ignore
+        }
+
+        // 异步：把吨位/厚度与 TONNAGE 排序交给 Python 后端（收益最大，前端不阻塞）
+        try {
+          const req0 = recoveryLastRequestRef.current;
+          const thickness = req0?.input?.thickness || req0?.thickness || null;
+          const candidates = Array.isArray(payloadUi?.candidates) ? payloadUi.candidates : [];
+          const cacheKeyForTonnage = String(payloadUi?.cacheKey ?? cacheKey);
+          const seqForTonnage = (recoveryTonnageSeqRef.current += 1);
+          const preferredSigAtCompute = String(preferredSig || '');
+          const computeSeqForTonnage = Number(payloadSeq);
+
+          // 只在有候选时请求；失败不影响当前结果展示
+          if (candidates.length) {
+            setTimeout(async () => {
+              try {
+                const resp = await smartResourceTonnageSort({
+                  cacheKey: cacheKeyForTonnage,
+                  candidates: candidates.map((c) => ({
+                    signature: c?.signature,
+                    qualified: c?.qualified,
+                    coverageRatio: c?.coverageRatio,
+                    N: c?.N,
+                    lenCV: c?.lenCV,
+                    axis: c?.axis,
+                    thetaDeg: c?.thetaDeg,
+                    ws: c?.ws,
+                    render: c?.render,
+                  })),
+                  thickness,
+                  topK: Number(payloadUi?.stats?.topK) || 10,
+                  sampleStepM: thickness?.gridRes ?? 20,
+                });
+
+                // 丢弃过期 tonnage 回包
+                if (seqForTonnage !== recoveryTonnageSeqRef.current) return;
+                if (!resp?.ok) return;
+
+                setPlanningRecoveryResult((prev) => {
+                  if (!prev?.ok) return prev;
+                  const prevKey = String(prev?.cacheKey ?? '');
+                  if (prevKey && prevKey !== cacheKeyForTonnage) return prev;
+
+                  const tonBySig = resp?.tonnageBySignature && typeof resp.tonnageBySignature === 'object' ? resp.tonnageBySignature : {};
+                  const scoreBySig = resp?.recoveryScoreBySignature && typeof resp.recoveryScoreBySignature === 'object' ? resp.recoveryScoreBySignature : {};
+                  const order = Array.isArray(resp?.rankedSignatures) ? resp.rankedSignatures.map((s) => String(s)) : [];
+
+                  const cand0 = Array.isArray(prev?.candidates) ? prev.candidates.slice() : [];
+
+                  // 回填吨位与评分
+                  const cand1 = cand0.map((c) => {
+                    const sig = String(c?.signature ?? '').trim();
+                    const t = Number(tonBySig?.[sig]);
+                    const s = Number(scoreBySig?.[sig]);
+                    const next = { ...(c ?? {}) };
+                    if (Number.isFinite(t)) next.tonnageTotal = t;
+                    if (next.metrics && typeof next.metrics === 'object' && Number.isFinite(t)) next.metrics.tonnageTotal = t;
+                    if (Number.isFinite(s)) next.recoveryScore = s;
+                    if (next.metrics && typeof next.metrics === 'object' && Number.isFinite(s)) next.metrics.recoveryScore = s;
+                    return next;
+                  });
+
+                  const bySig = new Map();
+                  for (const c of cand1) {
+                    const sig = String(c?.signature ?? '').trim();
+                    if (sig) bySig.set(sig, c);
+                  }
+
+                  // 按后端排序重排 candidates/table（不改 signature，不强行改选中态）
+                  const sortedCandidates = (order.length)
+                    ? order.map((sig) => bySig.get(sig)).filter(Boolean)
+                      .concat(cand1.filter((c) => {
+                        const sig = String(c?.signature ?? '').trim();
+                        return sig && !order.includes(sig);
+                      }))
+                    : cand1;
+
+                  const rows0 = Array.isArray(prev?.table?.rows) ? prev.table.rows.slice() : [];
+                  const rows1 = rows0.map((r) => {
+                    const sig = String(r?.signature ?? '').trim();
+                    const t = Number(tonBySig?.[sig]);
+                    const s = Number(scoreBySig?.[sig]);
+                    const next = { ...(r ?? {}) };
+                    if (Number.isFinite(t)) next.tonnageTotal = t;
+                    if (Number.isFinite(s)) next.recoveryScore = s;
+                    return next;
+                  });
+                  const rowsBySig = new Map();
+                  for (const r of rows1) {
+                    const sig = String(r?.signature ?? '').trim();
+                    if (sig) rowsBySig.set(sig, r);
+                  }
+                  const sortedRows = (order.length)
+                    ? order.map((sig) => rowsBySig.get(sig)).filter(Boolean)
+                      .concat(rows1.filter((r) => {
+                        const sig = String(r?.signature ?? '').trim();
+                        return sig && !order.includes(sig);
+                      }))
+                    : rows1;
+
+                  const best = sortedCandidates[0] || null;
+                  const bestSig = String(best?.signature ?? '').trim();
+                  const next = {
+                    ...(prev ?? {}),
+                    candidates: sortedCandidates,
+                    table: (prev?.table && typeof prev.table === 'object') ? { ...(prev.table ?? {}), rows: sortedRows } : prev?.table,
+                    tonnageTotal: Number(best?.tonnageTotal ?? prev?.tonnageTotal ?? 0) || 0,
+                    recoveryScore: Number(best?.recoveryScore ?? prev?.recoveryScore ?? 0) || 0,
+                    hasThickness: Boolean(resp?.hasThickness),
+                    fallbackMode: String(resp?.fallbackMode ?? prev?.fallbackMode ?? ''),
+                    thicknessReason: String(prev?.thicknessReason ?? ''),
+                    stats: (prev?.stats && typeof prev.stats === 'object')
+                      ? { ...(prev.stats ?? {}), hasThickness: Boolean(resp?.hasThickness), fallbackMode: String(resp?.fallbackMode ?? prev?.stats?.fallbackMode ?? ''), tonnageElapsedMs: resp?.elapsedMs ?? null }
+                      : prev?.stats,
+                  };
+
+                  // TONNAGE 重排后：若用户未在同一 cacheKey 下手动改选中态，则自动切到新 Top1
+                  try {
+                    const userTouched = Boolean(recoveryUserTouchedSelectionByKeyRef.current.get(cacheKeyForTonnage));
+                    if (!userTouched && bestSig) {
+                      recoveryAutoSelectAfterTonnageRef.current = { reqSeq: Number(computeSeqForTonnage) || 0, cacheKey: String(cacheKeyForTonnage), sig: String(bestSig) };
+                      recoverySelectedSigByKeyRef.current.set(cacheKeyForTonnage, String(bestSig));
+                    }
+                  } catch {
+                    // ignore
+                  }
+
+                  // 同步更新缓存（按 cacheKey 维度）
+                  try {
+                    recoveryCacheRef.current.set(cacheKeyForTonnage, { result: next, selectedSig: String(recoverySelectedSigByKeyRef.current.get(cacheKeyForTonnage) || preferredSig || '') });
+                  } catch {
+                    // ignore
+                  }
+
+                  return next;
+                });
+
+                // TONNAGE 重排后：若需要自动切到新 Top1，统一在这里做一次出图联动
+                try {
+                  const pick = recoveryAutoSelectAfterTonnageRef.current;
+                  const shouldApply = Boolean(
+                    pick
+                    && String(pick.cacheKey || '') === String(cacheKeyForTonnage)
+                    && Number(pick.reqSeq || 0) === Number(computeSeqForTonnage)
+                    && String(pick.sig || '')
+                  );
+                  if (shouldApply) {
+                    recoveryAutoSelectAfterTonnageRef.current = { reqSeq: 0, cacheKey: '', sig: '' };
+                    const cached2 = recoveryCacheRef.current.get(cacheKeyForTonnage);
+                    const result2 = cached2?.result;
+                    if (result2?.ok) {
+                      setPlanningRecoverySelectedSig(String(pick.sig));
+                      applyRecoveryCandidateBySignature(String(pick.sig), result2, { preferPatched: false });
+                      try {
+                        const picked = Array.isArray(result2?.candidates)
+                          ? (result2.candidates.find((c) => String(c?.signature ?? '') === String(pick.sig)) ?? result2.candidates[0])
+                          : null;
+                        const hasPatched = Boolean(picked?.renderPatched && (Array.isArray(picked?.renderPatched?.clippedFacesLoops) || Array.isArray(picked?.renderPatched?.plannedWorkfaceLoopsWorld)));
+                        if (hasPatched) setTimeout(() => applyRecoveryCandidateBySignature(String(pick.sig), result2, { preferPatched: true }), 0);
+                      } catch {
+                        // ignore
+                      }
+                    }
+                  }
+                } catch {
+                  // ignore
+                }
+              } catch {
+                // ignore: 后端不可用不影响前端 baseline
+              }
+            }, 0);
+          }
+        } catch {
+          // ignore
+        }
       } else {
-        setPlanningEfficiencyResult(payload);
+        setPlanningEfficiencyResult(payloadUi);
         try {
-          efficiencyLastResponseRef.current = payload;
+          efficiencyLastResponseRef.current = payloadUi;
         } catch {
           // ignore
         }
-        applyEfficiencyCandidateBySignature(preferredSig, payload);
+        applyEfficiencyCandidateBySignature(preferredSig, payloadUi);
         // compute 成功：清理预览（回到“真实候选集”）
         setPlanningEfficiencyPreview(null);
         setPlanningEfficiencyPreviewBusy(false);
@@ -2091,7 +3135,7 @@ const App = () => {
           ...(prev ?? {}),
           ts: Date.now(),
           mode: 'smart-efficiency',
-          response: buildEfficiencyDebugResponseSummary(payload, preferredSig),
+          response: buildEfficiencyDebugResponseSummary(payloadUi, preferredSig),
           lastError: '',
         }));
       }
@@ -2102,21 +3146,21 @@ const App = () => {
           ts: Date.now(),
           mode: 'smart-resource',
           response: {
-            ok: Boolean(payload?.ok),
-            failedReason: String(payload?.failedReason ?? ''),
-            reqSeq: payload?.reqSeq,
-            cacheKey: String(payload?.cacheKey ?? ''),
-            fast: Boolean(payload?.fast),
-            candidatesCount: Array.isArray(payload?.candidates) ? payload.candidates.length : (payload?.stats?.candidateCount ?? null),
+            ok: Boolean(payloadUi?.ok),
+            failedReason: String(payloadUi?.failedReason ?? ''),
+            reqSeq: payloadUi?.reqSeq,
+            cacheKey: String(payloadUi?.cacheKey ?? ''),
+            fast: Boolean(payloadUi?.fast),
+            candidatesCount: Array.isArray(payloadUi?.candidates) ? payloadUi.candidates.length : (payloadUi?.stats?.candidateCount ?? null),
             selectedCandidateKey: String(preferredSig || ''),
-            omegaArea: Number.isFinite(Number(payload?.omegaArea)) ? Number(payload.omegaArea) : null,
-            tonnageTotal: Number.isFinite(Number(payload?.tonnageTotal)) ? Number(payload.tonnageTotal) : null,
+            omegaArea: Number.isFinite(Number(payloadUi?.omegaArea)) ? Number(payloadUi.omegaArea) : null,
+            tonnageTotal: Number.isFinite(Number(payloadUi?.tonnageTotal)) ? Number(payloadUi.tonnageTotal) : null,
             perFace: {
-              enabled: Boolean(payload?.debug?.perFace?.enabled),
-              generated: Number(payload?.debug?.perFace?.generated ?? null),
-              qualified: Number(payload?.debug?.perFace?.qualified ?? null),
-              pushedUnique: Number(payload?.debug?.perFace?.pushedUnique ?? null),
-              lastReason: String(payload?.debug?.perFace?.lastReason ?? ''),
+              enabled: Boolean(payloadUi?.debug?.perFace?.enabled),
+              generated: Number(payloadUi?.debug?.perFace?.generated ?? null),
+              qualified: Number(payloadUi?.debug?.perFace?.qualified ?? null),
+              pushedUnique: Number(payloadUi?.debug?.perFace?.pushedUnique ?? null),
+              lastReason: String(payloadUi?.debug?.perFace?.lastReason ?? ''),
             },
           },
           lastError: '',
@@ -2161,6 +3205,19 @@ const App = () => {
     initEfficiencyWorker();
     initResourceWorker();
 
+    // 暴露 result handler：后端回包可直接走统一的结果处理逻辑（不依赖 worker.onmessage 是否已绑定）
+    try {
+      efficiencyResultHandlerRef.current = (payload) => handleComputeResult('efficiency', payload);
+    } catch {
+      // ignore
+    }
+
+    try {
+      recoveryResultHandlerRef.current = (payload) => handleComputeResult('recovery', payload);
+    } catch {
+      // ignore
+    }
+
     if (efficiencyWorkerRef.current) {
       efficiencyWorkerRef.current.onmessage = (ev) => {
         const data = ev?.data ?? {};
@@ -2175,6 +3232,48 @@ const App = () => {
           const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
           const latestKey = inFlightKey || String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || '');
           if (payloadKey && latestKey && payloadKey !== latestKey) return;
+
+          // progress 喂狗：每次进度回包将 timeout 向后顺延
+          try {
+            const wd = efficiencyWatchdogRef.current;
+            if (wd?.timer) clearTimeout(wd.timer);
+            const reqSeqNow = Number.isFinite(payloadSeq) ? payloadSeq : Number(efficiencyReqSeqRef.current);
+            const cacheKeyNow = String(payloadKey || latestKey || '');
+            efficiencyWatchdogRef.current = {
+              timer: setTimeout(() => {
+                try {
+                  const latestSeq1 = Number(efficiencyReqSeqRef.current);
+                  const inFlightKey1 = String(efficiencyInFlightKeyRef.current || '');
+                  if (Number.isFinite(latestSeq1) && reqSeqNow !== latestSeq1) return;
+                  if (!inFlightKey1) return;
+                  if (cacheKeyNow && inFlightKey1 && inFlightKey1 !== cacheKeyNow) return;
+
+                  console.error('[worker][efficiency] watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+                  efficiencyInFlightKeyRef.current = '';
+                  setPlanningEfficiencyBusy(false);
+                  setPlanningEfficiencyProgress(null);
+                  setPlanningEfficiencyPreview(null);
+                  setPlanningEfficiencyPreviewBusy(false);
+                  setPlanningEfficiencyResult({
+                    ok: false,
+                    mode: 'smart-efficiency',
+                    message: '工程效率计算超时：worker 无响应（已自动重建）。请再次点击计算。',
+                    failedReason: 'WORKER_TIMEOUT',
+                    candidates: [],
+                  });
+                  setPlanningWorkerGen((g) => g + 1);
+                  efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+                } catch {
+                  // ignore
+                }
+              }, 45000),
+              reqSeq: reqSeqNow,
+              cacheKey: cacheKeyNow,
+            };
+          } catch {
+            // ignore
+          }
+
           const now = Date.now();
           if (now - (planningEfficiencyProgressLastTsRef.current || 0) < 120) return;
           planningEfficiencyProgressLastTsRef.current = now;
@@ -2225,13 +3324,185 @@ const App = () => {
 
         handleComputeResult('efficiency', payload);
       };
+
+      // 关键兜底：worker 发生未捕获异常时，如果没有 onerror，这里会导致 busy/inFlightKey 永远不清理，
+      // 用户切换 axis（例如切到 y）后再点击会被 isComputingSame 永久短路，表现为“怎么点都不算”。
+      efficiencyWorkerRef.current.onerror = (ev) => {
+        const msg = String(ev?.message ?? ev?.error?.message ?? '工程效率 worker 发生未知错误');
+        console.error('[worker][efficiency] onerror', msg, ev);
+        try {
+          const wd = efficiencyWatchdogRef.current;
+          if (wd?.timer) clearTimeout(wd.timer);
+          efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+        } catch {
+          // ignore
+        }
+        try {
+          efficiencyInFlightKeyRef.current = '';
+        } catch {
+          // ignore
+        }
+        setPlanningEfficiencyBusy(false);
+        setPlanningEfficiencyProgress(null);
+        setPlanningEfficiencyPreview(null);
+        setPlanningEfficiencyPreviewBusy(false);
+        setPlanningEfficiencyResult({ ok: false, mode: 'smart-efficiency', message: msg, failedReason: msg, candidates: [] });
+
+        // 关键：触发“代际重建”，确保新 worker 的 onmessage/onerror 也会重新绑定
+        try {
+          efficiencyWorkerRef.current?.terminate?.();
+        } catch {
+          // ignore
+        }
+        efficiencyWorkerRef.current = null;
+        setPlanningWorkerGen((g) => g + 1);
+      };
+      efficiencyWorkerRef.current.onmessageerror = (ev) => {
+        const msg = '工程效率 worker 消息反序列化失败（onmessageerror）';
+        console.error('[worker][efficiency] onmessageerror', ev);
+        try {
+          const wd = efficiencyWatchdogRef.current;
+          if (wd?.timer) clearTimeout(wd.timer);
+          efficiencyWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+        } catch {
+          // ignore
+        }
+        try {
+          efficiencyInFlightKeyRef.current = '';
+        } catch {
+          // ignore
+        }
+        setPlanningEfficiencyBusy(false);
+        setPlanningEfficiencyProgress(null);
+        setPlanningEfficiencyPreview(null);
+        setPlanningEfficiencyPreviewBusy(false);
+        setPlanningEfficiencyResult({ ok: false, mode: 'smart-efficiency', message: msg, failedReason: msg, candidates: [] });
+
+        try {
+          efficiencyWorkerRef.current?.terminate?.();
+        } catch {
+          // ignore
+        }
+        efficiencyWorkerRef.current = null;
+        setPlanningWorkerGen((g) => g + 1);
+      };
     }
 
     if (resourceWorkerRef.current) {
       resourceWorkerRef.current.onmessage = (ev) => {
         const data = ev?.data ?? {};
-        if (data?.type !== 'result' && data?.type !== 'progress') return;
+        if (data?.type !== 'result' && data?.type !== 'progress' && data?.type !== 'refine-result') return;
         const payload = data?.payload ?? {};
+
+        if (data?.type === 'refine-result') {
+          const cacheKey = String(payload?.cacheKey ?? '');
+          const sig = String(payload?.signature ?? '');
+          const candidatePatch = payload?.candidatePatch ?? null;
+
+          // 记录最近一次补残煤结果（即使 CACHE_MISS / CAND_NOT_FOUND 也要可见）
+          try {
+            const tier0 = String(payload?.tier ?? '').toUpperCase().trim();
+            const reason0 = String(payload?.reason ?? payload?.failedReason ?? '').trim();
+            const ok0 = Boolean(payload?.ok);
+            if (sig) {
+              setPlanningRecoveryRefineLastBySig((prev) => ({
+                ...(prev ?? {}),
+                [sig]: { ok: ok0, tier: tier0, reason: reason0, ts: Date.now() },
+              }));
+            }
+          } catch {
+            // ignore
+          }
+
+          // 清理“补残煤中”标记
+          if (sig) {
+            setPlanningRecoveryRefineBusyBySig((prev) => {
+              if (!prev || typeof prev !== 'object') return prev;
+              if (!Object.prototype.hasOwnProperty.call(prev, sig)) return prev;
+              const next = { ...prev };
+              delete next[sig];
+              return next;
+            });
+          }
+          try {
+            // 释放 in-flight 去重 key
+            const tier = String(payload?.tier ?? '').toUpperCase().trim();
+            const k = `${cacheKey}|${sig}|${tier}`;
+            recoveryRefineInFlightRef.current.delete(k);
+          } catch {
+            // ignore
+          }
+
+          if (!cacheKey || !sig || !candidatePatch) return;
+
+          const mergePatchIntoResult = (res0) => {
+            const res = res0;
+            if (!res?.ok || !Array.isArray(res?.candidates)) return res0;
+            const nextCandidates = res.candidates.map((c) => {
+              if (String(c?.signature ?? '') !== sig) return c;
+              const prevMetrics = (c?.metrics && typeof c.metrics === 'object') ? c.metrics : {};
+              const nextMetrics = {
+                ...prevMetrics,
+                patchStats: (candidatePatch?.patchStats ?? prevMetrics?.patchStats ?? null),
+                patchBudgetMs: (candidatePatch?.patchBudgetMs ?? prevMetrics?.patchBudgetMs ?? null),
+              };
+              return {
+                ...c,
+                patchBudgetTier: candidatePatch?.patchBudgetTier ?? c?.patchBudgetTier ?? 'NONE',
+                fullCoverAchieved_patched: (Object.prototype.hasOwnProperty.call(candidatePatch ?? {}, 'fullCoverAchieved_patched'))
+                  ? candidatePatch.fullCoverAchieved_patched
+                  : (Object.prototype.hasOwnProperty.call(c ?? {}, 'fullCoverAchieved_patched') ? c.fullCoverAchieved_patched : null),
+                renderPatched: candidatePatch?.renderPatched ?? c?.renderPatched ?? null,
+                metrics: nextMetrics,
+              };
+            });
+
+            const nextTable = (res?.table && typeof res.table === 'object' && Array.isArray(res.table.rows))
+              ? {
+                  ...res.table,
+                  rows: res.table.rows.map((row) => {
+                    if (String(row?.signature ?? '') !== sig) return row;
+                    return {
+                      ...row,
+                      patchBudgetTier: candidatePatch?.patchBudgetTier ?? row?.patchBudgetTier ?? 'NONE',
+                      fullCoverAchieved_patched: (Object.prototype.hasOwnProperty.call(candidatePatch ?? {}, 'fullCoverAchieved_patched'))
+                        ? candidatePatch.fullCoverAchieved_patched
+                        : (Object.prototype.hasOwnProperty.call(row ?? {}, 'fullCoverAchieved_patched') ? row.fullCoverAchieved_patched : null),
+                      patchReason: String(candidatePatch?.patchStats?.reason ?? row?.patchReason ?? ''),
+                    };
+                  }),
+                }
+              : res?.table;
+
+            return { ...res, candidates: nextCandidates, table: nextTable };
+          };
+
+          // 合并进缓存
+          try {
+            const cached = recoveryCacheRef.current.get(cacheKey);
+            if (cached?.result?.ok) {
+              const nextResult = mergePatchIntoResult(cached.result);
+              recoveryCacheRef.current.set(cacheKey, { ...cached, result: nextResult });
+            }
+          } catch {
+            // ignore
+          }
+
+          // 若当前 UI 正在展示该 cacheKey，则同步刷新
+          const curKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
+          if (curKey && cacheKey === curKey) {
+            setPlanningRecoveryResult((prev) => mergePatchIntoResult(prev));
+            // 如果当前选中同一个候选：自动切到 patched
+            if (String(planningRecoverySelectedSig ?? '') === sig) {
+              setTimeout(() => {
+                const cached = recoveryCacheRef.current.get(cacheKey);
+                const res = cached?.result ?? planningRecoveryResult;
+                applyRecoveryCandidateBySignature(sig, res, { preferPatched: true });
+              }, 0);
+            }
+          }
+          return;
+        }
 
         if (data?.type === 'progress') {
           const payloadSeq = Number(payload?.reqSeq);
@@ -2241,6 +3512,52 @@ const App = () => {
           const inFlightKey = String(recoveryInFlightKeyRef.current || '');
           const latestKey = inFlightKey || String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || '');
           if (payloadKey && latestKey && payloadKey !== latestKey) return;
+
+          try {
+            const wd = recoveryWatchdogRef.current;
+            if (wd?.timer) clearTimeout(wd.timer);
+            const reqSeqNow = Number.isFinite(payloadSeq) ? payloadSeq : Number(recoveryReqSeqRef.current);
+            const cacheKeyNow = String(payloadKey || latestKey || '');
+            recoveryWatchdogRef.current = {
+              timer: setTimeout(() => {
+                try {
+                  const latestSeq1 = Number(recoveryReqSeqRef.current);
+                  const inFlightKey1 = String(recoveryInFlightKeyRef.current || '');
+                  if (Number.isFinite(latestSeq1) && reqSeqNow !== latestSeq1) return;
+                  if (!inFlightKey1) return;
+                  if (cacheKeyNow && inFlightKey1 && inFlightKey1 !== cacheKeyNow) return;
+
+                  console.error('[worker][recovery] watchdog-timeout', { reqSeq: reqSeqNow, cacheKey: cacheKeyNow });
+                  recoveryInFlightKeyRef.current = '';
+                  setPlanningRecoveryBusy(false);
+                  setPlanningRecoveryProgress(null);
+                  setPlanningRecoveryResult({
+                    ok: false,
+                    mode: 'smart-resource',
+                    message: '资源回收计算超时：worker 无响应（已自动重建）。请再次点击计算。',
+                    failedReason: 'WORKER_TIMEOUT',
+                    candidates: [],
+                  });
+                  setPlanningRecoveryRefineBusyBySig({});
+                  setPlanningRecoveryRefineLastBySig({});
+                  try {
+                    recoveryRefineInFlightRef.current.clear();
+                  } catch {
+                    // ignore
+                  }
+                  setPlanningWorkerGen((g) => g + 1);
+                  recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+                } catch {
+                  // ignore
+                }
+              }, 60000),
+              reqSeq: reqSeqNow,
+              cacheKey: cacheKeyNow,
+            };
+          } catch {
+            // ignore
+          }
+
           const now = Date.now();
           if (now - (planningRecoveryProgressLastTsRef.current || 0) < 120) return;
           planningRecoveryProgressLastTsRef.current = now;
@@ -2272,11 +3589,75 @@ const App = () => {
         }
         handleComputeResult('recovery', payload);
       };
+
+      resourceWorkerRef.current.onerror = (ev) => {
+        const msg = String(ev?.message ?? ev?.error?.message ?? '资源回收 worker 发生未知错误');
+        console.error('[worker][recovery] onerror', msg, ev);
+        try {
+          const wd = recoveryWatchdogRef.current;
+          if (wd?.timer) clearTimeout(wd.timer);
+          recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+        } catch {
+          // ignore
+        }
+        try {
+          recoveryInFlightKeyRef.current = '';
+        } catch {
+          // ignore
+        }
+        setPlanningRecoveryBusy(false);
+        setPlanningRecoveryProgress(null);
+        setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: msg, failedReason: msg, candidates: [] });
+
+        // recovery 崩溃时也要清理补残煤状态，避免“永远补残煤中”。
+        setPlanningRecoveryRefineBusyBySig({});
+        setPlanningRecoveryRefineLastBySig({});
+        try {
+          recoveryRefineInFlightRef.current.clear();
+        } catch {
+          // ignore
+        }
+
+        try {
+          resourceWorkerRef.current?.terminate?.();
+        } catch {
+          // ignore
+        }
+        resourceWorkerRef.current = null;
+        setPlanningWorkerGen((g) => g + 1);
+      };
+      resourceWorkerRef.current.onmessageerror = (ev) => {
+        const msg = '资源回收 worker 消息反序列化失败（onmessageerror）';
+        console.error('[worker][recovery] onmessageerror', ev);
+        try {
+          const wd = recoveryWatchdogRef.current;
+          if (wd?.timer) clearTimeout(wd.timer);
+          recoveryWatchdogRef.current = { timer: null, reqSeq: 0, cacheKey: '' };
+        } catch {
+          // ignore
+        }
+        try {
+          recoveryInFlightKeyRef.current = '';
+        } catch {
+          // ignore
+        }
+        setPlanningRecoveryBusy(false);
+        setPlanningRecoveryProgress(null);
+        setPlanningRecoveryResult({ ok: false, mode: 'smart-resource', message: msg, failedReason: msg, candidates: [] });
+
+        try {
+          resourceWorkerRef.current?.terminate?.();
+        } catch {
+          // ignore
+        }
+        resourceWorkerRef.current = null;
+        setPlanningWorkerGen((g) => g + 1);
+      };
     }
 
     return terminateWorkers;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [planningWorkerGen]);
 
   const handleSelectEfficiencyCandidate = (signature) => {
     const sig = String(signature ?? '');
@@ -2311,11 +3692,32 @@ const App = () => {
     if (!sig) return;
     const cacheKey = planningRecoveryCacheKey || buildRecoveryCacheKey();
     recoverySelectedSigByKeyRef.current.set(cacheKey, sig);
+    // 标记“用户手动改选”，后续自动逻辑（例如 TONNAGE 重排）不应强行覆盖。
+    recoveryUserTouchedSelectionByKeyRef.current.set(cacheKey, true);
     const cached = recoveryCacheRef.current.get(cacheKey);
     if (cached?.result?.ok) {
       recoveryCacheRef.current.set(cacheKey, { ...cached, selectedSig: sig });
     }
-    applyRecoveryCandidateBySignature(sig, cached?.result ?? planningRecoveryResult);
+
+    const res = cached?.result ?? planningRecoveryResult;
+    // 先画 base
+    applyRecoveryCandidateBySignature(sig, res, { preferPatched: false });
+
+    // 若已有 patched（Top3 预处理或之前 refine 过）：异步替换
+    try {
+      const picked = Array.isArray(res?.candidates)
+        ? (res.candidates.find((c) => String(c?.signature ?? '') === sig) ?? null)
+        : null;
+      const hasPatched = Boolean(picked?.renderPatched && (Array.isArray(picked?.renderPatched?.clippedFacesLoops) || Array.isArray(picked?.renderPatched?.plannedWorkfaceLoopsWorld)));
+      if (hasPatched) {
+        setTimeout(() => applyRecoveryCandidateBySignature(sig, res, { preferPatched: true }), 0);
+      } else {
+        // 惰性：点选自动 LIGHT 补残煤
+        requestRefineRecoveryCandidate(sig, 'LIGHT');
+      }
+    } catch {
+      // ignore
+    }
   };
 
   const selectEfficiencyByN = (n) => {
@@ -2381,12 +3783,14 @@ const App = () => {
 
   const handlePlanningOptModeChange = (nextMode) => {
     const m = String(nextMode ?? '').trim();
+    const isReclickSameMode = m && m === String(planningOptMode ?? '').trim();
     setPlanningOptMode(m);
 
     // 体验优化：在“采区规划图”视图下，切换到 efficiency/recovery 立即启动对应计算。
     // 注意：这里使用 force=true，避免 setState 未生效导致 requestCompute* 被门禁提前 return。
     if (mainViewMode !== 'planning') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+    workerLog('[planning] opt-mode click', { nextMode: m, reclick: isReclickSameMode });
     if (m === 'efficiency') {
       // 显式切换：
       // - 若工程效率正在计算同一输入，不要重复发起新请求（否则会自增 reqSeq，progress 全被过滤，UI卡在0%）。
@@ -2397,7 +3801,11 @@ const App = () => {
         const lastKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
         const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
         const isUpToDateOk = Boolean(!planningEfficiencyBusy && planningEfficiencyResult?.ok && lastKey && currentKey === lastKey);
-        if (isComputingSame || isUpToDateOk) return;
+        // 正在算同一输入：不要重复发起（否则会自增 reqSeq，progress 全被过滤，UI 会卡在 0%）。
+        if (isComputingSame) return;
+
+        // 切换模式但已是最新 ok：不必重算。
+        if (isUpToDateOk) return;
       } catch {
         // ignore
       }
@@ -2411,11 +3819,14 @@ const App = () => {
         const lastKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
         const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
         const isUpToDateOk = Boolean(!planningRecoveryBusy && planningRecoveryResult?.ok && lastKey && currentKey === lastKey);
-        if (isComputingSame || isUpToDateOk) return;
+        if (isComputingSame) return;
+
+        if (isUpToDateOk) return;
       } catch {
         // ignore
       }
-      requestComputeRecovery({ force: true, fast: true, refine: true, background: false });
+      requestComputeRecovery({ force: true, fast: false, refine: false, background: false });
+      return;
     }
   };
 
@@ -2524,6 +3935,22 @@ const App = () => {
   const [showDrillholeLabels, setShowDrillholeLabels] = useState(false);
   const [showWorkfaceOutline, setShowWorkfaceOutline] = useState(false);
   const [showMeasuredPoints, setShowMeasuredPoints] = useState(true);
+
+  // 规划视图：把展示开关按模式各自记忆（避免工程效率/资源回收互相覆盖）
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    const m = (String(planningOptMode) === 'recovery') ? 'recovery' : 'efficiency';
+    const prev = planningDisplayByModeRef.current?.[m] ?? {};
+    planningDisplayByModeRef.current = {
+      ...(planningDisplayByModeRef.current ?? {}),
+      [m]: {
+        ...(prev ?? {}),
+        showOutline: Boolean(showWorkfaceOutline),
+        showBoundaryOverlay: Boolean(showPlanningBoundaryOverlay),
+      },
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainViewMode, planningOptMode, showWorkfaceOutline, showPlanningBoundaryOverlay]);
 
   // 主图测量工具：点击两点，显示水平/垂直距离（世界坐标单位）
   const [measureEnabled, setMeasureEnabled] = useState(false);
@@ -7376,6 +8803,55 @@ const App = () => {
     return list.find((c) => String(c?.signature) === sig) ?? list[0] ?? null;
   }, [planningRecoveryResult, planningRecoverySelectedSig]);
 
+  // 兜底：计算结果落地后，确保默认选中并展示 Top1。
+  // 触发条件：
+  // - 当前选中为空/不在候选集中；或
+  // - 用户未手动改选（同 cacheKey）且当前选中不是 Top1。
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    if (planningOptMode !== 'recovery') return;
+    const r = planningRecoveryResult;
+    if (!r?.ok) return;
+
+    const cacheKey = String(r?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? planningRecoveryCacheKey ?? '');
+    const userTouched = Boolean(cacheKey && recoveryUserTouchedSelectionByKeyRef.current.get(cacheKey));
+
+    const rows = Array.isArray(r?.table?.rows) ? r.table.rows : [];
+    const candidates = Array.isArray(r?.candidates) ? r.candidates : [];
+    const topSig = String(r?.bestKey || r?.selectedCandidateKey || r?.bestSignature || rows?.[0]?.signature || candidates?.[0]?.signature || '').trim();
+    if (!topSig) return;
+
+    const currentSig = String(planningRecoverySelectedSig || '').trim();
+    const isInResult = (sig) => {
+      if (!sig) return false;
+      if (rows.some((row) => String(row?.signature ?? '').trim() === sig)) return true;
+      if (candidates.some((c) => String(c?.signature ?? '').trim() === sig)) return true;
+      return false;
+    };
+
+    const shouldAutoSelect = (!isInResult(currentSig)) || (!userTouched && currentSig !== topSig);
+    if (!shouldAutoSelect) return;
+
+    setPlanningRecoverySelectedSig(topSig);
+    try {
+      if (cacheKey) recoverySelectedSigByKeyRef.current.set(cacheKey, topSig);
+    } catch {
+      // ignore
+    }
+
+    // 联动出图：优先 base，再异步替换 patched（若已存在）。
+    applyRecoveryCandidateBySignature(topSig, r, { preferPatched: false });
+    try {
+      const picked = Array.isArray(r?.candidates)
+        ? (r.candidates.find((c) => String(c?.signature ?? '').trim() === topSig) ?? r.candidates[0])
+        : null;
+      const hasPatched = Boolean(picked?.renderPatched && (Array.isArray(picked?.renderPatched?.clippedFacesLoops) || Array.isArray(picked?.renderPatched?.plannedWorkfaceLoopsWorld)));
+      if (hasPatched) setTimeout(() => applyRecoveryCandidateBySignature(topSig, r, { preferPatched: true }), 0);
+    } catch {
+      // ignore
+    }
+  }, [mainViewMode, planningOptMode, planningRecoveryResult, planningRecoverySelectedSig, planningRecoveryCacheKey]);
+
   // 智能规划：粉色覆盖层使用“边界煤柱确定值”对采区边界内缩后的范围
   const planningBoundaryOverlayLoop = useMemo(() => {
     if (!showPlanningBoundaryOverlay) return [];
@@ -8100,12 +9576,8 @@ const App = () => {
           hasInitializedFaceWidthRange,
         });
 
-        // 重算：清空旧图/选中态
-        setPlannedWorkfaceLoopsWorld([]);
-        setPlannedWorkfaceUnionLoopsWorld([]);
-        setPlanningInnerOmegaOverrideWb(null);
         setPlanningEfficiencySelectedSig('');
-        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
+        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
         return;
       }
       if (planningOptMode === 'recovery') {
@@ -8119,11 +9591,8 @@ const App = () => {
           hasInitializedFaceWidthRange,
         });
 
-        setPlannedWorkfaceLoopsWorld([]);
-        setPlannedWorkfaceUnionLoopsWorld([]);
-        setPlanningInnerOmegaOverrideWb(null);
         setPlanningRecoverySelectedSig('');
-        requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
+        requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
         return;
       }
 
@@ -10554,6 +12023,11 @@ const App = () => {
                       <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">工程效率候选对比表</div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {planningEfficiencyComputeSource && (
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          来源：{planningEfficiencyComputeSource === 'backend' ? '后端' : (planningEfficiencyComputeSource === 'worker' ? '前端' : (planningEfficiencyComputeSource === 'cache' ? '缓存' : String(planningEfficiencyComputeSource))) }
+                        </div>
+                      )}
                       {planningEfficiencyBusy && (
                         <div className="text-[10px] text-slate-400 font-mono">
                           {(() => {
@@ -10741,6 +12215,11 @@ const App = () => {
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
+                      {planningRecoveryComputeSource && (
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          来源：{planningRecoveryComputeSource === 'backend' ? '后端' : (planningRecoveryComputeSource === 'worker' ? '前端' : (planningRecoveryComputeSource === 'cache' ? '缓存' : String(planningRecoveryComputeSource))) }
+                        </div>
+                      )}
                       {planningRecoveryBusy && (
                         <div className="text-[10px] text-slate-400 font-mono">
                           {(() => {
@@ -10764,6 +12243,29 @@ const App = () => {
                           <div className="text-[10px] text-slate-400 font-mono">
                             候选：{planningRecoveryResult?.stats?.topK ?? 0} / {planningRecoveryResult?.stats?.candidateCount ?? 0}
                           </div>
+                          {(() => {
+                            const sig = String(planningRecoverySelectedSig || planningRecoveryResult?.selectedCandidateKey || planningRecoveryResult?.bestKey || '');
+                            if (!sig) return null;
+                            const cand = Array.isArray(planningRecoveryResult?.candidates)
+                              ? (planningRecoveryResult.candidates.find((c) => String(c?.signature ?? '') === sig) ?? null)
+                              : null;
+                            const tier = String(cand?.patchBudgetTier ?? 'NONE');
+                            const achieved = (Object.prototype.hasOwnProperty.call(cand ?? {}, 'fullCoverAchieved_patched'))
+                              ? cand.fullCoverAchieved_patched
+                              : null;
+                            const busyTier = String(planningRecoveryRefineBusyBySig?.[sig] ?? '');
+                            const lastReason = String(planningRecoveryRefineLastBySig?.[sig]?.reason ?? '').trim();
+                            const label = busyTier
+                              ? `补残煤中(${busyTier})…`
+                              : (tier && tier !== 'NONE')
+                                ? `补残煤:${tier}${(achieved === true) ? '（达标）' : (achieved === false ? '（未达标）' : '')}`
+                                : (lastReason ? `补残煤失败：${lastReason}` : '补残煤:未执行');
+                            return (
+                              <div className="text-[10px] text-slate-400 font-mono" title="候选补残煤（base+patched 双版本）状态">
+                                {label}
+                              </div>
+                            );
+                          })()}
                           <button
                             type="button"
                             className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
@@ -10782,6 +12284,34 @@ const App = () => {
                               {planningRecoveryShowAllCandidates ? '仅显示最优' : '展开候选'}
                             </button>
                           )}
+                          {(() => {
+                            const sig = String(planningRecoverySelectedSig || '');
+                            if (!sig) return null;
+                            const busyTier = String(planningRecoveryRefineBusyBySig?.[sig] ?? '');
+                            const disabled = Boolean(planningRecoveryBusy || busyTier);
+                            return (
+                              <>
+                                <button
+                                  type="button"
+                                  className={`px-2 py-1 text-[10px] rounded border transition-colors ${disabled ? 'border-slate-200 text-slate-300' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                                  onClick={() => requestRefineRecoveryCandidate(sig, 'MEDIUM')}
+                                  disabled={disabled}
+                                  title="对当前候选提高补残煤预算（MEDIUM）"
+                                >
+                                  加预算再优化
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`px-2 py-1 text-[10px] rounded border transition-colors ${disabled ? 'border-slate-200 text-slate-300' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                                  onClick={() => requestRefineRecoveryCandidate(sig, 'HIGH')}
+                                  disabled={disabled}
+                                  title="对当前候选提高补残煤预算（HIGH，更慢）"
+                                >
+                                  高预算
+                                </button>
+                              </>
+                            );
+                          })()}
                         </>
                       )}
                     </div>
@@ -10822,7 +12352,7 @@ const App = () => {
                               const rows0 = planningRecoveryResult?.table?.rows ?? [];
                               const rows = planningRecoveryShowAllCandidates ? rows0 : rows0.slice(0, 1);
 
-                              return rows.map((r) => {
+                              return rows.map((r, idx) => {
                               const sig = String(r?.signature ?? '');
                               const active = sig && sig === planningRecoverySelectedSig;
                               const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
@@ -10840,7 +12370,7 @@ const App = () => {
                                   onClick={() => handleSelectRecoveryCandidate(sig)}
                                   title="点击：联动绘图"
                                 >
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{r?.rank ?? '--'}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{String(idx + 1)}</td>
                                   <td className="py-2 px-2 text-center">
                                     <input
                                       type="radio"

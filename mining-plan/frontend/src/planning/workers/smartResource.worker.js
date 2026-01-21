@@ -6182,6 +6182,13 @@ const compute = (payload) => {
       c.pillarGapCount = eff.pillarGapCount;
       c.pillarGapWidthSum = eff.pillarGapWidthSum;
       c.residualAreaEff = eff.residualAreaEff;
+      // Scheme C：每个候选都带 residualLoopsWorld（至少 Top3 必须存在）。
+      // 说明：这是“有效Ω口径（扣煤柱）”下的残煤区域轮廓。
+      try {
+        c.render.residualLoopsWorld = residualPolyToLoopsWorld(eff.residualPoly);
+      } catch {
+        c.render.residualLoopsWorld = [];
+      }
       c.qualifiedFullCover = FULL_COVER_ENABLED ? Boolean(eff.coverageRatioEff >= FULL_COVER_MIN) : null;
       if (FULL_COVER_ENABLED) c.qualified = Boolean(eff.coverageRatioEff >= FULL_COVER_MIN);
 
@@ -6210,240 +6217,55 @@ const compute = (payload) => {
         c.metrics.pillarGapCount = eff.pillarGapCount;
         c.metrics.pillarGapWidthSum = eff.pillarGapWidthSum;
         c.metrics.residualAreaEff = eff.residualAreaEff;
+        c.metrics.residualLoopsWorldCount = Array.isArray(c.render?.residualLoopsWorld) ? c.render.residualLoopsWorld.length : 0;
         c.metrics.qualifiedFullCover = c.qualifiedFullCover;
         if (FULL_COVER_ENABLED) c.metrics.qualified = Boolean(c.qualified);
       }
+
+      // base+patched 双版本字段（默认：未补片）。
+      if (!Object.prototype.hasOwnProperty.call(c, 'patchBudgetTier')) c.patchBudgetTier = PATCH_BUDGET_TIERS.NONE;
+      if (!Object.prototype.hasOwnProperty.call(c, 'fullCoverAchieved_patched')) c.fullCoverAchieved_patched = null;
+      if (!Object.prototype.hasOwnProperty.call(c, 'renderPatched')) c.renderPatched = null;
+      if (c.metrics && typeof c.metrics === 'object' && !Object.prototype.hasOwnProperty.call(c.metrics, 'patchStats')) c.metrics.patchStats = null;
     }
   } catch {
     // ignore
   }
 
-  // v1.2：fullCover 兜底（补片，不增工作面数量）：把 residual(Ω_eff \ faces) 直接作为“同 faceIndex 的额外 loops”并入。
-  const tryFullCoverPatch = () => {
-    if (!FULL_COVER_ENABLED || !FULL_COVER_PATCH_ENABLED) return null;
-    if (!sharedOmegaPoly || sharedOmegaPoly.isEmpty?.()) return null;
-    if (!candidates?.length) return null;
-
-    const base = candidates[0];
-    const eff0 = computeEffectiveCoverage(base);
-    if (!eff0) return null;
-    if (eff0.coverageRatioEff >= FULL_COVER_MIN) return null;
-    if (!(eff0.residualAreaEff > 1e-6) || !eff0.residualPoly || eff0.residualPoly.isEmpty?.()) return null;
-
-    const t0 = nowMs();
-    const deadline = t0 + FULL_COVER_PATCH_BUDGET_MS;
-    const exceeded = () => nowMs() > deadline;
-
-    const facesLoops0 = Array.isArray(base?.render?.clippedFacesLoops) ? base.render.clippedFacesLoops : [];
-    if (!facesLoops0.length) return null;
-
-    // faceIndex -> 当前面几何（已裁剪到Ω）
-    const faceGeomByIndex = new Map();
-    // faceIndex -> bbox center（用于把补片分配到最近的面）
-    const faceBoxByIndex = new Map();
-    for (const f of facesLoops0) {
-      const fi = Math.max(1, Math.round(Number(f?.faceIndex) || 1));
-      const loop = f?.loop;
-      if (!Array.isArray(loop) || loop.length < 3) continue;
-      const poly = buildJstsPolygonFromLoop(loop);
-      if (!poly || poly.isEmpty?.()) continue;
-
-      const prevG = faceGeomByIndex.get(fi);
-      faceGeomByIndex.set(fi, prevG ? (robustUnion(prevG, poly) || prevG.union?.(poly) || prevG) : poly);
-
-      const bb = bboxOfLoop(loop);
-      if (!bb) continue;
-      const prevB = faceBoxByIndex.get(fi);
-      if (!prevB) {
-        faceBoxByIndex.set(fi, { ...bb });
-      } else {
-        prevB.minX = Math.min(prevB.minX, bb.minX);
-        prevB.maxX = Math.max(prevB.maxX, bb.maxX);
-        prevB.minY = Math.min(prevB.minY, bb.minY);
-        prevB.maxY = Math.max(prevB.maxY, bb.maxY);
-      }
-    }
-
-    const faceIndices = Array.from(faceBoxByIndex.keys()).sort((a, b) => a - b);
-    if (!faceIndices.length) return null;
-
-    const loopsResidual = polygonToLoops(eff0.residualPoly);
-    if (!Array.isArray(loopsResidual) || !loopsResidual.length) return null;
-
-    const patchPolyByFace = new Map();
-    const pickNearestFace = (pt) => {
-      let bestFi = faceIndices[0];
-      let bestD2 = Infinity;
-      for (const fi of faceIndices) {
-        const bb = faceBoxByIndex.get(fi);
-        if (!bb) continue;
-        const cx = (Number(bb.minX) + Number(bb.maxX)) / 2;
-        const cy = (Number(bb.minY) + Number(bb.maxY)) / 2;
-        const dx = Number(pt?.x) - cx;
-        const dy = Number(pt?.y) - cy;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < bestD2) {
-          bestD2 = d2;
-          bestFi = fi;
-        }
-      }
-      return bestFi;
-    };
-
-    // 把 residual 拆分成若干补片 loops
-    for (const loop of loopsResidual) {
-      if (exceeded()) break;
-      if (!Array.isArray(loop) || loop.length < 3) continue;
-      const poly = buildJstsPolygonFromLoop(loop);
-      if (!poly || poly.isEmpty?.()) continue;
-
-      let pt = null;
-      try {
-        const c = poly.getCentroid?.();
-        const cc = c?.getCoordinate?.();
-        if (cc && Number.isFinite(cc.x) && Number.isFinite(cc.y)) pt = { x: Number(cc.x), y: Number(cc.y) };
-      } catch {
-        pt = null;
-      }
-      if (!pt) {
-        const bb = bboxOfLoop(loop);
-        if (bb) pt = { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 };
-      }
-      if (!pt) continue;
-
-      const fi = pickNearestFace(pt);
-      const prev = patchPolyByFace.get(fi);
-      patchPolyByFace.set(fi, prev ? (robustUnion(prev, poly) || prev.union?.(poly) || prev) : poly);
-    }
-
-    // 融合：每个面把“原面几何”与“补片几何”做 union，然后转回 loops。
-    const patchedFacesLoops = [];
-    let patchLoopCount = 0;
-    for (const fi of faceIndices) {
-      const g0 = faceGeomByIndex.get(fi);
-      if (!g0 || g0.isEmpty?.()) continue;
-      const p = patchPolyByFace.get(fi);
-      const g1 = p ? (robustUnion(g0, p) || g0.union?.(p) || g0) : g0;
-      const g = ensureValid(g1, 'faceMerge');
-      const loops = polygonToLoops(g);
-      for (const l of loops ?? []) {
-        if (!Array.isArray(l) || l.length < 3) continue;
-        // 补片与煤柱边界相邻时，union 后常出现微小短边/锯齿；对渲染口径做轻量简化，避免“短线”。
-        // 注意：这里的简化必须与其它裁剪输出一致（sanitize + simplifyLoopForRender），否则 fill/outline 可能再次不一致。
-        const sl = simplifyLoopForRender(sanitizeLoopForRender(l));
-        if (Array.isArray(sl) && sl.length >= 3) {
-          patchedFacesLoops.push({ faceIndex: fi, loop: sl });
-          if (p) patchLoopCount += 1;
-        }
-      }
-    }
-    if (!patchedFacesLoops.length) return null;
-
-    // 关键：补片会改变面集合的外边界；必须同步重算 union 外轮廓用于前端描边。
-    // 否则会继承 base.render.plannedUnionLoopsWorld（旧外轮廓），导致“蓝色外轮廓与填充不匹配”。
-    let plannedUnionLoopsWorldPatched = [];
-    try {
-      const u = buildUnionFromFacesLoopsWorld(patchedFacesLoops);
-      if (u && !u.isEmpty?.()) {
-        const loopsU0 = polygonToLoops(u);
-        const loopsU = Array.isArray(loopsU0) ? loopsU0 : [];
-        const seen = new Set();
-        const out = [];
-        for (const l0 of loopsU) {
-          const l1 = cleanupUnionOutlineLoop(sanitizeLoopForRender(l0));
-          if (!Array.isArray(l1) || l1.length < 3) continue;
-          const canon = canonicalizeLoopForOutline(l1);
-          if (!Array.isArray(canon) || canon.length < 3) continue;
-          const k = loopKeyForCache(canon);
-          if (k && seen.has(k)) continue;
-          if (k) seen.add(k);
-          out.push(canon);
-        }
-        plannedUnionLoopsWorldPatched = out;
-      }
-    } catch {
-      plannedUnionLoopsWorldPatched = [];
-    }
-
-    // 复算 effective coverage
-    const tmp = { ...base, render: { ...(base?.render || {}), clippedFacesLoops: patchedFacesLoops, plannedWorkfaceLoopsWorld: patchedFacesLoops } };
-    const eff1 = computeEffectiveCoverage(tmp);
-    if (!eff1) return null;
-    if (!(eff1.coverageRatioEff > eff0.coverageRatioEff + 1e-9)) return null;
-
-    const sigBase = String(base?.signature ?? base?.key ?? '');
-    const sig = sigBase ? `${sigBase}|patch=1` : 'patch=1';
-    const out = {
-      ...base,
-      key: sig,
-      signature: sig,
-      // 展示/验收：把 coverageRatio 改为“有效Ω口径”的覆盖率
-      coverageRatio: eff1.coverageRatioEff,
-      efficiencyScore: eff1.coverageRatioEff * 100,
-      coveredArea: eff1.coveredAreaEff,
-      faceAreaTotal: eff1.coveredAreaEff,
-      innerArea: eff1.omegaAreaEff,
-      omegaArea: eff1.omegaAreaEff,
-      qualified: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
-      qualifiedFullCover: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
-      coverageRatioEff: eff1.coverageRatioEff,
-      omegaAreaEff: eff1.omegaAreaEff,
-      pillarArea: eff1.pillarArea,
-      pillarGapCount: eff1.pillarGapCount,
-      pillarGapWidthSum: eff1.pillarGapWidthSum,
-      residualAreaEff: eff1.residualAreaEff,
-      render: {
-        ...(base?.render && typeof base.render === 'object' ? base.render : {}),
-        allowNonRectFaces: true,
-        strictInsideOmega: false,
-        clippedFacesLoops: patchedFacesLoops,
-        plannedWorkfaceLoopsWorld: patchedFacesLoops,
-        plannedUnionLoopsWorld: plannedUnionLoopsWorldPatched,
-      },
-      metrics: {
-        ...(base?.metrics && typeof base.metrics === 'object' ? base.metrics : {}),
-        coverageRatio: eff1.coverageRatioEff,
-        efficiencyScore: eff1.coverageRatioEff * 100,
-        coveredArea: eff1.coveredAreaEff,
-        faceAreaTotal: eff1.coveredAreaEff,
-        innerArea: eff1.omegaAreaEff,
-        omegaArea: eff1.omegaAreaEff,
-        coverageRatioEff: eff1.coverageRatioEff,
-        omegaAreaEff: eff1.omegaAreaEff,
-        pillarArea: eff1.pillarArea,
-        pillarGapCount: eff1.pillarGapCount,
-        pillarGapWidthSum: eff1.pillarGapWidthSum,
-        residualAreaEff: eff1.residualAreaEff,
-        qualified: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
-        qualifiedFullCover: Boolean(eff1.coverageRatioEff >= FULL_COVER_MIN),
-        fullCoverPatch: {
-          enabled: true,
-          budgetMs: FULL_COVER_PATCH_BUDGET_MS,
-          elapsedMs: Math.max(0, nowMs() - t0),
-          residualAreaBefore: eff0.residualAreaEff,
-          residualAreaAfter: eff1.residualAreaEff,
-          coverageBefore: eff0.coverageRatioEff,
-          coverageAfter: eff1.coverageRatioEff,
-          patchLoopCount,
-        },
-      },
-    };
-    return out;
-  };
-
+  // Scheme C：Top3 轻修补（LIGHT），不改变候选排序，不改 signature。
+  // - 输出：renderPatched + patchBudgetTier + fullCoverAchieved_patched + metrics.patchStats
+  // - base+patched 双版本：前端可先画 base，再异步替换 patched；patched 失败可回退 base。
   try {
-    const patched = tryFullCoverPatch();
-    if (patched) {
-      // 插到第一名参与展示；仍保持 topK 截断
-      candidates = [patched, ...candidates].slice(0, Math.max(1, candidates.length));
-    }
-  } catch {
-    // ignore patch exceptions
-  }
+    const MEDIUM_MS = FULL_COVER_PATCH_BUDGET_MS;
+    const LIGHT_MS = clamp(Math.round(MEDIUM_MS * 0.25), 80, Math.min(800, MEDIUM_MS));
+    const HIGH_MS = clamp(Math.round(MEDIUM_MS * 2.5), 300, 8000);
 
-  // fullCover/补片/cleanup 可能会改变 coverage/qualified，需要重新评分排序
-  try {
-    candidates = (candidates ?? []).slice().sort(compareMain);
+    const topN = Math.min(3, Math.max(0, candidates?.length ?? 0));
+    for (let i = 0; i < topN; i++) {
+      const c = candidates[i];
+      if (!c || typeof c !== 'object') continue;
+      if (!FULL_COVER_ENABLED || !FULL_COVER_PATCH_ENABLED || !IGNORE_COAL_PILLARS_IN_COVERAGE) continue;
+
+      // 默认：LIGHT。前端点选候选时可用 refine 提升到 MEDIUM/HIGH。
+      const patch = patchCandidateFullCover({
+        cand: c,
+        tier: PATCH_BUDGET_TIERS.LIGHT,
+        fullCoverMin: FULL_COVER_MIN,
+        ignoreCoalPillarsInCoverage: IGNORE_COAL_PILLARS_IN_COVERAGE,
+        budgetMs: LIGHT_MS,
+      });
+
+      // 失败不应占用“已补”档位，避免后续 refine 被 ALREADY_REFINED 阻断。
+      if (patch?.ok && patch?.renderPatched) c.patchBudgetTier = patch?.tier ?? PATCH_BUDGET_TIERS.LIGHT;
+      c.fullCoverAchieved_patched = (Object.prototype.hasOwnProperty.call(patch ?? {}, 'fullCoverAchieved_patched'))
+        ? patch.fullCoverAchieved_patched
+        : null;
+      if (patch?.ok && patch?.renderPatched) c.renderPatched = patch.renderPatched;
+      if (c.metrics && typeof c.metrics === 'object') {
+        c.metrics.patchStats = patch?.patchStats ?? null;
+        c.metrics.patchBudgetMs = { light: LIGHT_MS, medium: MEDIUM_MS, high: HIGH_MS };
+      }
+    }
   } catch {
     // ignore
   }
@@ -6931,36 +6753,799 @@ const computePreview = (payload) => {
 
 export { compute };
 
+// ------------------------------
+// Scheme C: base + patched (lazy)
+// ------------------------------
+
+const PATCH_BUDGET_TIERS = Object.freeze({
+  NONE: 'NONE',
+  LIGHT: 'LIGHT',
+  MEDIUM: 'MEDIUM',
+  HIGH: 'HIGH',
+});
+
+const normalizePatchTier = (tierLike) => {
+  const t = String(tierLike ?? '').toUpperCase().trim();
+  if (t === PATCH_BUDGET_TIERS.LIGHT) return PATCH_BUDGET_TIERS.LIGHT;
+  if (t === PATCH_BUDGET_TIERS.MEDIUM) return PATCH_BUDGET_TIERS.MEDIUM;
+  if (t === PATCH_BUDGET_TIERS.HIGH) return PATCH_BUDGET_TIERS.HIGH;
+  return PATCH_BUDGET_TIERS.NONE;
+};
+
+const tierRank = (tierLike) => {
+  const t = normalizePatchTier(tierLike);
+  if (t === PATCH_BUDGET_TIERS.LIGHT) return 1;
+  if (t === PATCH_BUDGET_TIERS.MEDIUM) return 2;
+  if (t === PATCH_BUDGET_TIERS.HIGH) return 3;
+  return 0;
+};
+
+const nowMsWorker = () => {
+  try {
+    return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+  } catch {
+    return Date.now();
+  }
+};
+
+const getOmegaPolyFromCandidate = (cand) => {
+  try {
+    const omegaLoopsWorld = Array.isArray(cand?.render?.omegaLoops) ? cand.render.omegaLoops : [];
+    const omegaLoop = omegaLoopsWorld.find((l) => Array.isArray(l) && l.length >= 3) || null;
+    if (!omegaLoop) return null;
+    const poly = buildJstsPolygonFromLoop(omegaLoop);
+    if (!poly || poly.isEmpty?.()) return null;
+    return ensureValid(poly, 'omegaPolyWorld');
+  } catch {
+    return null;
+  }
+};
+
+// Scheme C 独立渲染清洗工具（不可依赖 compute() 内部闭包函数）
+const sanitizeLoopForRender_SC = (loop) => {
+  const pts0 = Array.isArray(loop) ? loop : [];
+  if (pts0.length < 3) return [];
+  const EPS = 1e-4; // 0.1mm
+  const out = [];
+  for (const p of pts0) {
+    const x = Number(p?.x);
+    const y = Number(p?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const prev = out[out.length - 1];
+    if (prev && Math.abs(prev.x - x) <= EPS && Math.abs(prev.y - y) <= EPS) continue;
+    out.push({ x, y });
+  }
+  if (out.length >= 3) {
+    const a = out[0];
+    const b = out[out.length - 1];
+    if (Math.abs(a.x - b.x) <= EPS && Math.abs(a.y - b.y) <= EPS) out.pop();
+  }
+  return out.length >= 3 ? out : [];
+};
+
+const simplifyLoopForRender_SC = (loop) => {
+  const pts0 = Array.isArray(loop) ? loop : [];
+  if (pts0.length < 4) return pts0;
+  const bb = bboxOfLoop(pts0);
+  const diag = (bb && Number.isFinite(bb.maxX) && Number.isFinite(bb.maxY))
+    ? Math.hypot(bb.maxX - bb.minX, bb.maxY - bb.minY)
+    : 0;
+  const tol = Math.max(0.02, Math.min(0.2, diag * 1e-4));
+  const tol2 = tol * tol;
+  const dist2 = (a, b) => {
+    const dx = (Number(a?.x) - Number(b?.x));
+    const dy = (Number(a?.y) - Number(b?.y));
+    return dx * dx + dy * dy;
+  };
+  const out = [];
+  for (const p of pts0) {
+    if (!out.length) {
+      out.push(p);
+      continue;
+    }
+    if (dist2(out[out.length - 1], p) <= tol2) continue;
+    out.push(p);
+  }
+  if (out.length >= 3 && dist2(out[0], out[out.length - 1]) <= tol2) out.pop();
+  return out.length >= 3 ? out : pts0;
+};
+
+const loopKeyForCache_SC = (loop) => {
+  const pts = Array.isArray(loop) ? loop : [];
+  if (pts.length < 3) return '';
+  const parts = [];
+  for (const p of pts) {
+    const x = Number(p?.x);
+    const y = Number(p?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    parts.push(`${Math.round(x * 1000) / 1000},${Math.round(y * 1000) / 1000}`);
+  }
+  return parts.join(';');
+};
+
+const cleanupUnionOutlineLoop_SC = (loop) => {
+  const cleaned = simplifyLoopForRender_SC(sanitizeLoopForRender_SC(loop));
+  return Array.isArray(cleaned) && cleaned.length >= 3 ? cleaned : [];
+};
+
+const canonicalizeLoopForOutline_SC = (loop) => {
+  const pts0 = cleanupUnionOutlineLoop_SC(loop);
+  if (!Array.isArray(pts0) || pts0.length < 3) return [];
+
+  // 统一方向：使用 CCW（signed area > 0）
+  const signedArea2 = (pts) => {
+    let s = 0;
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      s += (Number(a?.x) * Number(b?.y) - Number(b?.x) * Number(a?.y));
+    }
+    return s;
+  };
+
+  let pts = pts0;
+  const a2 = signedArea2(pts);
+  if (Number.isFinite(a2) && a2 < 0) pts = [...pts].reverse();
+
+  // 旋转到最小点开头，稳定 key
+  let minIdx = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i];
+    const m = pts[minIdx];
+    if (p.x < m.x || (p.x === m.x && p.y < m.y)) minIdx = i;
+  }
+  if (minIdx === 0) return pts;
+  return pts.slice(minIdx).concat(pts.slice(0, minIdx));
+};
+
+const residualPolyToLoopsWorld = (residualPoly) => {
+  try {
+    const loops0 = polygonToLoops(residualPoly);
+    const loops = Array.isArray(loops0) ? loops0 : [];
+    const out = [];
+    for (const l0 of loops) {
+      if (!Array.isArray(l0) || l0.length < 3) continue;
+      const l1 = simplifyLoopForRender_SC(sanitizeLoopForRender_SC(l0));
+      if (Array.isArray(l1) && l1.length >= 3) out.push(l1);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+};
+
+const unionPolyFromLoopsWorld = (loopsWorld) => {
+  try {
+    const loops = Array.isArray(loopsWorld) ? loopsWorld : [];
+    let u = null;
+    for (const loop0 of loops) {
+      const loop = Array.isArray(loop0) ? loop0 : (Array.isArray(loop0?.loop) ? loop0.loop : null);
+      if (!Array.isArray(loop) || loop.length < 3) continue;
+      const cleaned = simplifyLoopForRender_SC(sanitizeLoopForRender_SC(loop));
+      if (!Array.isArray(cleaned) || cleaned.length < 3) continue;
+      let poly = null;
+      try {
+        poly = buildJstsPolygonFromLoop(cleaned);
+      } catch {
+        poly = null;
+      }
+      if (!poly || poly.isEmpty?.()) continue;
+      let p1 = poly;
+      try {
+        p1 = ensureValid(poly, 'loopsPoly');
+      } catch {
+        p1 = poly;
+      }
+      try {
+        u = u ? (robustUnion(u, p1) || u.union?.(p1) || u) : p1;
+      } catch {
+        // 若 union 抛错，尽量保留已有 u
+        u = u || p1;
+      }
+    }
+    return u;
+  } catch {
+    return null;
+  }
+};
+
+const computeEffectiveCoverageForCand = ({ cand, omegaPoly, ignoreCoalPillarsInCoverage }) => {
+  try {
+    if (!ignoreCoalPillarsInCoverage) return null;
+    if (!omegaPoly || omegaPoly.isEmpty?.()) return null;
+
+    const rectLoops = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
+    const facesLoops = Array.isArray(cand?.render?.clippedFacesLoops)
+      ? cand.render.clippedFacesLoops
+      : (Array.isArray(cand?.render?.plannedWorkfaceLoopsWorld) ? cand.render.plannedWorkfaceLoopsWorld : []);
+    const plannedUnionLoops = Array.isArray(cand?.render?.plannedUnionLoopsWorld) ? cand.render.plannedUnionLoopsWorld : [];
+    const residualLoopsWorld = Array.isArray(cand?.render?.residualLoopsWorld) ? cand.render.residualLoopsWorld : [];
+
+    const ws = Math.max(0, Number(cand?.ws) || 0);
+    const ax = String(cand?.axis ?? cand?.genes?.axis ?? 'x');
+    const theta0 = Number(cand?.thetaDeg ?? cand?.metrics?.thetaDeg ?? 0);
+    let pillarMask = null;
+    let pillarArea = 0;
+    let pillarGapCount = 0;
+    let pillarGapWidthSum = 0;
+    try {
+      const r = buildCoalPillarMaskWorld({
+        omegaPolyWorld: omegaPoly,
+        rectLoopsWorld: rectLoops,
+        wsM: ws,
+        axis: ax,
+        thetaDeg: theta0,
+      });
+      pillarMask = r?.mask ?? null;
+      pillarArea = Number(r?.area) || 0;
+      pillarGapCount = Number(r?.gapCount) || 0;
+      pillarGapWidthSum = Number(r?.gapWidthSum) || 0;
+    } catch {
+      pillarMask = null;
+      pillarArea = 0;
+      pillarGapCount = 0;
+      pillarGapWidthSum = 0;
+    }
+
+    let omegaEff = omegaPoly;
+    if (pillarMask && !pillarMask.isEmpty?.()) {
+      try {
+        const diff = robustDifference(omegaPoly, pillarMask);
+        omegaEff = diff ? ensureValid(diff, 'omegaEff') : omegaPoly;
+      } catch {
+        omegaEff = omegaPoly;
+      }
+    }
+
+    const omegaAreaEff0 = Number(omegaEff?.getArea?.());
+    const omegaAreaEff = (Number.isFinite(omegaAreaEff0) && omegaAreaEff0 > 1e-9) ? omegaAreaEff0 : 0;
+    if (!(omegaAreaEff > 1e-9)) {
+      return {
+        omegaAreaEff: 0,
+        pillarArea,
+        pillarGapCount,
+        pillarGapWidthSum,
+        coveredAreaEff: 0,
+        coverageRatioEff: 0,
+        residualAreaEff: 0,
+        omegaEff,
+        residualPoly: null,
+      };
+    }
+
+    let unionFaces = null;
+    try {
+      unionFaces = buildUnionFromFacesLoopsWorld(facesLoops);
+    } catch {
+      unionFaces = null;
+    }
+    if (!unionFaces || unionFaces.isEmpty?.()) {
+      // facesLoops 失败时，尝试用 union 外轮廓（渲染用 loops）重建
+      const u2 = unionPolyFromLoopsWorld(plannedUnionLoops);
+      unionFaces = u2 || unionFaces;
+    }
+
+    let inter = null;
+    try {
+      inter = unionFaces ? robustIntersection(omegaEff, unionFaces) : null;
+    } catch {
+      inter = null;
+    }
+    const covered0 = Number(inter?.getArea?.());
+    const coveredFallback = Number(cand?.coveredAreaEff ?? cand?.coveredArea ?? cand?.metrics?.coveredAreaEff ?? cand?.metrics?.coveredArea ?? 0);
+    const coveredAreaEff = (Number.isFinite(covered0) && covered0 > 0)
+      ? covered0
+      : ((Number.isFinite(coveredFallback) && coveredFallback > 0) ? coveredFallback : 0);
+    const coverageRatioEff = coveredAreaEff / omegaAreaEff;
+
+    let residualPoly = null;
+    if (unionFaces) {
+      try {
+        const r0 = robustDifference(omegaEff, unionFaces);
+        residualPoly = r0 ? ensureValid(r0, 'residualEff') : null;
+      } catch {
+        residualPoly = null;
+      }
+    }
+    if (!residualPoly || residualPoly.isEmpty?.()) {
+      // difference 失败时，尝试用 render.residualLoopsWorld 重建 residual
+      const r2 = unionPolyFromLoopsWorld(residualLoopsWorld);
+      residualPoly = r2 || residualPoly;
+    }
+    if (!residualPoly || residualPoly.isEmpty?.()) {
+      // 最差兜底：用 omegaEff（残煤可能被高估，但避免 eff0 直接 null）
+      residualPoly = omegaEff;
+    }
+    const rA0 = Number(residualPoly?.getArea?.());
+    const residualAreaEff = (Number.isFinite(rA0) && rA0 > 0) ? rA0 : 0;
+
+    return {
+      omegaAreaEff,
+      pillarArea,
+      pillarGapCount,
+      pillarGapWidthSum,
+      coveredAreaEff,
+      coverageRatioEff,
+      residualAreaEff,
+      omegaEff,
+      residualPoly,
+    };
+  } catch {
+    // 重要：patchCandidateFullCover 依赖 eff0，不允许这里直接返回 null（否则上层只有 EFF0_NULL）。
+    try {
+      const omegaAreaEff0 = Number(omegaPoly?.getArea?.());
+      const omegaAreaEff = (Number.isFinite(omegaAreaEff0) && omegaAreaEff0 > 1e-9) ? omegaAreaEff0 : 0;
+      const coverageFallback = Number(cand?.coverageRatioEff ?? cand?.coverageRatio ?? cand?.metrics?.coverageRatioEff ?? cand?.metrics?.coverageRatio ?? 0);
+      const residualAreaFallback = Number(cand?.residualAreaEff ?? cand?.metrics?.residualAreaEff ?? 0);
+      return {
+        omegaAreaEff,
+        pillarArea: 0,
+        pillarGapCount: 0,
+        pillarGapWidthSum: 0,
+        coveredAreaEff: Math.max(0, omegaAreaEff * (Number.isFinite(coverageFallback) ? coverageFallback : 0)),
+        coverageRatioEff: Number.isFinite(coverageFallback) ? coverageFallback : 0,
+        residualAreaEff: Number.isFinite(residualAreaFallback) ? residualAreaFallback : 0,
+        omegaEff: omegaPoly,
+        residualPoly: omegaPoly,
+      };
+    } catch {
+      return {
+        omegaAreaEff: 0,
+        pillarArea: 0,
+        pillarGapCount: 0,
+        pillarGapWidthSum: 0,
+        coveredAreaEff: 0,
+        coverageRatioEff: 0,
+        residualAreaEff: 0,
+        omegaEff: omegaPoly,
+        residualPoly: omegaPoly,
+      };
+    }
+  }
+};
+
+const patchCandidateFullCover = ({
+  cand,
+  tier,
+  fullCoverMin,
+  ignoreCoalPillarsInCoverage,
+  budgetMs,
+}) => {
+  const t0 = nowMsWorker();
+  const tierNorm = normalizePatchTier(tier);
+  const maxMs = Math.max(0, Math.round(Number(budgetMs) || 0));
+
+  const mkFail = (reason) => ({
+    ok: false,
+    tier: tierNorm,
+    fullCoverAchieved_patched: null,
+    renderPatched: null,
+    patchStats: {
+      ok: false,
+      tier: tierNorm,
+      budgetMs: maxMs,
+      elapsedMs: Math.max(0, nowMsWorker() - t0),
+      reason: String(reason || 'PATCH_FAILED'),
+      residualAreaBefore: null,
+      residualAreaAfter: null,
+      coverageBefore: null,
+      coverageAfter: null,
+      patchLoopCount: 0,
+    },
+  });
+
+  if (!cand || typeof cand !== 'object') return mkFail('CAND_NULL');
+  if (tierNorm === PATCH_BUDGET_TIERS.NONE) return mkFail('TIER_NONE');
+
+  const omegaPoly = getOmegaPolyFromCandidate(cand);
+  if (!omegaPoly) return mkFail('OMEGA_POLY_MISSING');
+
+  const eff0 = computeEffectiveCoverageForCand({ cand, omegaPoly, ignoreCoalPillarsInCoverage });
+  if (!eff0) return mkFail('EFF0_NULL');
+  const coverage0 = Number(eff0.coverageRatioEff);
+  const residual0 = Number(eff0.residualAreaEff);
+  const omegaAreaEff0 = Number(eff0.omegaAreaEff);
+  const omegaAreaEff = (Number.isFinite(omegaAreaEff0) && omegaAreaEff0 > 1e-9) ? omegaAreaEff0 : 0;
+  const residualRatio0 = omegaAreaEff > 1e-12 && Number.isFinite(residual0) ? Math.max(0, residual0 / omegaAreaEff) : 0;
+  const residualNegligible = (Number.isFinite(residual0) ? residual0 : 0) <= 1e-6 || residualRatio0 <= 1e-6;
+
+  // 注意：fullCoverMin 允许少量残煤（例如 0.995 => 0.5%），但用户会在图上“看见”。
+  // 因此：只有在“残煤可忽略”时才提前返回；否则即便 coverage 已达标也继续尝试补片。
+  if (Number.isFinite(coverage0) && coverage0 >= fullCoverMin && residualNegligible) {
+    return {
+      ok: true,
+      tier: tierNorm,
+      fullCoverAchieved_patched: true,
+      renderPatched: {
+        ...(cand?.render && typeof cand.render === 'object' ? cand.render : {}),
+        residualLoopsWorld: [],
+      },
+      patchStats: {
+        ok: true,
+        tier: tierNorm,
+        budgetMs: maxMs,
+        elapsedMs: Math.max(0, nowMsWorker() - t0),
+        reason: 'ALREADY_FULL_COVER',
+        residualAreaBefore: residual0,
+        residualAreaAfter: residual0,
+        coverageBefore: coverage0,
+        coverageAfter: coverage0,
+        patchLoopCount: 0,
+      },
+    };
+  }
+  if (!(Number.isFinite(residual0) && residual0 > 1e-6) || !eff0.residualPoly || eff0.residualPoly.isEmpty?.()) {
+    return mkFail('RESIDUAL_EMPTY');
+  }
+
+  const deadline = t0 + Math.max(0, maxMs);
+  const exceeded = () => nowMsWorker() > deadline;
+
+  const facesLoops0 = Array.isArray(cand?.render?.clippedFacesLoops)
+    ? cand.render.clippedFacesLoops
+    : (Array.isArray(cand?.render?.plannedWorkfaceLoopsWorld) ? cand.render.plannedWorkfaceLoopsWorld : []);
+  if (!facesLoops0.length) return mkFail('FACES_LOOPS_EMPTY');
+
+  const faceGeomByIndex = new Map();
+  const faceBoxByIndex = new Map();
+  for (const f of facesLoops0) {
+    const fi = Math.max(1, Math.round(Number(f?.faceIndex) || 1));
+    const loop = f?.loop;
+    if (!Array.isArray(loop) || loop.length < 3) continue;
+    const poly = buildJstsPolygonFromLoop(loop);
+    if (!poly || poly.isEmpty?.()) continue;
+
+    const prevG = faceGeomByIndex.get(fi);
+    faceGeomByIndex.set(fi, prevG ? (robustUnion(prevG, poly) || prevG.union?.(poly) || prevG) : poly);
+
+    const bb = bboxOfLoop(loop);
+    if (!bb) continue;
+    const prevB = faceBoxByIndex.get(fi);
+    if (!prevB) {
+      faceBoxByIndex.set(fi, { ...bb });
+    } else {
+      prevB.minX = Math.min(prevB.minX, bb.minX);
+      prevB.maxX = Math.max(prevB.maxX, bb.maxX);
+      prevB.minY = Math.min(prevB.minY, bb.minY);
+      prevB.maxY = Math.max(prevB.maxY, bb.maxY);
+    }
+  }
+
+  const faceIndices = Array.from(faceBoxByIndex.keys()).sort((a, b) => a - b);
+  if (!faceIndices.length) return mkFail('FACE_INDEX_EMPTY');
+
+  // 关键优化：不要依赖 residualPoly -> loops（差分后 ring 可能退化/异常，导致 loops 为空）。
+  // 直接遍历 residualPoly 的 Polygon 子几何，按质心分配到最近工作面。
+  const residualPolys = geomToPolygons(eff0.residualPoly).filter((g) => g && !g.isEmpty?.());
+  if (!residualPolys.length) return mkFail('RESIDUAL_POLYS_EMPTY');
+
+  const patchPolyByFace = new Map();
+  const pickNearestFace = (pt) => {
+    let bestFi = faceIndices[0];
+    let bestD2 = Infinity;
+    for (const fi of faceIndices) {
+      const bb = faceBoxByIndex.get(fi);
+      if (!bb) continue;
+      const cx = (Number(bb.minX) + Number(bb.maxX)) / 2;
+      const cy = (Number(bb.minY) + Number(bb.maxY)) / 2;
+      const dx = Number(pt?.x) - cx;
+      const dy = Number(pt?.y) - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestFi = fi;
+      }
+    }
+    return bestFi;
+  };
+
+  for (const poly of residualPolys) {
+    if (exceeded()) break;
+    let pt = null;
+    try {
+      const c = poly.getCentroid?.();
+      const cc = c?.getCoordinate?.();
+      if (cc && Number.isFinite(cc.x) && Number.isFinite(cc.y)) pt = { x: Number(cc.x), y: Number(cc.y) };
+    } catch {
+      pt = null;
+    }
+    if (!pt) {
+      try {
+        const env = poly.getEnvelopeInternal?.();
+        const bb = envToBox(env);
+        if (bb) pt = { x: (bb.minX + bb.maxX) / 2, y: (bb.minY + bb.maxY) / 2 };
+      } catch {
+        pt = null;
+      }
+    }
+    if (!pt) continue;
+
+    const fi = pickNearestFace(pt);
+    const prev = patchPolyByFace.get(fi);
+    patchPolyByFace.set(fi, prev ? (robustUnion(prev, poly) || prev.union?.(poly) || prev) : poly);
+  }
+
+  const patchedFacesLoops = [];
+  let patchLoopCount = 0;
+  for (const fi of faceIndices) {
+    const g0 = faceGeomByIndex.get(fi);
+    if (!g0 || g0.isEmpty?.()) continue;
+    const p = patchPolyByFace.get(fi);
+    const g1 = p ? (robustUnion(g0, p) || g0.union?.(p) || g0) : g0;
+    const g = ensureValid(g1, 'faceMerge');
+    const loops = polygonToLoops(g);
+    for (const l of loops ?? []) {
+      if (!Array.isArray(l) || l.length < 3) continue;
+      const sl = simplifyLoopForRender_SC(sanitizeLoopForRender_SC(l));
+      if (Array.isArray(sl) && sl.length >= 3) {
+        patchedFacesLoops.push({ faceIndex: fi, loop: sl });
+        if (p) patchLoopCount += 1;
+      }
+    }
+  }
+  if (!patchedFacesLoops.length) return mkFail('PATCH_FACES_EMPTY');
+
+  let plannedUnionLoopsWorldPatched = [];
+  try {
+    const u = buildUnionFromFacesLoopsWorld(patchedFacesLoops);
+    if (u && !u.isEmpty?.()) {
+      const loopsU0 = polygonToLoops(u);
+      const loopsU = Array.isArray(loopsU0) ? loopsU0 : [];
+      const seen = new Set();
+      const out = [];
+      for (const l0 of loopsU) {
+        const l1 = cleanupUnionOutlineLoop_SC(l0);
+        if (!Array.isArray(l1) || l1.length < 3) continue;
+        const canon = canonicalizeLoopForOutline_SC(l1);
+        if (!Array.isArray(canon) || canon.length < 3) continue;
+        const k = loopKeyForCache_SC(canon);
+        if (k && seen.has(k)) continue;
+        if (k) seen.add(k);
+        out.push(canon);
+      }
+      plannedUnionLoopsWorldPatched = out;
+    }
+  } catch {
+    plannedUnionLoopsWorldPatched = [];
+  }
+
+  const tmp = {
+    ...cand,
+    render: {
+      ...(cand?.render && typeof cand.render === 'object' ? cand.render : {}),
+      clippedFacesLoops: patchedFacesLoops,
+      plannedWorkfaceLoopsWorld: patchedFacesLoops,
+      plannedUnionLoopsWorld: plannedUnionLoopsWorldPatched,
+    },
+  };
+  const eff1 = computeEffectiveCoverageForCand({ cand: tmp, omegaPoly, ignoreCoalPillarsInCoverage });
+  if (!eff1) return mkFail('EFF1_NULL');
+
+  const coverage1 = Number(eff1.coverageRatioEff);
+  const improved = Number.isFinite(coverage0) && Number.isFinite(coverage1)
+    ? (coverage1 > coverage0 + 1e-9)
+    : false;
+  if (!improved) return mkFail('NO_IMPROVEMENT');
+
+  const fullCoverAchieved = Number.isFinite(coverage1) ? Boolean(coverage1 >= fullCoverMin) : false;
+  const residualLoopsWorld = residualPolyToLoopsWorld(eff1.residualPoly);
+
+  return {
+    ok: true,
+    tier: tierNorm,
+    fullCoverAchieved_patched: fullCoverAchieved,
+    renderPatched: {
+      ...(cand?.render && typeof cand.render === 'object' ? cand.render : {}),
+      allowNonRectFaces: true,
+      strictInsideOmega: false,
+      clippedFacesLoops: patchedFacesLoops,
+      plannedWorkfaceLoopsWorld: patchedFacesLoops,
+      plannedUnionLoopsWorld: plannedUnionLoopsWorldPatched,
+      residualLoopsWorld,
+    },
+    patchStats: {
+      ok: true,
+      tier: tierNorm,
+      budgetMs: maxMs,
+      elapsedMs: Math.max(0, nowMsWorker() - t0),
+      reason: 'OK',
+      residualAreaBefore: Number(eff0.residualAreaEff) || 0,
+      residualAreaAfter: Number(eff1.residualAreaEff) || 0,
+      coverageBefore: Number(eff0.coverageRatioEff) || 0,
+      coverageAfter: Number(eff1.coverageRatioEff) || 0,
+      patchLoopCount,
+    },
+  };
+};
+
+// cacheKey -> { result, bySig }
+const smartResourceLastByCacheKey = new Map();
+
 if (typeof self !== 'undefined') {
   self.onmessage = (e) => {
     const data = e?.data ?? {};
-    if (data?.type !== 'compute') return;
+    const type = String(data?.type ?? '');
     const payload = data?.payload ?? {};
-    try {
-      const result = compute(payload);
-      self.postMessage({ type: 'result', payload: result });
-    } catch (err) {
-      const msg = String(err?.message ?? err);
-      self.postMessage({
-        type: 'result',
-        payload: {
-          ok: false,
-          reqSeq: payload?.reqSeq,
-          cacheKey: String(payload?.cacheKey ?? ''),
-          mode: 'smart-resource',
-          message: msg,
-          failedReason: msg,
-          omegaRender: null,
-          omegaArea: null,
-          candidates: [],
-          tonnageTotal: 0,
-          attemptSummary: {
-            attemptedCombos: 0,
-            feasibleCombos: 0,
-            failTypes: { EXCEPTION: 1 },
+
+    if (type === 'compute') {
+      try {
+        const result = compute(payload);
+        // cache：用于后续 refine（点选候选自动补残煤/加预算）。
+        try {
+          if (result?.ok && String(result?.cacheKey ?? '')) {
+            const cacheKey = String(result.cacheKey);
+            const bySig = new Map();
+            for (const c of (result?.candidates ?? [])) {
+              const sig = String(c?.signature ?? '');
+              if (sig) bySig.set(sig, c);
+            }
+            smartResourceLastByCacheKey.set(cacheKey, {
+              ts: Date.now(),
+              result,
+              bySig,
+            });
+          }
+        } catch {
+          // ignore cache failures
+        }
+
+        self.postMessage({ type: 'result', payload: result });
+      } catch (err) {
+        const msg = String(err?.message ?? err);
+        self.postMessage({
+          type: 'result',
+          payload: {
+            ok: false,
+            reqSeq: payload?.reqSeq,
+            cacheKey: String(payload?.cacheKey ?? ''),
+            mode: 'smart-resource',
+            message: msg,
+            failedReason: msg,
+            omegaRender: null,
+            omegaArea: null,
+            candidates: [],
+            tonnageTotal: 0,
+            attemptSummary: {
+              attemptedCombos: 0,
+              feasibleCombos: 0,
+              failTypes: { EXCEPTION: 1 },
+            },
           },
-        },
-      });
+        });
+      }
+      return;
+    }
+
+    if (type === 'refine') {
+      const cacheKey = String(payload?.cacheKey ?? '');
+      const signature = String(payload?.signature ?? payload?.sig ?? '');
+      const tier = normalizePatchTier(payload?.tier ?? payload?.patchBudgetTier ?? 'LIGHT');
+
+      const entry = cacheKey ? smartResourceLastByCacheKey.get(cacheKey) : null;
+      const cand = entry?.bySig?.get(signature) ?? null;
+
+      const fullCoverMin = Number(entry?.result?.top1?.fullCoverMin ?? entry?.result?.stats?.fullCoverMin ?? payload?.fullCoverMin ?? 0.995);
+      const ignorePillars = Boolean(entry?.result?.top1?.ignoreCoalPillarsInCoverage ?? entry?.result?.stats?.ignoreCoalPillarsInCoverage ?? payload?.ignoreCoalPillarsInCoverage ?? true);
+
+      const mediumMs0 = Number(
+        entry?.result?.candidates?.[0]?.metrics?.patchBudgetMs?.medium
+        ?? payload?.fullCoverPatchMaxTimeMs
+        ?? 1200
+      );
+      const mediumMs = clamp(Math.round(mediumMs0), 100, 8000);
+      const lightMs = clamp(Math.round(mediumMs * 0.25), 80, Math.min(800, mediumMs));
+      const highMs = clamp(Math.round(mediumMs * 2.5), 300, 8000);
+      const budgetMs = (tier === PATCH_BUDGET_TIERS.HIGH)
+        ? highMs
+        : (tier === PATCH_BUDGET_TIERS.MEDIUM)
+          ? mediumMs
+          : lightMs;
+
+      if (!entry || !entry?.result?.ok) {
+        self.postMessage({
+          type: 'refine-result',
+          payload: {
+            ok: false,
+            cacheKey,
+            signature,
+            tier,
+            reason: 'CACHE_MISS',
+          },
+        });
+        return;
+      }
+      if (!cand) {
+        self.postMessage({
+          type: 'refine-result',
+          payload: {
+            ok: false,
+            cacheKey,
+            signature,
+            tier,
+            reason: 'CAND_NOT_FOUND',
+          },
+        });
+        return;
+      }
+
+      try {
+        const prevTier = String(cand?.patchBudgetTier ?? 'NONE');
+        const prevOk = Boolean(cand?.renderPatched && (Array.isArray(cand?.renderPatched?.clippedFacesLoops) || Array.isArray(cand?.renderPatched?.plannedWorkfaceLoopsWorld)));
+        if (prevOk && tierRank(prevTier) >= tierRank(tier)) {
+          self.postMessage({
+            type: 'refine-result',
+            payload: {
+              ok: true,
+              cacheKey,
+              signature,
+              tier,
+              reason: 'ALREADY_REFINED',
+              candidatePatch: {
+                signature,
+                patchBudgetTier: cand?.patchBudgetTier ?? PATCH_BUDGET_TIERS.NONE,
+                fullCoverAchieved_patched: (Object.prototype.hasOwnProperty.call(cand ?? {}, 'fullCoverAchieved_patched')) ? cand.fullCoverAchieved_patched : null,
+                renderPatched: cand?.renderPatched ?? null,
+                patchStats: cand?.metrics?.patchStats ?? null,
+              },
+            },
+          });
+          return;
+        }
+
+        const patch = patchCandidateFullCover({
+          cand,
+          tier,
+          fullCoverMin: clamp(Number(fullCoverMin || 0.995), 0, 1),
+          ignoreCoalPillarsInCoverage: ignorePillars,
+          budgetMs,
+        });
+
+        // 只在成功产出 patched 渲染时提高 patchBudgetTier，失败不应阻断后续重试/加预算。
+        if (patch?.ok && patch?.renderPatched) cand.patchBudgetTier = patch?.tier ?? tier;
+        cand.fullCoverAchieved_patched = (Object.prototype.hasOwnProperty.call(patch ?? {}, 'fullCoverAchieved_patched'))
+          ? patch.fullCoverAchieved_patched
+          : null;
+        if (patch?.ok && patch?.renderPatched) cand.renderPatched = patch.renderPatched;
+        if (cand.metrics && typeof cand.metrics === 'object') {
+          cand.metrics.patchStats = patch?.patchStats ?? null;
+          cand.metrics.patchBudgetMs = { light: lightMs, medium: mediumMs, high: highMs };
+        }
+
+        self.postMessage({
+          type: 'refine-result',
+          payload: {
+            ok: Boolean(patch?.ok),
+            cacheKey,
+            signature,
+            tier,
+            reason: patch?.patchStats?.reason ?? 'DONE',
+            candidatePatch: {
+              signature,
+              patchBudgetTier: cand.patchBudgetTier,
+              fullCoverAchieved_patched: cand.fullCoverAchieved_patched,
+              renderPatched: cand.renderPatched,
+              patchStats: cand?.metrics?.patchStats ?? null,
+              patchBudgetMs: cand?.metrics?.patchBudgetMs ?? null,
+            },
+          },
+        });
+      } catch (err) {
+        const msg = String(err?.message ?? err);
+        self.postMessage({
+          type: 'refine-result',
+          payload: {
+            ok: false,
+            cacheKey,
+            signature,
+            tier,
+            reason: msg,
+          },
+        });
+      }
+      return;
     }
   };
 }
