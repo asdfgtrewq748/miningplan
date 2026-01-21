@@ -8012,18 +8012,7 @@ const App = () => {
 
   const handleStartIntelligentPlanning = () => {
     try {
-      // 记录“点击前”的规划快照，用于清空时回退
-      setPlanningPreStartSnapshot({
-        planningParams: cloneJson(planningParams),
-        planningReverseSolutions: cloneJson(planningReverseSolutions),
-        planningAdvanceAxis,
-        plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
-        plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
-        showPlanningBoundaryOverlay,
-        hasInitializedFaceWidthRange,
-      });
-
-      // 切换到规划视图（是否清空旧结果取决于“是否需要重算”）
+      // 切换到规划视图
       switchMainViewModeWithRightPanel('planning');
 
       if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
@@ -8037,8 +8026,6 @@ const App = () => {
       const roadwayDirEff = String(planningParams.roadwayOrientation ?? 'x');
       const advanceAxisEff = roadwayDirEff === 'y' ? 'y' : 'x';
       setPlanningAdvanceAxis(advanceAxisEff);
-
-      // 每次点击都按“多目标规划优化方案”的当前选项卡执行
 
       // 工作面宽度默认范围（空值时归一化到工程默认）
       setPlanningParams((p) => {
@@ -8054,68 +8041,30 @@ const App = () => {
         };
       });
 
-      // 计算触发策略（按你的要求）：
-      // - 若数据没修改：再次点击只“继续/复用”（busy 则继续显示进度；非 busy 则复用当前结果/缓存）。
-      // - 若数据已修改：再次点击重新计算。
       if (planningOptMode === 'efficiency') {
         const currentKey = String(buildEfficiencyCacheKey());
         const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
         const lastShownKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
-        const dataChanged = Boolean((planningEfficiencyBusy && inFlightKey) ? (currentKey !== inFlightKey) : (lastShownKey ? (currentKey !== lastShownKey) : true));
+        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDate = Boolean(!planningEfficiencyBusy && lastShownKey && currentKey === lastShownKey);
 
-        // 1) 没改数据且仍在算：继续显示当前进度（不重启计算）
-        if (planningEfficiencyBusy && !dataChanged) {
-          try {
-            const p = planningEfficiencyProgress;
-            const pct = Number(p?.percent);
-            const tried = Number(p?.attemptedCombos);
-            const ok = Number(p?.feasibleCombos);
-            const phase = String(p?.phase ?? '').trim();
-            const wsI = Number(p?.wsIndex);
-            const wsT = Number(p?.wsTotal);
-            const nI = Number(p?.nIndex);
-            const nT = Number(p?.nTotal);
-            const parts = [];
-            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
-            if (Number.isFinite(wsI) && Number.isFinite(wsT) && wsT >= 1) parts.push(`ws ${Math.max(1, Math.round(wsI))}/${Math.round(wsT)}`);
-            if (Number.isFinite(nI) && Number.isFinite(nT) && nT >= 1) parts.push(`N ${Math.max(1, Math.round(nI))}/${Math.round(nT)}`);
-            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
-            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
-            if (phase) parts.push(phase);
-            const suffix = parts.length ? `（${parts.join('，')}）` : '';
-            const msg1 = `计算中…${suffix}`;
-            setPlanningEfficiencyResult((prev) => {
-              if (prev?.ok) return prev;
-              const prevKey = String(prev?.cacheKey ?? '');
-              const keyNow = String(planningEfficiencyCacheKeyRef.current || planningEfficiencyCacheKey || buildEfficiencyCacheKey());
-              const cacheKey = prevKey || keyNow;
-              return {
-                ok: false,
-                mode: 'smart-efficiency',
-                message: msg1,
-                failedReason: '',
-                reqSeq: efficiencyReqSeqRef.current,
-                cacheKey,
-                axis: (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x',
-                fast: false,
-                candidates: [],
-                omegaRender: prev?.omegaRender ?? null,
-                omegaArea: prev?.omegaArea ?? null,
-              };
-            });
-          } catch {
-            // ignore
-          }
-          return;
-        }
+        // 没改参数：
+        // - 若正在算同一组输入：继续（无需任何 state 变更；progress 会持续刷新）
+        // - 若已是最新结果：直接返回
+        if (isComputingSame || isUpToDate) return;
 
-        // 2) 没改数据且不在算：复用当前结果/缓存（不强制重算）
-        if (!planningEfficiencyBusy && !dataChanged) {
-          requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
-          return;
-        }
+        // 参数变化/首次：记录“点击前”快照，用于清空时回退
+        setPlanningPreStartSnapshot({
+          planningParams: cloneJson(planningParams),
+          planningReverseSolutions: cloneJson(planningReverseSolutions),
+          planningAdvanceAxis,
+          plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+          plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
+          showPlanningBoundaryOverlay,
+          hasInitializedFaceWidthRange,
+        });
 
-        // 3) 数据已修改：重算（清空旧图/选中态更符合预期）
+        // 重算：清空旧图/选中态
         setPlannedWorkfaceLoopsWorld([]);
         setPlannedWorkfaceUnionLoopsWorld([]);
         setPlanningInnerOmegaOverrideWb(null);
@@ -8127,56 +8076,21 @@ const App = () => {
         const currentKey = String(buildRecoveryCacheKey());
         const inFlightKey = String(recoveryInFlightKeyRef.current || '');
         const lastShownKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
-        const dataChanged = Boolean((planningRecoveryBusy && inFlightKey) ? (currentKey !== inFlightKey) : (lastShownKey ? (currentKey !== lastShownKey) : true));
+        const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDate = Boolean(!planningRecoveryBusy && lastShownKey && currentKey === lastShownKey);
 
-        // 1) 没改数据且仍在算：继续显示当前进度
-        if (planningRecoveryBusy && !dataChanged) {
-          try {
-            const p = planningRecoveryProgress;
-            const pct = Number(p?.percent);
-            const tried = Number(p?.attemptedCombos);
-            const ok = Number(p?.feasibleCombos);
-            const phase = String(p?.phase ?? '').trim();
-            const parts = [];
-            if (Number.isFinite(pct)) parts.push(`${Math.max(0, Math.min(99, Math.round(pct)))}%`);
-            if (Number.isFinite(tried)) parts.push(`已尝试${Math.max(0, Math.round(tried))}`);
-            if (Number.isFinite(ok)) parts.push(`可行${Math.max(0, Math.round(ok))}`);
-            if (phase) parts.push(phase);
-            const suffix = parts.length ? `（${parts.join('，')}）` : '';
-            const msg1 = `计算中…${suffix}`;
-            setPlanningRecoveryResult((prev) => {
-              if (prev?.ok) return prev;
-              const prevKey = String(prev?.cacheKey ?? '');
-              const keyNow = String(planningRecoveryCacheKeyRef.current || planningRecoveryCacheKey || buildRecoveryCacheKey());
-              const cacheKey = prevKey || keyNow;
-              return {
-                ok: false,
-                mode: 'smart-resource',
-                message: msg1,
-                failedReason: '',
-                reqSeq: recoveryReqSeqRef.current,
-                cacheKey,
-                axis: (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x',
-                fast: false,
-                candidates: [],
-                tonnageTotal: 0,
-                omegaRender: prev?.omegaRender ?? null,
-                omegaArea: prev?.omegaArea ?? null,
-              };
-            });
-          } catch {
-            // ignore
-          }
-          return;
-        }
+        if (isComputingSame || isUpToDate) return;
 
-        // 2) 没改数据且不在算：复用当前结果/缓存
-        if (!planningRecoveryBusy && !dataChanged) {
-          requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
-          return;
-        }
+        setPlanningPreStartSnapshot({
+          planningParams: cloneJson(planningParams),
+          planningReverseSolutions: cloneJson(planningReverseSolutions),
+          planningAdvanceAxis,
+          plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+          plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
+          showPlanningBoundaryOverlay,
+          hasInitializedFaceWidthRange,
+        });
 
-        // 3) 数据已修改：重算
         setPlannedWorkfaceLoopsWorld([]);
         setPlannedWorkfaceUnionLoopsWorld([]);
         setPlanningInnerOmegaOverrideWb(null);
