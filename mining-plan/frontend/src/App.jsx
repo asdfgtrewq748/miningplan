@@ -121,6 +121,9 @@ const App = () => {
   const [planningEfficiencyShowAllCandidates, setPlanningEfficiencyShowAllCandidates] = useState(false);
   const [planningEfficiencyProgress, setPlanningEfficiencyProgress] = useState(null);
   const planningEfficiencyProgressLastTsRef = useRef(0);
+  // 显式点击触发时：至少展示一小段时间的“计算中…”，避免结果过快返回导致肉眼看不到。
+  const planningEfficiencyMinBusyUntilRef = useRef(0);
+  const planningEfficiencyMinBusyReqSeqRef = useRef(0);
 
   // 工程效率：计算过程弹窗（用于复制“请求+回包+TopK候选关键字段”给排障用）
   const efficiencyLastRequestRef = useRef(null);
@@ -143,6 +146,8 @@ const App = () => {
   const [planningRecoveryShowAllCandidates, setPlanningRecoveryShowAllCandidates] = useState(false);
   const [planningRecoveryProgress, setPlanningRecoveryProgress] = useState(null);
   const planningRecoveryProgressLastTsRef = useRef(0);
+  const planningRecoveryMinBusyUntilRef = useRef(0);
+  const planningRecoveryMinBusyReqSeqRef = useRef(0);
 
   // 资源回收：调试弹窗（用于复制“请求+回包+TopK候选关键字段”给排障用）
   const recoveryLastRequestRef = useRef(null);
@@ -1259,7 +1264,8 @@ const App = () => {
 
     // 用户显式点击“启动智能采区规划”时，即使 cacheKey 不变也应重新计算，避免第二次点击直接命中缓存导致
     // UI 不出现“计算中…”（看起来像没响应）。
-    const ignoreCacheFinal = Boolean(ignoreCache || (force && !background));
+    const explicitForeground = Boolean(force && !background);
+    const ignoreCacheFinal = Boolean(ignoreCache || explicitForeground);
 
     const cached = ignoreCacheFinal ? null : efficiencyCacheRef.current.get(cacheKey);
     // 重要：历史版本曾出现 request.axis=y 但返回 axis=x 的错误缓存；这里做一致性校验避免“错缓存复活”。
@@ -1350,6 +1356,10 @@ const App = () => {
       : (Number.isFinite(Number(wbR?.min)) ? Number(wbR.min) : 0);
 
     const reqSeq = (efficiencyReqSeqRef.current += 1);
+    if (explicitForeground) {
+      planningEfficiencyMinBusyUntilRef.current = Date.now() + 260;
+      planningEfficiencyMinBusyReqSeqRef.current = reqSeq;
+    }
     // 即使是 background 重算，也需要展示“计算中…（进度）”
     setPlanningEfficiencyBusy(true);
     setPlanningEfficiencyProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
@@ -1510,7 +1520,8 @@ const App = () => {
       recoveryPendingRefineAxisRef.current = axisNow;
     }
 
-    const ignoreCacheFinal = Boolean(ignoreCache || (force && !background));
+    const explicitForeground = Boolean(force && !background);
+    const ignoreCacheFinal = Boolean(ignoreCache || explicitForeground);
     const cached = ignoreCacheFinal ? null : recoveryCacheRef.current.get(cacheKey);
     workerLog('[worker][recovery] cache-check', { cacheKey, axisNow, force: Boolean(force), fast: Boolean(fast), refine: Boolean(refine), background: Boolean(background) });
     const cachedAxis = String(cached?.result?.axis ?? '');
@@ -1616,6 +1627,10 @@ const App = () => {
       : null;
 
     const reqSeq = (recoveryReqSeqRef.current += 1);
+    if (explicitForeground) {
+      planningRecoveryMinBusyUntilRef.current = Date.now() + 260;
+      planningRecoveryMinBusyReqSeqRef.current = reqSeq;
+    }
     setPlanningRecoveryBusy(true);
     setPlanningRecoveryProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
     planningRecoveryProgressLastTsRef.current = 0;
@@ -1952,12 +1967,34 @@ const App = () => {
         return;
       }
 
-      if (isRecovery) {
-        setPlanningRecoveryBusy(false);
-        setPlanningRecoveryProgress(null);
-      } else {
-        setPlanningEfficiencyBusy(false);
-        setPlanningEfficiencyProgress(null);
+      const clearBusy = () => {
+        if (isRecovery) {
+          setPlanningRecoveryBusy(false);
+          setPlanningRecoveryProgress(null);
+        } else {
+          setPlanningEfficiencyBusy(false);
+          setPlanningEfficiencyProgress(null);
+        }
+      };
+
+      // 显式点击触发：若返回过快，busy 可能一闪而过导致用户感知为“没反应”。
+      try {
+        const now = Date.now();
+        const minUntil = isRecovery ? Number(planningRecoveryMinBusyUntilRef.current || 0) : Number(planningEfficiencyMinBusyUntilRef.current || 0);
+        const minSeq = isRecovery ? Number(planningRecoveryMinBusyReqSeqRef.current || 0) : Number(planningEfficiencyMinBusyReqSeqRef.current || 0);
+        const delayMs = (Number.isFinite(minUntil) && payloadSeq === minSeq) ? Math.max(0, minUntil - now) : 0;
+        if (delayMs > 0) {
+          const seqForDelay = payloadSeq;
+          setTimeout(() => {
+            const latest = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
+            if (Number.isFinite(seqForDelay) && Number.isFinite(latest) && seqForDelay !== latest) return;
+            clearBusy();
+          }, delayMs);
+        } else {
+          clearBusy();
+        }
+      } catch {
+        clearBusy();
       }
 
       if (!payload?.ok) {
