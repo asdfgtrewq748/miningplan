@@ -1909,7 +1909,7 @@ const App = () => {
       return loopsW;
     };
 
-    const handleComputeResult = (uiMode, payload) => {
+    const handleComputeResult = (uiMode, payload, opts = {}) => {
       const isRecovery = uiMode === 'recovery';
       const payloadSeq = Number(payload?.reqSeq);
       const payloadKey = String(payload?.cacheKey ?? '');
@@ -1967,34 +1967,35 @@ const App = () => {
         return;
       }
 
-      const clearBusy = () => {
-        if (isRecovery) {
-          setPlanningRecoveryBusy(false);
-          setPlanningRecoveryProgress(null);
-        } else {
-          setPlanningEfficiencyBusy(false);
-          setPlanningEfficiencyProgress(null);
-        }
-      };
-
-      // 显式点击触发：若返回过快，busy 可能一闪而过导致用户感知为“没反应”。
+      // 显式点击触发：若返回过快，result 会立刻覆盖掉“计算中…”，用户会感觉“第二次点击没反应”。
+      // 这里对“结果应用”做最短延迟（busy/progress 不提前清）。
       try {
-        const now = Date.now();
-        const minUntil = isRecovery ? Number(planningRecoveryMinBusyUntilRef.current || 0) : Number(planningEfficiencyMinBusyUntilRef.current || 0);
-        const minSeq = isRecovery ? Number(planningRecoveryMinBusyReqSeqRef.current || 0) : Number(planningEfficiencyMinBusyReqSeqRef.current || 0);
-        const delayMs = (Number.isFinite(minUntil) && payloadSeq === minSeq) ? Math.max(0, minUntil - now) : 0;
-        if (delayMs > 0) {
-          const seqForDelay = payloadSeq;
-          setTimeout(() => {
-            const latest = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
-            if (Number.isFinite(seqForDelay) && Number.isFinite(latest) && seqForDelay !== latest) return;
-            clearBusy();
-          }, delayMs);
-        } else {
-          clearBusy();
+        const skipMinDelay = Boolean(opts?.skipMinDelay);
+        if (!skipMinDelay) {
+          const now = Date.now();
+          const minUntil = isRecovery ? Number(planningRecoveryMinBusyUntilRef.current || 0) : Number(planningEfficiencyMinBusyUntilRef.current || 0);
+          const minSeq = isRecovery ? Number(planningRecoveryMinBusyReqSeqRef.current || 0) : Number(planningEfficiencyMinBusyReqSeqRef.current || 0);
+          const delayMs = (Number.isFinite(minUntil) && payloadSeq === minSeq) ? Math.max(0, minUntil - now) : 0;
+          if (delayMs > 0) {
+            const seqForDelay = payloadSeq;
+            setTimeout(() => {
+              const latest = isRecovery ? recoveryReqSeqRef.current : efficiencyReqSeqRef.current;
+              if (Number.isFinite(seqForDelay) && Number.isFinite(latest) && seqForDelay !== latest) return;
+              handleComputeResult(uiMode, payload, { skipMinDelay: true });
+            }, delayMs);
+            return;
+          }
         }
       } catch {
-        clearBusy();
+        // ignore
+      }
+
+      if (isRecovery) {
+        setPlanningRecoveryBusy(false);
+        setPlanningRecoveryProgress(null);
+      } else {
+        setPlanningEfficiencyBusy(false);
+        setPlanningEfficiencyProgress(null);
       }
 
       if (!payload?.ok) {
