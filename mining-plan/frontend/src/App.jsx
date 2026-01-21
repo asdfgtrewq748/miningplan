@@ -1182,7 +1182,7 @@ const App = () => {
     }
   };
 
-  const requestComputeEfficiency = ({ force = false, fast = false, refine = false, background = false } = {}) => {
+  const requestComputeEfficiency = ({ force = false, fast = false, refine = false, background = false, ignoreCache = false } = {}) => {
     // 说明：force 用于“点击按钮立即触发”，避免 setState 尚未生效时被 early-return 导致需要点多次。
     if (!force) {
       if (mainViewMode !== 'planning') return;
@@ -1257,7 +1257,11 @@ const App = () => {
       }));
     }
 
-    const cached = efficiencyCacheRef.current.get(cacheKey);
+    // 用户显式点击“启动智能采区规划”时，即使 cacheKey 不变也应重新计算，避免第二次点击直接命中缓存导致
+    // UI 不出现“计算中…”（看起来像没响应）。
+    const ignoreCacheFinal = Boolean(ignoreCache || (force && !background));
+
+    const cached = ignoreCacheFinal ? null : efficiencyCacheRef.current.get(cacheKey);
     // 重要：历史版本曾出现 request.axis=y 但返回 axis=x 的错误缓存；这里做一致性校验避免“错缓存复活”。
     const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const cachedAxis = String(cached?.result?.axis ?? '');
@@ -1277,7 +1281,7 @@ const App = () => {
       && cachedAxis === axisNow
       && cachedSig.startsWith(`${axisNow}|`);
 
-    if (cachedLooksConsistent) {
+    if (!ignoreCacheFinal && cachedLooksConsistent) {
       workerLog('[worker][efficiency] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
       setPlanningEfficiencyResult(cached.result);
       try {
@@ -1476,7 +1480,7 @@ const App = () => {
     efficiencyWorkerRef.current.postMessage(msg);
   };
 
-  const requestComputeRecovery = ({ force = false, fast = false, refine = false, background = false } = {}) => {
+  const requestComputeRecovery = ({ force = false, fast = false, refine = false, background = false, ignoreCache = false } = {}) => {
     if (!force) {
       if (mainViewMode !== 'planning') return;
       if (planningOptMode !== 'recovery') return;
@@ -1506,7 +1510,8 @@ const App = () => {
       recoveryPendingRefineAxisRef.current = axisNow;
     }
 
-    const cached = recoveryCacheRef.current.get(cacheKey);
+    const ignoreCacheFinal = Boolean(ignoreCache || (force && !background));
+    const cached = ignoreCacheFinal ? null : recoveryCacheRef.current.get(cacheKey);
     workerLog('[worker][recovery] cache-check', { cacheKey, axisNow, force: Boolean(force), fast: Boolean(fast), refine: Boolean(refine), background: Boolean(background) });
     const cachedAxis = String(cached?.result?.axis ?? '');
     const cachedFast = Boolean(cached?.result?.fast);
@@ -1523,7 +1528,7 @@ const App = () => {
       && cachedAxis === axisNow
       && cachedSig.startsWith(`${axisNow}|`);
 
-    if (cachedLooksConsistent) {
+    if (!ignoreCacheFinal && cachedLooksConsistent) {
       workerLog('[worker][recovery] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
       setPlanningRecoveryResult(cached.result);
       try {
@@ -8014,12 +8019,12 @@ const App = () => {
       // 单击即出图：工程效率仅精算（关闭 fast）。
       if (planningOptMode === 'efficiency') {
         // 点击“启动智能采区规划”属于用户显式触发：使用前台计算，确保显示进度与“计算中…”提示。
-        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
+        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
       }
       if (planningOptMode === 'recovery') {
         // recovery：直接 full compute（fast 预览会导致候选=1 且 per-face 被禁用）
-        requestComputeRecovery({ force: true, fast: false, refine: false, background: false });
+        requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: true });
         return;
       }
 
