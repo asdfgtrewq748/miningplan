@@ -8022,6 +8022,25 @@ const App = () => {
 
       setShowPlanningBoundaryOverlay(true);
 
+      // 二次点击策略：先判断“是否需要重算”，若不需要则不要触发任何额外 setState，
+      // 否则可能引发 cacheKeyRef 更新/进度被过滤，导致用户看到“进度不显示”。
+      if (planningOptMode === 'efficiency') {
+        const currentKey = String(buildEfficiencyCacheKey());
+        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
+        const lastShownKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
+        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDate = Boolean(!planningEfficiencyBusy && lastShownKey && currentKey === lastShownKey);
+        if (isComputingSame || isUpToDate) return;
+      }
+      if (planningOptMode === 'recovery') {
+        const currentKey = String(buildRecoveryCacheKey());
+        const inFlightKey = String(recoveryInFlightKeyRef.current || '');
+        const lastShownKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
+        const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
+        const isUpToDate = Boolean(!planningRecoveryBusy && lastShownKey && currentKey === lastShownKey);
+        if (isComputingSame || isUpToDate) return;
+      }
+
       // 工程效率最优：优先采用候选寻优 + 点击联动（矩形等宽）
       const roadwayDirEff = String(planningParams.roadwayOrientation ?? 'x');
       const advanceAxisEff = roadwayDirEff === 'y' ? 'y' : 'x';
@@ -8042,17 +8061,6 @@ const App = () => {
       });
 
       if (planningOptMode === 'efficiency') {
-        const currentKey = String(buildEfficiencyCacheKey());
-        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
-        const lastShownKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
-        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDate = Boolean(!planningEfficiencyBusy && lastShownKey && currentKey === lastShownKey);
-
-        // 没改参数：
-        // - 若正在算同一组输入：继续（无需任何 state 变更；progress 会持续刷新）
-        // - 若已是最新结果：直接返回
-        if (isComputingSame || isUpToDate) return;
-
         // 参数变化/首次：记录“点击前”快照，用于清空时回退
         setPlanningPreStartSnapshot({
           planningParams: cloneJson(planningParams),
@@ -8073,14 +8081,6 @@ const App = () => {
         return;
       }
       if (planningOptMode === 'recovery') {
-        const currentKey = String(buildRecoveryCacheKey());
-        const inFlightKey = String(recoveryInFlightKeyRef.current || '');
-        const lastShownKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
-        const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDate = Boolean(!planningRecoveryBusy && lastShownKey && currentKey === lastShownKey);
-
-        if (isComputingSame || isUpToDate) return;
-
         setPlanningPreStartSnapshot({
           planningParams: cloneJson(planningParams),
           planningReverseSolutions: cloneJson(planningReverseSolutions),
