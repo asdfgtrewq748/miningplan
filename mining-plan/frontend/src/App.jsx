@@ -1351,9 +1351,11 @@ const App = () => {
     setPlanningEfficiencyProgress({ percent: 0, attemptedCombos: 0, feasibleCombos: 0, phase: '开始' });
     planningEfficiencyProgressLastTsRef.current = 0;
 
-    // 启动前台计算时先置为“计算中”，避免 UI/调试面板继续展示上一轮响应。
-    // 同时清空绘图层，防止旧图造成误判。
-    if (!background) {
+    // 计算触发时尽量保证“计算中…”提示条可见：
+    // - 前台触发：总是置为“计算中”，避免 UI/调试面板继续展示上一轮响应，同时清空旧图。
+    // - 后台触发：若 cacheKey 发生变化（或没有旧结果），也需要置为“计算中”，否则用户会误以为没动。
+    const shouldClearLayers = !background;
+    if (shouldClearLayers) {
       try {
         setPlanningEfficiencySelectedSig('');
         setPlannedWorkfaceLoopsWorld([]);
@@ -1361,8 +1363,16 @@ const App = () => {
       } catch {
         // ignore
       }
-      try {
-        setPlanningEfficiencyResult((prev) => ({
+    }
+    try {
+      setPlanningEfficiencyResult((prev) => {
+        const prevKey = String(prev?.cacheKey ?? '');
+        const sameKey = prevKey && prevKey === String(cacheKey);
+        // 后台同 key 且已有 ok 结果：不覆盖内容（progress handler 会刷新 message）
+        if (background && prev?.ok && sameKey) return prev;
+        // 后台同 key 但无 ok 结果：允许覆盖为“计算中”以显示进度
+        // 后台 key 变化：也要覆盖为“计算中”
+        return {
           ok: false,
           mode: 'smart-efficiency',
           message: '计算中…（0%，已尝试0，可行0，开始）',
@@ -1374,10 +1384,10 @@ const App = () => {
           candidates: [],
           omegaRender: prev?.omegaRender ?? null,
           omegaArea: prev?.omegaArea ?? null,
-        }));
-      } catch {
-        // ignore
-      }
+        };
+      });
+    } catch {
+      // ignore
     }
 
     const gridRes = 20;
@@ -1614,10 +1624,13 @@ const App = () => {
       // ignore
     }
 
-    // 启动前台计算时先置为“计算中”，避免 UI/调试面板继续展示上一轮响应（会出现 reqSeq 对不上的假象）。
-    if (!background) {
-      try {
-        setPlanningRecoveryResult((prev) => ({
+    // 与工程效率一致：尽量保证“计算中…”提示条可见。
+    try {
+      setPlanningRecoveryResult((prev) => {
+        const prevKey = String(prev?.cacheKey ?? '');
+        const sameKey = prevKey && prevKey === String(cacheKey);
+        if (background && prev?.ok && sameKey) return prev;
+        return {
           ok: false,
           mode: 'smart-resource',
           message: '计算中…（0%，已尝试0，可行0，开始）',
@@ -1630,10 +1643,10 @@ const App = () => {
           tonnageTotal: 0,
           omegaRender: prev?.omegaRender ?? null,
           omegaArea: prev?.omegaArea ?? null,
-        }));
-      } catch {
-        // ignore
-      }
+        };
+      });
+    } catch {
+      // ignore
     }
 
     const msg = {
