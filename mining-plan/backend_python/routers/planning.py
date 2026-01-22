@@ -792,12 +792,72 @@ def _extract_omega_polygon(candidates: List[SmartResourceCandidateIn]) -> Option
     r = candidates[0].render or {}
     omega_loops = r.get('omegaLoops')
     if isinstance(omega_loops, list):
-        # choose first valid loop
+        polys: List[Polygon] = []
         for loop in omega_loops:
             poly = _loop_to_polygon(loop)
             if poly is not None:
-                return poly
+                polys.append(poly)
+        if not polys:
+            return None
+        try:
+            u = unary_union(polys)
+            if u is None or getattr(u, 'is_empty', True):
+                return None
+            # ensure polygon-like
+            if isinstance(u, Polygon):
+                return u
+            # MultiPolygon / GeometryCollection: take as-is bounds/area OK; downstream expects Polygon
+            # For simplicity: buffer(0) often converts to Polygon/MultiPolygon cleanly.
+            try:
+                u2 = u.buffer(0)
+                if isinstance(u2, Polygon) and not u2.is_empty:
+                    return u2
+            except Exception:
+                pass
+            # fallback: pick largest polygon part
+            if hasattr(u, 'geoms'):
+                parts = [g for g in list(getattr(u, 'geoms', [])) if isinstance(g, Polygon) and not g.is_empty]
+                if parts:
+                    parts.sort(key=lambda p: float(getattr(p, 'area', 0.0) or 0.0), reverse=True)
+                    return parts[0]
+            return None
+        except Exception:
+            return polys[0]
     return None
+
+
+def _extract_omega_polygon_from_render(render: Optional[Dict[str, Any]]) -> Optional[Polygon]:
+    r = render or {}
+    omega_loops = r.get('omegaLoops')
+    if not isinstance(omega_loops, list) or not omega_loops:
+        return None
+    polys: List[Polygon] = []
+    for loop in omega_loops:
+        poly = _loop_to_polygon(loop)
+        if poly is not None:
+            polys.append(poly)
+    if not polys:
+        return None
+    try:
+        u = unary_union(polys)
+        if u is None or getattr(u, 'is_empty', True):
+            return None
+        if isinstance(u, Polygon):
+            return u
+        try:
+            u2 = u.buffer(0)
+            if isinstance(u2, Polygon) and not u2.is_empty:
+                return u2
+        except Exception:
+            pass
+        if hasattr(u, 'geoms'):
+            parts = [g for g in list(getattr(u, 'geoms', [])) if isinstance(g, Polygon) and not g.is_empty]
+            if parts:
+                parts.sort(key=lambda p: float(getattr(p, 'area', 0.0) or 0.0), reverse=True)
+                return parts[0]
+        return None
+    except Exception:
+        return polys[0]
 
 
 # -----------------------------
@@ -1067,9 +1127,9 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
     has_thk = sampler.has_thickness
     fallback_mode = 'TONNAGE' if has_thk else 'AREA'
 
-    omega = _extract_omega_polygon(req.candidates)
+    omega_shared = _extract_omega_polygon(req.candidates)
     warnings: List[str] = []
-    if omega is None:
+    if omega_shared is None:
         warnings.append('OMEGA_MISSING')
 
     sample_step = req.sampleStepM
@@ -1089,6 +1149,9 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
         sig = str(c.signature)
         render = c.render or {}
         faces = _extract_faces_polygons(render)
+
+        # 口径统一：允许每个候选携带自己的 omegaLoops（例如前端已做扣煤柱/有效Ω裁剪）。
+        omega = _extract_omega_polygon_from_render(render) or omega_shared
 
         ton = 0.0
         method = 'no-thickness'

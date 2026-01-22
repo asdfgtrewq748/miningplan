@@ -6294,6 +6294,14 @@ const compute = (payload) => {
       } catch {
         c.render.residualLoopsWorld = [];
       }
+
+      // 统一吨位口径：把“有效Ω（扣煤柱后的Ω）”也输出成 loops，供后端按前端最终展示结果计算。
+      // 注意：有效Ω可能是 MultiPolygon，因此这里输出 list-of-loops。
+      try {
+        c.render.omegaEffLoopsWorld = residualPolyToLoopsWorld(eff.omegaEff);
+      } catch {
+        c.render.omegaEffLoopsWorld = [];
+      }
       c.qualifiedFullCover = FULL_COVER_ENABLED ? Boolean(eff.coverageRatioEff >= FULL_COVER_MIN) : null;
       // 口径调整（2026-01-22）：fullCover 允许不达标，但在评分中扣分。
       // 因此这里不再用 fullCoverMin 覆盖 c.qualified（c.qualified 仍代表“硬约束/基础约束”是否满足）。
@@ -6324,6 +6332,7 @@ const compute = (payload) => {
         c.metrics.pillarGapWidthSum = eff.pillarGapWidthSum;
         c.metrics.residualAreaEff = eff.residualAreaEff;
         c.metrics.residualLoopsWorldCount = Array.isArray(c.render?.residualLoopsWorld) ? c.render.residualLoopsWorld.length : 0;
+        c.metrics.omegaEffLoopsWorldCount = Array.isArray(c.render?.omegaEffLoopsWorld) ? c.render.omegaEffLoopsWorld.length : 0;
         c.metrics.qualifiedFullCover = c.qualifiedFullCover;
         // 同上：不再由 fullCover 覆盖 qualified。
       }
