@@ -47,8 +47,14 @@ class SmartResourceCandidateIn(BaseModel):
     signature: str
     qualified: Optional[bool] = None
     coverageRatio: Optional[float] = None
+    coverageRatioEff: Optional[float] = None
     N: Optional[int] = None
     lenCV: Optional[float] = None
+
+    # engineering signals (optional)
+    abnormalFaceCount: Optional[int] = None
+    BMin: Optional[float] = None
+    BMax: Optional[float] = None
 
     axis: Optional[str] = None
     thetaDeg: Optional[float] = None
@@ -65,6 +71,13 @@ class SmartResourceTonnageRequest(BaseModel):
     # optional knobs
     topK: Optional[int] = 10
     sampleStepM: Optional[float] = None
+
+    # scoring knobs (optional)
+    wTonnage: Optional[float] = None
+    wCoverage: Optional[float] = None
+    wEngineering: Optional[float] = None
+    fullCoverMin: Optional[float] = None
+    fullCoverPenaltyFloor: Optional[float] = None
 
 
 class SmartResourceTonnageResponse(BaseModel):
@@ -1035,14 +1048,15 @@ def _compute_tonnage_for_candidate(
 
 
 def _compare_by_recovery(item: Dict[str, Any]) -> Tuple:
-    # sort key: qualified desc, tonnage desc, coverage desc, N asc, lenCV asc, signature asc
+    # sort key: qualified desc, recoveryScore desc, tonnage desc, coverage desc, N asc, lenCV asc, signature asc
     qa = bool(item.get('qualified') is True)
+    s = float(item.get('recoveryScore') or 0.0)
     t = float(item.get('tonnageTotal') or 0.0)
     cov = float(item.get('coverageRatio') or 0.0)
     n = int(item.get('N') or 10**9)
     lencv = float(item.get('lenCV') or 0.0)
     sig = str(item.get('signature') or '')
-    return (0 if qa else 1, -t, -cov, n, lencv, sig)
+    return (0 if qa else 1, -s, -t, -cov, n, lencv, sig)
 
 
 @router.post('/planning/smart-resource/tonnage', response_model=SmartResourceTonnageResponse)
@@ -1068,6 +1082,8 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
 
     enriched: List[Dict[str, Any]] = []
     tonnage_by_sig: Dict[str, float] = {}
+    coverage_by_sig: Dict[str, float] = {}
+    eng_by_sig: Dict[str, float] = {}
 
     for c in req.candidates:
         sig = str(c.signature)
@@ -1083,11 +1099,49 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
             w_local = ['OMEGA_MISSING']
 
         tonnage_by_sig[sig] = float(ton)
+
+        # coverage: prefer effective coverage when provided
+        cov = c.coverageRatioEff if c.coverageRatioEff is not None else c.coverageRatio
+        cov = float(cov) if cov is not None else 0.0
+        cov = float(np.clip(cov, 0.0, 1.0))
+        coverage_by_sig[sig] = cov
+
+        # engineering: build a stable 0-1 score from available signals
+        n_val = int(c.N) if c.N is not None else None
+        len_cv = float(c.lenCV) if c.lenCV is not None else None
+        abn = int(c.abnormalFaceCount) if c.abnormalFaceCount is not None else 0
+        bmin = float(c.BMin) if c.BMin is not None else None
+        bmax = float(c.BMax) if c.BMax is not None else None
+        b_range = max(0.0, (bmax - bmin)) if (bmin is not None and bmax is not None and np.isfinite(bmin) and np.isfinite(bmax)) else 0.0
+
+        # sub-scores (all in [0,1])
+        if len_cv is None or not np.isfinite(len_cv) or len_cv < 0:
+            s_len = 0.5
+        else:
+            s_len = float(math.exp(-((len_cv / 0.25) ** 2)))
+
+        if abn < 0:
+            abn = 0
+        s_abn = float(math.exp(-(abn / 2.0)))
+
+        s_b = float(math.exp(-((b_range / 6.0) ** 2)))
+
+        if n_val is None or n_val < 1:
+            s_n = 0.5
+        elif 4 <= n_val <= 7:
+            s_n = 1.0
+        elif n_val < 4:
+            s_n = float(math.exp(-((4 - n_val) / 2.0)))
+        else:
+            s_n = float(math.exp(-((n_val - 7) / 3.0)))
+
+        s_eng = 0.35 * s_len + 0.25 * s_abn + 0.20 * s_b + 0.20 * s_n
+        eng_by_sig[sig] = float(np.clip(s_eng, 0.0, 1.0))
         enriched.append(
             {
                 'signature': sig,
                 'qualified': bool(c.qualified) if c.qualified is not None else False,
-                'coverageRatio': float(c.coverageRatio) if c.coverageRatio is not None else 0.0,
+                'coverageRatio': cov,
                 'N': int(c.N) if c.N is not None else None,
                 'lenCV': float(c.lenCV) if c.lenCV is not None else 0.0,
                 'tonnageTotal': float(ton),
@@ -1095,23 +1149,89 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
         )
         warnings.extend(w_local)
 
-    # compute recoveryScore (0-100) in TONNAGE mode; fallback to coverage% in AREA mode
-    scores: Dict[str, float] = {}
-    ts = [v for v in tonnage_by_sig.values() if np.isfinite(v)]
-    tmin = float(min(ts)) if ts else 0.0
-    tmax = float(max(ts)) if ts else 0.0
+    # compute composite recoveryScore (0-100)
+    w_t = float(req.wTonnage) if req.wTonnage is not None else 0.55
+    w_c = float(req.wCoverage) if req.wCoverage is not None else 0.30
+    w_e = float(req.wEngineering) if req.wEngineering is not None else 0.15
+    w_t = max(0.0, w_t)
+    w_c = max(0.0, w_c)
+    w_e = max(0.0, w_e)
 
-    if fallback_mode == 'TONNAGE' and tmax > tmin + 1e-9:
-        for sig, tval in tonnage_by_sig.items():
-            scores[sig] = float(np.clip(100.0 * ((tval - tmin) / (tmax - tmin)), 0.0, 100.0))
-    elif fallback_mode == 'TONNAGE' and ts:
-        for sig in tonnage_by_sig.keys():
-            scores[sig] = 100.0
-    else:
-        # AREA
-        for c in req.candidates:
-            r = float(c.coverageRatio) if c.coverageRatio is not None else 0.0
-            scores[str(c.signature)] = float(np.clip(r * 100.0, 0.0, 100.0))
+    # tonnage normalization: log1p to reduce outlier domination
+    ts = [v for v in tonnage_by_sig.values() if np.isfinite(v) and v >= 0]
+    log_ts = [math.log1p(float(v)) for v in ts] if ts else []
+    ltmin = float(min(log_ts)) if log_ts else 0.0
+    ltmax = float(max(log_ts)) if log_ts else 0.0
+
+    full_min = float(req.fullCoverMin) if req.fullCoverMin is not None else None
+    floor = float(req.fullCoverPenaltyFloor) if req.fullCoverPenaltyFloor is not None else None
+    if full_min is not None and not (np.isfinite(full_min) and 0.0 < full_min <= 1.0):
+        full_min = None
+    if floor is not None and not (np.isfinite(floor) and 0.0 <= floor < 1.0):
+        floor = None
+    if full_min is not None and floor is None:
+        floor = max(0.0, full_min - 0.05)
+
+    def _norm01(x: float, a: float, b: float) -> float:
+        if not (np.isfinite(x) and np.isfinite(a) and np.isfinite(b)):
+            return 0.0
+        if b <= a + 1e-12:
+            return 1.0
+        return float(np.clip((x - a) / (b - a), 0.0, 1.0))
+
+    scores: Dict[str, float] = {}
+    for c in req.candidates:
+        sig = str(c.signature)
+        cov = float(coverage_by_sig.get(sig, 0.0))
+        s_cov = float(np.clip(cov, 0.0, 1.0))
+        s_eng = float(np.clip(eng_by_sig.get(sig, 0.5), 0.0, 1.0))
+
+        # tonnage score only meaningful when thickness exists
+        tval = float(tonnage_by_sig.get(sig, 0.0))
+        s_ton = 0.0
+        if fallback_mode == 'TONNAGE' and np.isfinite(tval) and tval >= 0 and ltmax > ltmin + 1e-12:
+            s_ton = _norm01(math.log1p(tval), ltmin, ltmax)
+        elif fallback_mode == 'TONNAGE' and np.isfinite(tval) and tval >= 0 and log_ts:
+            s_ton = 1.0
+
+        # if no tonnage signal, renormalize weights across coverage+engineering
+        if fallback_mode != 'TONNAGE':
+            denom = (w_c + w_e) if (w_c + w_e) > 1e-12 else 1.0
+            wt = 0.0
+            wc = w_c / denom
+            we = w_e / denom
+        else:
+            denom = (w_t + w_c + w_e) if (w_t + w_c + w_e) > 1e-12 else 1.0
+            wt = w_t / denom
+            wc = w_c / denom
+            we = w_e / denom
+
+        # allow but penalize when below fullCoverMin (if provided)
+        # 口径优化（2026-01-22）：不再把整分乘小（会让 Top1 看起来偏低），
+        # 改为仅对 coverage 子项做“温和惩罚”（smoothstep + 最低系数）。
+        s_cov_eff = s_cov
+        if full_min is not None and cov < full_min - 1e-12:
+            f0 = float(floor) if floor is not None else max(0.0, full_min - 0.05)
+            t = _norm01(cov, f0, full_min)
+            # smoothstep: 3t^2 - 2t^3
+            smooth = float(t * t * (3.0 - 2.0 * t))
+            min_factor = 0.85
+            factor = float(min_factor + (1.0 - min_factor) * smooth)
+            s_cov_eff = float(np.clip(s_cov * factor, 0.0, 1.0))
+
+        base = wt * s_ton + wc * s_cov_eff + we * s_eng
+
+        # display calibration (no normalization across candidates):
+        # keep relative differences from weights, but make Top1 look "naturally" in the 90s.
+        # base∈[0,1] -> calibrated∈[0.45,1.0]
+        calibrated = 0.45 + 0.55 * float(np.clip(base, 0.0, 1.0))
+        scores[sig] = float(np.clip(100.0 * calibrated, 0.0, 98.0))
+
+    # attach recoveryScore to enriched for sorting
+    for e in enriched:
+        e['recoveryScore'] = float(scores.get(str(e.get('signature') or ''), 0.0))
+
+    # NOTE: no per-batch normalization here by design.
 
     # rank
     enriched_sorted = sorted(enriched, key=_compare_by_recovery)
@@ -1128,8 +1248,8 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
         rankedSignatures=ranked_sigs[: int(req.topK or 10)],
         tonnageBySignature=tonnage_by_sig,
         recoveryScoreBySignature=scores,
-        tMin=tmin,
-        tMax=tmax,
+        tMin=float(min(ts)) if ts else 0.0,
+        tMax=float(max(ts)) if ts else 0.0,
         method='grid-sampling' if sampler.kind == 'grid' else ('constant-exact' if sampler.kind == 'constant' else 'no-thickness'),
         warnings=sorted(list({w for w in warnings if w})),
     )

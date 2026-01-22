@@ -102,6 +102,17 @@ const App = () => {
   const [planningOptMode, setPlanningOptMode] = useState('efficiency'); // 'efficiency' | 'disturbance' | 'recovery' | 'weighted'
   const [planningOptWeights, setPlanningOptWeights] = useState({ efficiency: 0.34, disturbance: 0.33, recovery: 0.33 });
 
+  // 智能规划：计算门禁（2026-01-22）
+  // 目标：导入/更新输入后不自动计算；用户点击“启动智能采区规划”后才允许计算。
+  // 说明：保留“参数改动后自动后台重算”，但仅对已被用户显式启动过的模式生效。
+  const [planningComputeEnabledByMode, setPlanningComputeEnabledByMode] = useState({ efficiency: false, recovery: false });
+
+  // 智能规划：方案B（手动重算）
+  // - 参数一旦变化，对应 mode 标记为 dirty；切换 tab 不自动算，仅提示用户点击“启动智能采区规划”重新计算。
+  // - 完成一次 full compute（或命中一致缓存并应用）后，清掉 dirty。
+  const [planningDirtyByMode, setPlanningDirtyByMode] = useState({ efficiency: true, recovery: true });
+  const planningLastComputedCacheKeyRef = useRef({ efficiency: '', recovery: '' });
+
   // Worker 代际：用于在 worker 崩溃/卡死后强制重建（避免 busy/inFlightKey 永久卡住导致“怎么点都不算”）
   const [planningWorkerGen, setPlanningWorkerGen] = useState(0);
 
@@ -116,6 +127,15 @@ const App = () => {
   const efficiencyInFlightKeyRef = useRef('');
   // 记住“用户手动选择的候选方案”（按 cacheKey 维度），避免 refine/full 回包把选中态强行覆盖回 best。
   const efficiencySelectedSigByKeyRef = useRef(new Map());
+  // 工程效率：记录“用户是否手动改选过候选”（按 cacheKey）。用于吨位回填重排后避免自动覆盖选中态。
+  const efficiencyUserTouchedSelectionByKeyRef = useRef(new Map());
+  // 工程效率：TONNAGE 回填代际（丢弃过期回包）
+  const efficiencyTonnageSeqRef = useRef(0);
+  // 工程效率：TONNAGE 回填口径上下文（按 cacheKey）
+  // - lastDone：上一次成功回填对应的厚度口径/数据 hash
+  // - inFlight：避免 cache-hit 多次点击重复触发同一口径的后端请求
+  const efficiencyTonnageContextDoneByKeyRef = useRef(new Map());
+  const efficiencyTonnageContextInFlightByKeyRef = useRef(new Map());
 
   // Worker 超时兜底：若 worker 未回任何 progress/result，自动复位并重建 worker
   const efficiencyWatchdogRef = useRef({ timer: null, reqSeq: 0, cacheKey: '' });
@@ -126,6 +146,7 @@ const App = () => {
   const efficiencyResultHandlerRef = useRef(null);
   const efficiencyBackendProgressRef = useRef({ timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' });
   const efficiencyForceTop1Ref = useRef({ reqSeq: 0, cacheKey: '' });
+  const efficiencyAutoSelectAfterTonnageRef = useRef({ reqSeq: 0, cacheKey: '', sig: '' });
 
   const [planningEfficiencyBusy, setPlanningEfficiencyBusy] = useState(false);
   const [planningEfficiencyResult, setPlanningEfficiencyResult] = useState(null);
@@ -570,6 +591,15 @@ const App = () => {
     const gridRes = 20;
     const interpVersion = 'idw-v1';
 
+    // 口径统一（厚度）：grid 优先，constant 仅兜底
+    const hasGridThk = Boolean(
+      (thkSamples?.length ?? 0) >= 3
+      && coalThicknessField?.field
+      && coalThicknessField?.gridW
+      && coalThicknessField?.gridH
+    );
+    const thkKind = hasGridThk ? 'grid' : (hasConstThk ? 'constant' : 'none');
+
     const f3 = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(3) : '0.000');
     // v1.0：明确 wbMin/wbMax/wbFixed；recovery 口径固定取最小值
     const wbFixedRaw = wbEff;
@@ -601,8 +631,8 @@ const App = () => {
 
     return [
       'res',
-      // v1.2：破坏旧缓存（修复：缓存 key 轴向一致性 + worker 裁剪 loop 稳定性）
-      'res-v1.2',
+      // v1.3：破坏旧缓存（口径统一：候选表覆盖率=raw；厚度=grid优先/常数兜底）
+      'res-v1.3',
       `axis=${axis}`,
       `bnd=${bHash}`,
       `wbMin=${f3(wbEff)}`,
@@ -615,7 +645,8 @@ const App = () => {
       `gridRes=${gridRes}`,
       `interpVersion=${interpVersion}`,
       `thkN=${thkCount}`,
-      `thkConst=${hasConstThk ? f3(seamThickness) : 'none'}`,
+      `thkKind=${thkKind}`,
+      `thkConst=${(thkKind === 'constant') ? f3(seamThickness) : 'none'}`,
       `rho=${f3(rho)}`,
       // 厚度坐标系冻结：axis/y 不跟随 swap
       'thkAxisFixed=v1.0',
@@ -779,6 +810,16 @@ const App = () => {
 
     const fullCoverMinPct = 99.5;
     const isQualifiedRow = (row) => {
+      // fullCover 合格判断优先使用 effective（扣煤柱）口径；
+      // 表格展示的 coveragePct 统一为 raw（不扣煤柱），不应影响合格/排序逻辑。
+      if (row?.qualifiedFullCover === true) return true;
+      if (row?.qualifiedFullCover === false) return false;
+
+      const covPctEff = Number(row?.coveragePctEff);
+      if (Number.isFinite(covPctEff)) return covPctEff >= (fullCoverMinPct - 1e-6);
+      const covRatioEff = Number(row?.coverageRatioEff);
+      if (Number.isFinite(covRatioEff)) return covRatioEff >= (0.995 - 1e-9);
+
       const covPct = Number(row?.coveragePct);
       if (Number.isFinite(covPct)) return covPct >= (fullCoverMinPct - 1e-6);
       const covRatio = Number(row?.coverageRatio);
@@ -790,10 +831,14 @@ const App = () => {
     const rowsSorted = (() => {
       if (!rows0.length) return rows0;
 
-      // 优先尊重 worker 的“排序后 topK”（rows.rank / candidates 顺序已是最优口径）。
-      // 否则会出现：workerBestKey 与 UI 默认展示不一致（看起来“没显示最优”）。
       const hasRank = rows0.some((row) => Number.isFinite(Number(row?.rank)));
-      if (hasRank) {
+      const hasScore = rows0.some((row) => Number.isFinite(Number(row?.recoveryScore)));
+      const hasTonnage = rows0.some((row) => Number.isFinite(Number(row?.tonnageTotal)) && Number(row?.tonnageTotal) > 0);
+
+      // 规则：
+      // - 若已回填吨位/综合分（hasScore && hasTonnage），以综合分为准（避免旧 rank 覆盖最终排序）。
+      // - 否则仍尊重 worker 的 rank（保持 UI 默认展示与 worker top1 一致）。
+      if (hasRank && !(hasScore && hasTonnage)) {
         const decorated = rows0.map((row, i) => ({ row, i, rank: Number(row?.rank) }));
         decorated.sort((a, b) => (
           (a.rank - b.rank)
@@ -910,6 +955,75 @@ const App = () => {
     const r = result ?? planningRecoveryResult;
     const req = recoveryLastRequestRef.current;
 
+    const buildAttemptSummarySlim = (attemptSummary0) => {
+      const s = attemptSummary0 && typeof attemptSummary0 === 'object' ? attemptSummary0 : null;
+      if (!s) return null;
+      const b = (s?.Bsearch && typeof s.Bsearch === 'object') ? s.Bsearch : null;
+      const seedBs0 = Array.isArray(b?.seedBs) ? b.seedBs : [];
+      const seedBs = seedBs0
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x))
+        .slice(0, 60);
+
+      return {
+        attemptedCombos: s?.attemptedCombos ?? null,
+        feasibleCombos: s?.feasibleCombos ?? null,
+        failTypes: s?.failTypes ?? null,
+        Bsearch: b ? {
+          coarseStep: b?.coarseStep ?? null,
+          fineStep: b?.fineStep ?? null,
+          coarseEvaluatedBCount: b?.coarseEvaluatedBCount ?? null,
+          fineEvaluatedBCount: b?.fineEvaluatedBCount ?? null,
+          seedBsCount: seedBs0.length,
+          seedBs,
+        } : null,
+      };
+    };
+
+    const computeCandidateBDistribution = (candidates0, { top = 10 } = {}) => {
+      const candidates = Array.isArray(candidates0) ? candidates0 : [];
+      const slice = candidates.slice(0, Math.max(0, Number(top) || 0));
+      const bVals = [];
+      const bRanges = [];
+      const bLists = [];
+
+      for (const c of slice) {
+        const m = c?.metrics ?? {};
+        const b = Number(c?.B ?? m?.B);
+        if (Number.isFinite(b)) bVals.push(b);
+
+        const b0 = Number(c?.BMin ?? m?.BMin);
+        const b1 = Number(c?.BMax ?? m?.BMax);
+        if (Number.isFinite(b0) && Number.isFinite(b1)) bRanges.push([b0, b1]);
+
+        const bl0 = Array.isArray(c?.BList) ? c.BList : (Array.isArray(m?.BList) ? m.BList : null);
+        if (Array.isArray(bl0) && bl0.length) {
+          const bl = bl0.map((x) => Number(x)).filter((x) => Number.isFinite(x));
+          if (bl.length) bLists.push(bl);
+        }
+      }
+
+      const uniqRounded = (arr, digits = 1) => {
+        const k = new Set();
+        for (const x of arr) {
+          if (!Number.isFinite(x)) continue;
+          k.add(Number(x).toFixed(digits));
+        }
+        return Array.from(k).map((s) => Number(s));
+      };
+      const uniqB = uniqRounded(bVals, 1);
+
+      return {
+        topK: slice.length,
+        uniqueBCountTopK: uniqB.length,
+        uniqueBTopK: uniqB.slice(0, 40),
+        hasAnyBRangeTopK: bRanges.length > 0,
+        hasAnyBListTopK: bLists.length > 0,
+        sampleBRangeTopK: bRanges.length ? bRanges.slice(0, 8) : [],
+        sampleBListTopK: bLists.length ? bLists.slice(0, 6) : [],
+      };
+    };
+
     // 屏幕坐标（viewBox）级诊断：很多“短线”并非世界坐标短边，而是缩放后 < 1px 的边/重复点/闭合点导致。
     // 这里统一在前端做一次统计，定位短线来自哪一层（boundary / overlay / union / fill）。
     const computeLoopStatsScreen = (loops0, { shortEdgePx = 1.0 } = {}) => {
@@ -998,9 +1112,12 @@ const App = () => {
         farAngleDegList: (Array.isArray(c?.farAngleDegList) ? c.farAngleDegList : (Array.isArray(m?.farAngleDegList) ? m.farAngleDegList : null)),
         coverageRatio: (c?.coverageRatio ?? m?.coverageRatio ?? null),
         coverageRatioEff: (c?.coverageRatioEff ?? m?.coverageRatioEff ?? null),
+        coverageRatioRaw: (c?.coverageRatioRaw ?? m?.coverageRatioRaw ?? null),
         coveredArea: (c?.coveredArea ?? m?.faceAreaTotal ?? null),
+        coveredAreaRaw: (c?.coveredAreaRaw ?? m?.coveredAreaRaw ?? null),
         faceAreaTotal: (c?.faceAreaTotal ?? m?.faceAreaTotal ?? null),
         innerArea: (c?.innerArea ?? m?.omegaArea ?? null),
+        innerAreaRaw: (c?.innerAreaRaw ?? m?.innerAreaRaw ?? null),
         omegaAreaEff: (c?.omegaAreaEff ?? m?.omegaAreaEff ?? null),
         pillarArea: (c?.pillarArea ?? m?.pillarArea ?? null),
         pillarGapCount: (c?.pillarGapCount ?? m?.pillarGapCount ?? null),
@@ -1066,6 +1183,13 @@ const App = () => {
 
     return {
       ts: Date.now(),
+      policies: {
+        // UI候选表口径统一：覆盖率（%）按 raw（不扣煤柱）展示。
+        // fullCover/残煤补片/残煤轮廓仍按 effective（扣煤柱有效Ω）口径。
+        coverageTable: 'raw(no_pillar_deduction)',
+        fullCoverCheck: 'effective(deduct_pillars_when_enabled)',
+        thickness: 'grid_first_constant_fallback',
+      },
       ui: {
         mainViewMode,
         planningOptMode,
@@ -1132,6 +1256,8 @@ const App = () => {
         tonnageTotal: r?.tonnageTotal,
         stats: r?.stats ?? null,
         debugPerFace: r?.debug?.perFace ?? null,
+        attemptSummary: buildAttemptSummarySlim(r?.attemptSummary ?? null),
+        bDiagnosticsTop10: computeCandidateBDistribution(r?.candidates ?? [], { top: 10 }),
       } : null,
       selectedCandidate: picked ? pickCand(picked) : null,
       screenDiagnostics,
@@ -1291,6 +1417,11 @@ const App = () => {
 
     return {
       ts: Date.now(),
+      policies: {
+        coverageTable: 'raw(no_pillar_deduction)',
+        thickness: 'grid_first_constant_fallback',
+        // 工程效率本身不计算“扣煤柱有效覆盖率”；这里只标注表格口径与吨位厚度口径。
+      },
       ui: {
         mainViewMode,
         planningOptMode,
@@ -1442,6 +1573,295 @@ const App = () => {
     }
   };
 
+  const buildEfficiencyTonnagePostContext = () => {
+    const seamThickness = Number(planningParams?.seamThickness);
+    const hasConstThk = Number.isFinite(seamThickness) && seamThickness > 0;
+    const coalDensity = Number(planningParams?.coalDensity);
+    const rho = (Number.isFinite(coalDensity) && coalDensity > 0) ? coalDensity : 1;
+
+    const fallbackCoal = String(selectedCoal || coalSeams?.[0] || '').trim();
+    const buildCoalThkSamplesByCoalName = (coalName) => {
+      const name = String(coalName || '').trim();
+      if (!name) return [];
+      const out = [];
+      for (const [bhId, lsRaw] of Object.entries(drillholeLayersById ?? {})) {
+        const coord = drillholeCoordsById.get(bhId);
+        if (!coord) continue;
+        const ls = lsRaw ?? [];
+        const idx = ls.findIndex((l) => String(l?.name ?? '').trim() === name);
+        if (idx < 0) continue;
+        const coalThk = Number(ls[idx]?.thickness);
+        if (!Number.isFinite(coalThk)) continue;
+        out.push({ id: bhId, x: coord.x, y: coord.y, value: coalThk });
+      }
+      return out;
+    };
+
+    // 优先使用 boreholeParamSamples（与全局选煤层一致）；若 selectedCoal 尚未初始化则用 fallbackCoal 现算。
+    const thkSamples = (Array.isArray(boreholeParamSamples?.CoalThk) && boreholeParamSamples.CoalThk.length)
+      ? boreholeParamSamples.CoalThk
+      : buildCoalThkSamplesByCoalName(fallbackCoal);
+    const thicknessDataHash = hashCoalThicknessSamples(thkSamples);
+    const targetSeam = 'CoalThk';
+    const gridRes = 20;
+    const interpVersion = 'idw-v1';
+
+    const fieldPack = (coalThicknessField?.field && coalThicknessField?.gridW && coalThicknessField?.gridH)
+      ? {
+        field: coalThicknessField.field,
+        gridW: coalThicknessField.gridW,
+        gridH: coalThicknessField.gridH,
+        width: coalThicknessField.width,
+        height: coalThicknessField.height,
+        bounds: coalThicknessField.bounds,
+        pad: coalThicknessField?.bounds?.pad,
+      }
+      : null;
+
+    const hasGridThk = Boolean(
+      (thkSamples?.length ?? 0) >= 3
+      && fieldPack?.field
+      && fieldPack?.gridW
+      && fieldPack?.gridH
+    );
+    const kind = hasGridThk ? 'grid' : (hasConstThk ? 'constant' : 'none');
+
+    const thickness = {
+      fieldPack,
+      // 口径统一：插值场优先；常数仅兜底
+      constantM: (!hasGridThk && hasConstThk ? seamThickness : null),
+      rho,
+      gridRes,
+      interpVersion,
+      thicknessDataHash,
+      targetSeam,
+    };
+
+    const ctxKey = [
+      `kind=${kind}`,
+      `hash=${String(thicknessDataHash || '')}`,
+      `rho=${Number.isFinite(Number(rho)) ? Number(rho).toFixed(6) : '1.000000'}`,
+      `gridRes=${Number.isFinite(Number(gridRes)) ? Number(gridRes) : 20}`,
+      `interp=${String(interpVersion || '')}`,
+      `constM=${thickness.constantM == null ? '' : String(thickness.constantM)}`,
+    ].join('|');
+
+    return { kind, ctxKey, thickness };
+  };
+
+  const maybePostprocessEfficiencyTonnage = (payloadUi, { cacheKeyForTonnage, preferredSig, reason = '' } = {}) => {
+    try {
+      if (!payloadUi?.ok) return;
+      const candidates = Array.isArray(payloadUi?.candidates) ? payloadUi.candidates : [];
+      if (!candidates.length) return;
+
+      const cacheKey = String(cacheKeyForTonnage ?? payloadUi?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
+      if (!cacheKey) return;
+
+      const { kind, ctxKey, thickness } = buildEfficiencyTonnagePostContext();
+      if (kind === 'none') return;
+
+      const hasAnyTonnage = candidates.some((c) => {
+        const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
+        return Number.isFinite(t) && t > 0;
+      });
+      const lastDoneCtx = String(efficiencyTonnageContextDoneByKeyRef.current.get(cacheKey) || '');
+      const inFlightCtx = String(efficiencyTonnageContextInFlightByKeyRef.current.get(cacheKey) || '');
+
+      // 若已用相同口径成功回填且当前结果已有吨位，就不重复调用。
+      if (lastDoneCtx && lastDoneCtx === ctxKey && hasAnyTonnage) return;
+      // 若相同口径已在请求中，避免重复触发。
+      if (inFlightCtx && inFlightCtx === ctxKey) return;
+
+      efficiencyTonnageContextInFlightByKeyRef.current.set(cacheKey, ctxKey);
+      const seqForTonnage = (efficiencyTonnageSeqRef.current += 1);
+
+      setTimeout(async () => {
+        try {
+          const resp = await smartResourceTonnageSort({
+            cacheKey,
+            candidates: candidates.map((c) => ({
+              signature: c?.signature,
+              qualified: c?.qualified,
+              coverageRatio: (c?.coverageRatioEff ?? c?.coverageRatio),
+              coverageRatioEff: c?.coverageRatioEff,
+              N: c?.N,
+              lenCV: c?.lenCV,
+              abnormalFaceCount: (c?.abnormalFaceCount ?? c?.metrics?.abnormalFaceCount ?? null),
+              BMin: (c?.BMin ?? c?.metrics?.BMin ?? null),
+              BMax: (c?.BMax ?? c?.metrics?.BMax ?? null),
+              axis: c?.axis,
+              thetaDeg: c?.thetaDeg,
+              ws: c?.ws,
+              render: c?.render,
+            })),
+            thickness,
+            topK: Number(payloadUi?.stats?.topK) || 10,
+            sampleStepM: thickness?.gridRes ?? 20,
+            // 仅用于采样吨位；排序由前端按“效率主、储量辅”控制
+            wTonnage: 1,
+            wCoverage: 0,
+            wEngineering: 0,
+          });
+
+          // 丢弃过期 tonnage 回包
+          if (seqForTonnage !== efficiencyTonnageSeqRef.current) return;
+
+          try {
+            efficiencyTonnageContextInFlightByKeyRef.current.delete(cacheKey);
+          } catch {
+            // ignore
+          }
+
+          if (!resp?.ok) return;
+          efficiencyTonnageContextDoneByKeyRef.current.set(cacheKey, ctxKey);
+
+          setPlanningEfficiencyResult((prev) => {
+            if (!prev?.ok) return prev;
+            const prevKey = String(prev?.cacheKey ?? '');
+            if (prevKey && prevKey !== cacheKey) return prev;
+
+            const tonBySig = (resp?.tonnageBySignature && typeof resp.tonnageBySignature === 'object') ? resp.tonnageBySignature : {};
+
+            const cand0 = Array.isArray(prev?.candidates) ? prev.candidates.slice() : [];
+            const cand1 = cand0.map((c) => {
+              const sig0 = String(c?.signature ?? '').trim();
+              const t = Number(tonBySig?.[sig0]);
+              const next = { ...(c ?? {}) };
+              if (Number.isFinite(t)) next.tonnageTotal = t;
+              if (next.metrics && typeof next.metrics === 'object' && Number.isFinite(t)) next.metrics.tonnageTotal = t;
+              return next;
+            });
+
+            const effOfCand = (c) => {
+              const v = Number(c?.efficiencyScore ?? c?.metrics?.efficiencyScore);
+              return Number.isFinite(v) ? v : 0;
+            };
+            const tonOfCand = (c) => {
+              const v = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
+              return Number.isFinite(v) ? v : 0;
+            };
+
+            const candSorted = cand1
+              .map((c, idx) => ({ c, idx }))
+              .sort((a, b) => {
+                const ea = effOfCand(a.c);
+                const eb = effOfCand(b.c);
+                if (eb !== ea) return eb - ea;
+                const ta = tonOfCand(a.c);
+                const tb = tonOfCand(b.c);
+                if (tb !== ta) return tb - ta;
+                return a.idx - b.idx;
+              })
+              .map((x, i) => ({ ...(x.c ?? {}), rank: i + 1 }));
+
+            const rows0 = Array.isArray(prev?.table?.rows) ? prev.table.rows.slice() : [];
+            const rows1 = rows0.map((r) => {
+              const sig0 = String(r?.signature ?? '').trim();
+              const t = Number(tonBySig?.[sig0]);
+              const next = { ...(r ?? {}) };
+              if (Number.isFinite(t)) next.tonnageTotal = t;
+              return next;
+            });
+
+            const effOfRow = (r) => {
+              const v = Number(r?.efficiencyScore);
+              return Number.isFinite(v) ? v : 0;
+            };
+            const tonOfRow = (r) => {
+              const v = Number(r?.tonnageTotal);
+              return Number.isFinite(v) ? v : 0;
+            };
+
+            const rowsSorted = rows1
+              .map((r, idx) => ({ r, idx }))
+              .sort((a, b) => {
+                const ea = effOfRow(a.r);
+                const eb = effOfRow(b.r);
+                if (eb !== ea) return eb - ea;
+                const ta = tonOfRow(a.r);
+                const tb = tonOfRow(b.r);
+                if (tb !== ta) return tb - ta;
+                return a.idx - b.idx;
+              })
+              .map((x, i) => ({ ...(x.r ?? {}), rank: i + 1 }));
+
+            const best = candSorted[0] || null;
+            const bestSig = String(best?.signature ?? '').trim();
+
+            const userTouched = Boolean(efficiencyUserTouchedSelectionByKeyRef.current.get(cacheKey));
+            const sigNow = String(preferredSig || planningEfficiencySelectedSig || '');
+            const sigOk = Boolean(sigNow && candSorted.some((c) => String(c?.signature ?? '') === sigNow));
+
+            // 若用户未手动选择且当前选中不存在，允许自动切到新 Top1（与 compute 后处理一致）
+            const nextSig = (!userTouched && bestSig && !sigOk) ? bestSig : sigNow;
+
+            const next = {
+              ...(prev ?? {}),
+              candidates: candSorted,
+              table: (prev?.table && typeof prev.table === 'object') ? { ...(prev.table ?? {}), rows: rowsSorted } : prev?.table,
+              tonnageTotal: Number(best?.tonnageTotal ?? prev?.tonnageTotal ?? 0) || 0,
+              stats: (prev?.stats && typeof prev.stats === 'object')
+                ? { ...(prev.stats ?? {}), tonnageElapsedMs: resp?.elapsedMs ?? null, tonnageThicknessKind: kind }
+                : prev?.stats,
+            };
+
+            // 同步缓存（按 cacheKey 维度）
+            try {
+              efficiencyCacheRef.current.set(cacheKey, { result: next, selectedSig: String(nextSig || '') });
+            } catch {
+              // ignore
+            }
+
+            // 注意：不要在 setState updater 内做副作用（setState/apply 绘图）。
+            // 若允许自动跟随，记录一次“tonnage 重排后自动切到新 Top1”，在 updater 之后统一 apply。
+            if (!userTouched && bestSig && nextSig === bestSig) {
+              try {
+                efficiencyAutoSelectAfterTonnageRef.current = { reqSeq: Number(seqForTonnage) || 0, cacheKey: String(cacheKey), sig: String(bestSig) };
+                efficiencySelectedSigByKeyRef.current.set(cacheKey, String(bestSig));
+              } catch {
+                // ignore
+              }
+            }
+
+            return next;
+          });
+
+          // TONNAGE 重排后：若需要自动切到新 Top1，统一在这里做一次出图联动
+          try {
+            const pick = efficiencyAutoSelectAfterTonnageRef.current;
+            const shouldApply = Boolean(
+              pick
+              && String(pick.cacheKey || '') === String(cacheKey)
+              && Number(pick.reqSeq || 0) === Number(seqForTonnage)
+              && String(pick.sig || '')
+            );
+            if (shouldApply) {
+              efficiencyAutoSelectAfterTonnageRef.current = { reqSeq: 0, cacheKey: '', sig: '' };
+              const cached2 = efficiencyCacheRef.current.get(cacheKey);
+              const result2 = cached2?.result;
+              if (result2?.ok) {
+                setPlanningEfficiencySelectedSig(String(pick.sig));
+                applyEfficiencyCandidateBySignature(String(pick.sig), result2);
+              }
+            }
+          } catch {
+            // ignore
+          }
+        } catch {
+          try {
+            efficiencyTonnageContextInFlightByKeyRef.current.delete(cacheKey);
+          } catch {
+            // ignore
+          }
+          // ignore: 后端不可用不影响前端 baseline
+        }
+      }, 0);
+    } catch {
+      // ignore
+    }
+  };
+
   const applyEfficiencyPreviewCandidate = (candidate) => {
     const picked = candidate;
     if (!picked) return;
@@ -1502,6 +1922,7 @@ const App = () => {
     if (explicitForeground) {
       try {
         efficiencySelectedSigByKeyRef.current.delete(cacheKey);
+        efficiencyUserTouchedSelectionByKeyRef.current.delete(cacheKey);
         const cached0 = efficiencyCacheRef.current.get(cacheKey);
         if (cached0?.selectedSig) {
           efficiencyCacheRef.current.set(cacheKey, { ...cached0, selectedSig: '' });
@@ -1626,6 +2047,10 @@ const App = () => {
       }
       applyEfficiencyCandidateBySignature(sig, cached.result);
 
+      // 关键修复：cache-hit 也要尝试触发“吨位回填 + 重排”。
+      // 场景：先算效率（无钻孔/分层/厚度场）=> 缓存命中后导入数据 => 再点按钮直接 return，导致吨位永远不回填。
+      maybePostprocessEfficiencyTonnage(cached.result, { cacheKeyForTonnage: cacheKey, preferredSig: sig, reason: 'cache-hit' });
+
       // compute/cached 成功：清理预览（回到“真实候选集”）
       setPlanningEfficiencyPreview(null);
       setPlanningEfficiencyPreviewBusy(false);
@@ -1639,6 +2064,14 @@ const App = () => {
           lastError: cached?.result?.ok ? '' : String(cached?.result?.message ?? ''),
         }));
       }
+
+      // 方案B：显式触发命中缓存也视为“完成一次计算/应用”，清除 dirty 并记录 lastComputed。
+      try {
+        planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), efficiency: String(cacheKey) };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode((prev) => ({ ...(prev ?? {}), efficiency: false }));
       return;
     }
 
@@ -2143,6 +2576,14 @@ const App = () => {
         }
       }
       applyRecoveryCandidateBySignature(sig, res);
+
+      // 方案B：显式触发命中缓存也视为“完成一次计算/应用”，清除 dirty 并记录 lastComputed。
+      try {
+        planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), recovery: String(cacheKey) };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode((prev) => ({ ...(prev ?? {}), recovery: false }));
       return;
     }
 
@@ -2199,6 +2640,18 @@ const App = () => {
         pad: coalThicknessField?.bounds?.pad,
       }
       : null;
+
+    // 需求：只有“钻孔+分层数据”齐全时，才把储量（吨位）纳入搜索目标。
+    // - drillholeData + drillholeLayersById：代表数据源完整
+    // - CoalThk 插值场(fieldPack)存在：代表厚度场可用于吨位采样
+    const tonnageObjectiveEnabled = Boolean(
+      (drillholeData?.length ?? 0) >= 3
+      && Object.keys(drillholeLayersById ?? {}).length > 0
+      && (thkSamples?.length ?? 0) >= 3
+      && fieldPack?.field
+      && fieldPack?.gridW
+      && fieldPack?.gridH
+    );
 
     const reqSeq = (recoveryReqSeqRef.current += 1);
     if (explicitForeground) {
@@ -2313,6 +2766,10 @@ const App = () => {
           maxTimeMs: 1500,
         },
 
+        // 若厚度场来自钻孔+分层数据：把吨位纳入候选输出（影响 topK 选择）。
+        // 注意：不使用 constant thickness 触发该模式（保持“无数据仍按之前”）。
+        tonnageObjectiveEnabled,
+
         boundaryPillarMin: wbRep,
         boundaryPillarMax: wbRep,
         coalPillarMin: wsMin,
@@ -2323,7 +2780,16 @@ const App = () => {
         topK: 10,
         thickness: {
           fieldPack,
-          constantM: (hasConstThk ? seamThickness : null),
+          // 口径统一（厚度）：grid 优先，constant 仅兜底
+          constantM: (() => {
+            const hasGridThk = Boolean(
+              (thkSamples?.length ?? 0) >= 3
+              && fieldPack?.field
+              && fieldPack?.gridW
+              && fieldPack?.gridH
+            );
+            return (!hasGridThk && hasConstThk) ? seamThickness : null;
+          })(),
           rho,
           gridRes,
           interpVersion,
@@ -2913,6 +3379,12 @@ const App = () => {
           } catch {
             // ignore
           }
+        } else {
+          try {
+            efficiencyUserTouchedSelectionByKeyRef.current.delete(cacheKey);
+          } catch {
+            // ignore
+          }
         }
       }
       if (isRecovery) {
@@ -2944,6 +3416,14 @@ const App = () => {
           // ignore
         }
 
+        // 方案B：计算成功并已应用结果 -> 视为“完成一次计算”。
+        try {
+          planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), recovery: String(cacheKey) };
+        } catch {
+          // ignore
+        }
+        setPlanningDirtyByMode((prev) => ({ ...(prev ?? {}), recovery: false }));
+
         // 异步：把吨位/厚度与 TONNAGE 排序交给 Python 后端（收益最大，前端不阻塞）
         try {
           const req0 = recoveryLastRequestRef.current;
@@ -2963,9 +3443,13 @@ const App = () => {
                   candidates: candidates.map((c) => ({
                     signature: c?.signature,
                     qualified: c?.qualified,
-                    coverageRatio: c?.coverageRatio,
+                    coverageRatio: (c?.coverageRatioEff ?? c?.coverageRatio),
+                    coverageRatioEff: c?.coverageRatioEff,
                     N: c?.N,
                     lenCV: c?.lenCV,
+                    abnormalFaceCount: (c?.abnormalFaceCount ?? c?.metrics?.abnormalFaceCount ?? null),
+                    BMin: (c?.BMin ?? c?.metrics?.BMin ?? null),
+                    BMax: (c?.BMax ?? c?.metrics?.BMax ?? null),
                     axis: c?.axis,
                     thetaDeg: c?.thetaDeg,
                     ws: c?.ws,
@@ -2974,6 +3458,12 @@ const App = () => {
                   thickness,
                   topK: Number(payloadUi?.stats?.topK) || 10,
                   sampleStepM: thickness?.gridRes ?? 20,
+                  // scoring: tonnage + coverage + engineering (allow but penalize if below fullCoverMin)
+                  wTonnage: 0.55,
+                  wCoverage: 0.30,
+                  wEngineering: 0.15,
+                  fullCoverMin: Number(req0?.fullCoverMin ?? payloadUi?.top1?.fullCoverMin ?? payloadUi?.stats?.fullCoverMin ?? 0.995),
+                  fullCoverPenaltyFloor: Number(req0?.fullCoverMin ?? payloadUi?.top1?.fullCoverMin ?? payloadUi?.stats?.fullCoverMin ?? 0.995) - 0.05,
                 });
 
                 // 丢弃过期 tonnage 回包
@@ -3128,6 +3618,18 @@ const App = () => {
         // compute 成功：清理预览（回到“真实候选集”）
         setPlanningEfficiencyPreview(null);
         setPlanningEfficiencyPreviewBusy(false);
+
+        // 方案B：计算成功并已应用结果 -> 视为“完成一次计算”。
+        try {
+          planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), efficiency: String(cacheKey) };
+        } catch {
+          // ignore
+        }
+        setPlanningDirtyByMode((prev) => ({ ...(prev ?? {}), efficiency: false }));
+
+        // 方案A：工程效率 compute 完成后，对 TopK 候选异步回填吨位，并按“效率主、储量辅”重排。
+        // 说明：这是“后处理回填吨位”，不影响效率搜索本身；允许常数厚度兜底。
+        maybePostprocessEfficiencyTonnage(payloadUi, { cacheKeyForTonnage: String(payloadUi?.cacheKey ?? cacheKey), preferredSig, reason: 'compute-ok' });
       }
 
       if (DEBUG_PANEL && !isRecovery) {
@@ -3670,6 +4172,8 @@ const App = () => {
     const cacheKey = planningEfficiencyCacheKey || buildEfficiencyCacheKey();
     // 记住用户选择，防止后续 refine/full 回包把选中态覆盖回 best。
     efficiencySelectedSigByKeyRef.current.set(cacheKey, sig);
+    // 标记“用户手动改选”，后续吨位回填重排不应强行覆盖。
+    efficiencyUserTouchedSelectionByKeyRef.current.set(cacheKey, true);
     const cached = efficiencyCacheRef.current.get(cacheKey);
     if (cached?.result?.ok) {
       efficiencyCacheRef.current.set(cacheKey, { ...cached, selectedSig: sig });
@@ -3786,11 +4290,34 @@ const App = () => {
     const isReclickSameMode = m && m === String(planningOptMode ?? '').trim();
     setPlanningOptMode(m);
 
+    // 需求（2026-01-22）：导入后不自动算，但用户单独点击“工程效率最优/资源回收最优”时应立即启动计算。
+    // 因此：把点击这两个模式本身视为“显式启动该模式”，自动打开门禁。
+    if (m !== 'efficiency' && m !== 'recovery') return;
+
     // 体验优化：在“采区规划图”视图下，切换到 efficiency/recovery 立即启动对应计算。
     // 注意：这里使用 force=true，避免 setState 未生效导致 requestCompute* 被门禁提前 return。
     if (mainViewMode !== 'planning') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), [m]: true }));
     workerLog('[planning] opt-mode click', { nextMode: m, reclick: isReclickSameMode });
+
+    // 方案B：参数变更后不自动算（必须点击“启动智能采区规划”）。
+    // 但若该模式从未计算过（lastComputed 为空），允许首次切换时自动触发一次。
+    try {
+      const currentKey = String(m === 'recovery' ? buildRecoveryCacheKey() : buildEfficiencyCacheKey());
+      const lastComputed = String(planningLastComputedCacheKeyRef.current?.[m] ?? '');
+      const hasComputedOnce = Boolean(lastComputed);
+      const nextDirty = currentKey !== lastComputed;
+      setPlanningDirtyByMode((prev) => {
+        if (Boolean(prev?.[m]) === Boolean(nextDirty)) return prev;
+        return { ...(prev ?? {}), [m]: Boolean(nextDirty) };
+      });
+      if (hasComputedOnce && nextDirty) return;
+    } catch {
+      // ignore
+    }
+
     if (m === 'efficiency') {
       // 显式切换：
       // - 若工程效率正在计算同一输入，不要重复发起新请求（否则会自增 reqSeq，progress 全被过滤，UI卡在0%）。
@@ -3804,8 +4331,24 @@ const App = () => {
         // 正在算同一输入：不要重复发起（否则会自增 reqSeq，progress 全被过滤，UI 会卡在 0%）。
         if (isComputingSame) return;
 
-        // 切换模式但已是最新 ok：不必重算。
-        if (isUpToDateOk) return;
+        // 切换模式但已是最新 ok：不必重算，但仍要允许触发“吨位回填/重排”（导入钻孔+分层后常见）。
+        if (isUpToDateOk) {
+          try {
+            const sig = String(
+              planningEfficiencySelectedSig
+              || efficiencySelectedSigByKeyRef.current.get(currentKey)
+              || planningEfficiencyResult?.selectedCandidateKey
+              || planningEfficiencyResult?.bestKey
+              || planningEfficiencyResult?.bestSignature
+              || (planningEfficiencyResult?.candidates?.[0]?.signature ?? '')
+              || ''
+            );
+            maybePostprocessEfficiencyTonnage(planningEfficiencyResult, { cacheKeyForTonnage: currentKey, preferredSig: sig, reason: 'mode-click-upToDate' });
+          } catch {
+            // ignore
+          }
+          return;
+        }
       } catch {
         // ignore
       }
@@ -4236,6 +4779,23 @@ const App = () => {
 
   const applyScenarioParams = (p) => {
     if (!p) return;
+
+    // 视为一次“输入数据载入/更新”：导入后不应立刻触发工程效率/资源回收计算。
+    setPlanningComputeEnabledByMode({ efficiency: false, recovery: false });
+    try {
+      planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '' };
+    } catch {
+      // ignore
+    }
+    setPlanningDirtyByMode({ efficiency: true, recovery: true });
+    try {
+      setPlanningEfficiencySelectedSig('');
+      setPlanningRecoverySelectedSig('');
+      setPlanningEfficiencyResult(null);
+      setPlanningRecoveryResult(null);
+    } catch {
+      // ignore
+    }
     setBoundaryData(p.boundaryData ?? []);
     setDrillholeData(p.drillholeData ?? []);
     setDrillholeLayersById(p.drillholeLayersById ?? {});
@@ -8614,13 +9174,19 @@ const App = () => {
     return computeNonSelfIntersectingLoop(boundaryData, (p) => p?.x, (p) => p?.y);
   }, [hasBoundaryData, boundaryData]);
 
-  // 工程效率模式：轴向/煤柱/面宽/边界等输入变化时，自动触发重算（或命中缓存切换）。
+  // 工程效率模式（方案B）：输入变化后不自动重算，只标记“参数已更新（需手动重新计算）”。
   // 注意：`boundaryLoopWorld` 在文件更靠后的位置声明（useMemo），因此该 hook 必须放在它之后。
-  const efficiencyAutoRecomputeDebounceRef = useRef(null);
   useEffect(() => {
     if (mainViewMode !== 'planning') return;
-    if (planningOptMode !== 'efficiency') return;
-    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
+      setPlanningDirtyByMode((prev) => {
+        const nextDirty = true;
+        if (Boolean(prev?.efficiency) === nextDirty) return prev;
+        return { ...(prev ?? {}), efficiency: nextDirty };
+      });
+      return;
+    }
 
     // 关键：计算进行中不要改写 cacheKeyRef，否则会导致 worker progress 被当成“旧 key”过滤掉。
     if (planningEfficiencyBusy) return;
@@ -8629,10 +9195,19 @@ const App = () => {
     planningEfficiencyCacheKeyRef.current = String(cacheKey);
     setPlanningEfficiencyCacheKey(cacheKey);
 
-    // 若 cache 中已有结果，直接切换（不必再次计算）
+    const lastComputed = String(planningLastComputedCacheKeyRef.current?.efficiency ?? '');
+    const nextDirty = String(cacheKey) !== lastComputed;
+    setPlanningDirtyByMode((prev) => {
+      if (Boolean(prev?.efficiency) === Boolean(nextDirty)) return prev;
+      return { ...(prev ?? {}), efficiency: Boolean(nextDirty) };
+    });
+
+    // 清理不一致缓存（避免“错缓存复活”）
     const cached = efficiencyCacheRef.current.get(cacheKey);
     const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedFast = Boolean(cached?.result?.fast);
+    const cachedPartial = Boolean(cached?.result?.stats?.partial);
     const cachedSig = String(
       cached?.selectedSig
       || cached?.result?.bestKey
@@ -8642,25 +9217,10 @@ const App = () => {
       || ''
     );
     const cachedLooksConsistent = cached?.result?.ok
+      && !cachedFast
+      && !cachedPartial
       && cachedAxis === axisNow
       && cachedSig.startsWith(`${axisNow}|`);
-
-    if (cachedLooksConsistent) {
-      // 避免重复 setState 抖动：若当前已是同 key 的结果就不重复应用
-      if (String(planningEfficiencyResult?.cacheKey ?? '') !== String(cacheKey)) {
-        setPlanningEfficiencyResult(cached.result);
-        const sig = cached.selectedSig
-          || cached.result.bestKey
-          || cached.result.selectedCandidateKey
-          || cached.result.bestSignature
-          || (cached.result.candidates?.[0]?.signature ?? '');
-        applyEfficiencyCandidateBySignature(sig, cached.result);
-        setPlanningEfficiencyPreview(null);
-        setPlanningEfficiencyPreviewBusy(false);
-      }
-      return;
-    }
-
     if (cached && !cachedLooksConsistent) {
       try {
         efficiencyCacheRef.current.delete(cacheKey);
@@ -8668,24 +9228,8 @@ const App = () => {
         // ignore
       }
     }
-
-    // 输入变化后做一次 debounce：后台 full compute（关闭 fast，仅输出精算结果）。
-    if (!efficiencyWorkerRef.current) return;
-
-    if (efficiencyAutoRecomputeDebounceRef.current) clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
-    efficiencyAutoRecomputeDebounceRef.current = setTimeout(() => {
-      requestComputeEfficiency({ force: true, fast: false, refine: false, background: true });
-    }, 220);
-
-    return () => {
-      if (efficiencyAutoRecomputeDebounceRef.current) {
-        clearTimeout(efficiencyAutoRecomputeDebounceRef.current);
-        efficiencyAutoRecomputeDebounceRef.current = null;
-      }
-    };
   }, [
     mainViewMode,
-    planningOptMode,
     boundaryLoopWorld,
     planningParams?.roadwayOrientation,
     planningParams?.boundaryPillarMin,
@@ -8702,12 +9246,18 @@ const App = () => {
     planningEfficiencyBusy,
   ]);
 
-  // 资源回收模式：轴向/煤柱/面宽/厚度/密度/边界等输入变化时，自动触发重算（或命中缓存切换）。
-  const recoveryAutoRecomputeDebounceRef = useRef(null);
+  // 资源回收模式（方案B）：输入变化后不自动重算，只标记“参数已更新（需手动重新计算）”。
   useEffect(() => {
     if (mainViewMode !== 'planning') return;
-    if (planningOptMode !== 'recovery') return;
-    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
+
+    if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) {
+      setPlanningDirtyByMode((prev) => {
+        const nextDirty = true;
+        if (Boolean(prev?.recovery) === nextDirty) return prev;
+        return { ...(prev ?? {}), recovery: nextDirty };
+      });
+      return;
+    }
 
     if (planningRecoveryBusy) return;
 
@@ -8715,9 +9265,17 @@ const App = () => {
     planningRecoveryCacheKeyRef.current = String(cacheKey);
     setPlanningRecoveryCacheKey(cacheKey);
 
+    const lastComputed = String(planningLastComputedCacheKeyRef.current?.recovery ?? '');
+    const nextDirty = String(cacheKey) !== lastComputed;
+    setPlanningDirtyByMode((prev) => {
+      if (Boolean(prev?.recovery) === Boolean(nextDirty)) return prev;
+      return { ...(prev ?? {}), recovery: Boolean(nextDirty) };
+    });
+
     const cached = recoveryCacheRef.current.get(cacheKey);
     const axisNow = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const cachedAxis = String(cached?.result?.axis ?? '');
+    const cachedFast = Boolean(cached?.result?.fast);
     const cachedSig = String(
       cached?.selectedSig
       || cached?.result?.bestKey
@@ -8727,22 +9285,9 @@ const App = () => {
       || ''
     );
     const cachedLooksConsistent = cached?.result?.ok
+      && !cachedFast
       && cachedAxis === axisNow
       && cachedSig.startsWith(`${axisNow}|`);
-
-    if (cachedLooksConsistent) {
-      if (String(planningRecoveryResult?.cacheKey ?? '') !== String(cacheKey)) {
-        setPlanningRecoveryResult(cached.result);
-        const sig = cached.selectedSig
-          || cached.result.bestKey
-          || cached.result.selectedCandidateKey
-          || cached.result.bestSignature
-          || (cached.result.candidates?.[0]?.signature ?? '');
-        applyRecoveryCandidateBySignature(sig, cached.result);
-      }
-      return;
-    }
-
     if (cached && !cachedLooksConsistent) {
       try {
         recoveryCacheRef.current.delete(cacheKey);
@@ -8750,24 +9295,8 @@ const App = () => {
         // ignore
       }
     }
-
-    if (!resourceWorkerRef.current) return;
-
-    if (recoveryAutoRecomputeDebounceRef.current) clearTimeout(recoveryAutoRecomputeDebounceRef.current);
-    recoveryAutoRecomputeDebounceRef.current = setTimeout(() => {
-      // recovery 的 per-face 设计在 worker 端会禁用 fastMode；因此这里直接 full compute。
-      requestComputeRecovery({ force: true, fast: false, refine: false, background: true });
-    }, 220);
-
-    return () => {
-      if (recoveryAutoRecomputeDebounceRef.current) {
-        clearTimeout(recoveryAutoRecomputeDebounceRef.current);
-        recoveryAutoRecomputeDebounceRef.current = null;
-      }
-    };
   }, [
     mainViewMode,
-    planningOptMode,
     boundaryLoopWorld,
     planningParams?.roadwayOrientation,
     planningParams?.boundaryPillarMin,
@@ -9577,6 +10106,7 @@ const App = () => {
         });
 
         setPlanningEfficiencySelectedSig('');
+        setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), efficiency: true }));
         requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
         return;
       }
@@ -9592,6 +10122,7 @@ const App = () => {
         });
 
         setPlanningRecoverySelectedSig('');
+        setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), recovery: true }));
         requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
         return;
       }
@@ -10375,6 +10906,23 @@ const App = () => {
     reader.onload = () => {
       const text = String(reader.result ?? '');
       const points = parseBoundaryText(text);
+
+      // 导入/更新输入后：先不自动计算，等待用户点击“启动智能采区规划”。
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false });
+      try {
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '' };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode({ efficiency: true, recovery: true });
+      try {
+        setPlanningEfficiencySelectedSig('');
+        setPlanningRecoverySelectedSig('');
+        setPlanningEfficiencyResult(null);
+        setPlanningRecoveryResult(null);
+      } catch {
+        // ignore
+      }
       setBoundaryData(points);
     };
     reader.readAsText(file);
@@ -10395,6 +10943,22 @@ const App = () => {
     reader.onload = () => {
       const text = String(reader.result ?? '');
       const points = parseBoundaryText(text);
+
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false });
+      try {
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '' };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode({ efficiency: true, recovery: true });
+      try {
+        setPlanningEfficiencySelectedSig('');
+        setPlanningRecoverySelectedSig('');
+        setPlanningEfficiencyResult(null);
+        setPlanningRecoveryResult(null);
+      } catch {
+        // ignore
+      }
       setDrillholeData(points);
     };
     reader.readAsText(file);
@@ -10418,6 +10982,23 @@ const App = () => {
     });
 
     try {
+      // 导入/更新输入后：先不自动计算，等待用户点击“启动智能采区规划”。
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false });
+      try {
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '' };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode({ efficiency: true, recovery: true });
+      try {
+        setPlanningEfficiencySelectedSig('');
+        setPlanningRecoverySelectedSig('');
+        setPlanningEfficiencyResult(null);
+        setPlanningRecoveryResult(null);
+      } catch {
+        // ignore
+      }
+
       const entries = await Promise.all(
         files.map(async (file) => {
           const id = String(file.name ?? '').replace(/\.[^.]+$/, '').trim();
@@ -12012,6 +12593,8 @@ const App = () => {
                 onChange={handlePlanningOptModeChange}
                 weights={planningOptWeights}
                 onWeightsChange={setPlanningOptWeights}
+                dirtyByMode={planningDirtyByMode}
+                dirtyHint="参数已更新，请点击重新计算"
                 defaultCollapsed={false}
                 showSummaryWhenCollapsed={false}
               />
@@ -12057,6 +12640,18 @@ const App = () => {
                           <div className="text-[10px] text-slate-400 font-mono">
                             候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}
                           </div>
+                          {(() => {
+                            const k = String(planningEfficiencyResult?.stats?.tonnageThicknessKind ?? '').trim();
+                            if (k !== 'constant' && k !== 'grid') return null;
+                            return (
+                              <div
+                                className="text-[10px] text-slate-400 font-mono"
+                                title="吨位回填计算使用的厚度来源"
+                              >
+                                厚度来源：{k === 'constant' ? '常数' : '插值场'}
+                              </div>
+                            );
+                          })()}
                           <button
                             type="button"
                             className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
@@ -12105,6 +12700,7 @@ const App = () => {
                             <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
                             <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
                             <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                            <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
                             <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
                           </tr>
                         </thead>
@@ -12119,6 +12715,7 @@ const App = () => {
                               const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
                               const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
                               const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
+                              const fmtWanT = (v) => (Number.isFinite(Number(v)) ? (Number(v) / 10000).toFixed(2) : '--');
                               const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
 
                               return (
@@ -12149,6 +12746,7 @@ const App = () => {
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWanT(r?.tonnageTotal)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.efficiencyScore)}</td>
                                 </tr>
                               );
@@ -12243,6 +12841,51 @@ const App = () => {
                           <div className="text-[10px] text-slate-400 font-mono">
                             候选：{planningRecoveryResult?.stats?.topK ?? 0} / {planningRecoveryResult?.stats?.candidateCount ?? 0}
                           </div>
+                          {(() => {
+                            const b = planningRecoveryResult?.attemptSummary?.Bsearch;
+                            const coarse = Number(b?.coarseEvaluatedBCount);
+                            const fine = Number(b?.fineEvaluatedBCount);
+                            const stepCoarse = Number(b?.coarseStep);
+                            const stepFine = Number(b?.fineStep);
+                            const seedBs0 = Array.isArray(b?.seedBs) ? b.seedBs : [];
+                            const seedCount = seedBs0.length;
+
+                            const rows = Array.isArray(planningRecoveryResult?.table?.rows)
+                              ? planningRecoveryResult.table.rows.slice(0, 10)
+                              : [];
+                            const uniqB = (() => {
+                              const set = new Set();
+                              for (const r of rows) {
+                                const v0 = Number(r?.B);
+                                const b0 = Number(r?.BMin);
+                                const b1 = Number(r?.BMax);
+                                if (Number.isFinite(v0)) set.add(v0.toFixed(1));
+                                if (Number.isFinite(b0) && Number.isFinite(b1)) {
+                                  set.add(b0.toFixed(1));
+                                  set.add(b1.toFixed(1));
+                                }
+                              }
+                              return set.size;
+                            })();
+
+                            const hasCounts = Number.isFinite(coarse) || Number.isFinite(fine);
+                            if (!hasCounts && !rows.length) return null;
+
+                            const parts = [];
+                            if (Number.isFinite(coarse)) parts.push(`粗搜B:${Math.max(0, Math.round(coarse))}`);
+                            if (Number.isFinite(fine)) parts.push(`精修B:${Math.max(0, Math.round(fine))}`);
+                            if (Number.isFinite(stepCoarse)) parts.push(`粗步长:${stepCoarse}`);
+                            if (Number.isFinite(stepFine)) parts.push(`精步长:${stepFine}`);
+                            if (Number.isFinite(seedCount)) parts.push(`seed:${seedCount}`);
+                            if (Number.isFinite(uniqB)) parts.push(`Top10宽度多样性:${uniqB}`);
+                            const text = parts.length ? parts.join('，') : '';
+
+                            return text ? (
+                              <div className="text-[10px] text-slate-400 font-mono" title="用于诊断：是否真的没有枚举工作面宽度B（粗搜/精修计数、seed数量、Top10宽度多样性）">
+                                宽度枚举：{text}
+                              </div>
+                            ) : null;
+                          })()}
                           {(() => {
                             const sig = String(planningRecoverySelectedSig || planningRecoveryResult?.selectedCandidateKey || planningRecoveryResult?.bestKey || '');
                             if (!sig) return null;
@@ -12343,7 +12986,7 @@ const App = () => {
                               <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
                               <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
                               <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（t）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
                               <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">资源回收评分</th>
                             </tr>
                           </thead>
@@ -12357,6 +13000,7 @@ const App = () => {
                               const active = sig && sig === planningRecoverySelectedSig;
                               const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
                               const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
+                              const fmtWan = (v) => (Number.isFinite(Number(v)) ? (Number(v) / 10000).toFixed(2) : '--');
                               const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
                               const fmtScore = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
 
@@ -12425,7 +13069,7 @@ const App = () => {
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.tonnageTotal)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWan(r?.tonnageTotal)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtScore(r?.recoveryScore)}</td>
                                 </tr>
                               );

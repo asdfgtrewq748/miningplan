@@ -42,6 +42,8 @@ export default function MultiObjectivePlanPanel({
   onChange,
   weights,
   onWeightsChange,
+  dirtyByMode,
+  dirtyHint = '参数已更新，请点击重新计算',
   defaultCollapsed = false,
   showSummaryWhenCollapsed = false,
 }) {
@@ -224,6 +226,7 @@ export default function MultiObjectivePlanPanel({
           <div className="grid grid-cols-4 gap-4 shrink-0">
             {modes.map((m) => {
               const selected = m.id === value;
+              const dirty = Boolean(dirtyByMode && dirtyByMode[m.id]);
               return (
                 <button
                   key={m.id}
@@ -259,8 +262,19 @@ export default function MultiObjectivePlanPanel({
 
                   <h4 className="relative min-w-0 text-[16px] font-black leading-tight truncate">{m.title}</h4>
 
-                  {selected && (
-                    <div className={`absolute top-2 right-2 w-1.5 h-1.5 rounded-full ${m.classes.dot} animate-pulse`} />
+                  {(dirty || selected) && (
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {dirty && (
+                        <div
+                          className="w-1.5 h-1.5 rounded-full bg-red-500"
+                          title={dirtyHint}
+                          aria-label={dirtyHint}
+                        />
+                      )}
+                      {selected && (
+                        <div className={`w-1.5 h-1.5 rounded-full ${m.classes.dot} animate-pulse`} />
+                      )}
+                    </div>
                   )}
                 </button>
               );

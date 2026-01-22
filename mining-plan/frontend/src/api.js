@@ -124,13 +124,15 @@ async function apiPostWithTimeout(endpoint, data = {}, timeoutMs = 30000) {
  * - 输入：候选（含 render loops）+ thickness
  * - 输出：rankedSignatures + tonnageBySignature + recoveryScoreBySignature
  */
-export async function smartResourceTonnageSort({ cacheKey, candidates, thickness, topK = 10, sampleStepM = null }) {
+export async function smartResourceTonnageSort(options) {
+  const { cacheKey, candidates, thickness, topK = 10, sampleStepM = null, ...rest } = options || {};
   return apiPost('/planning/smart-resource/tonnage', {
     cacheKey,
     candidates,
     thickness,
     topK,
     sampleStepM,
+    ...rest,
   });
 }
 

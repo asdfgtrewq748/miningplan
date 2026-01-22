@@ -4446,10 +4446,17 @@ const compute = (payload) => {
   // - hasThickness：厚度输入是否“可用”（grid 有有效值 或 constantM>0）
   // - fallbackMode：TONNAGE 或 AREA（必须与排序口径一致）
   // - thicknessReason：用于排障的稳定枚举
-  // 档 A：固定 AREA 退化先跑通（不引入厚度与吨位）
-  const hasThickness = false;
-  const fallbackMode = 'AREA';
-  const thicknessReason = THICKNESS_REASON.FALLBACK_AREA;
+  // 档 A：默认 AREA（保持旧行为）
+  // 档 B：仅当“厚度场(fieldPack)来自钻孔+分层数据”可用时，启用 TONNAGE 目标影响候选输出。
+  const sampler0 = buildThicknessSampler(payload?.thickness);
+  const tonnageObjectiveEnabled = Boolean(payload?.tonnageObjectiveEnabled);
+  // 需求：只有钻孔+分层数据存在才纳入搜索目标；因此这里不接受 constant thickness 触发 TONNAGE。
+  const enableTonnageObjective = Boolean(tonnageObjectiveEnabled && sampler0?.hasThickness && sampler0.kind === 'field');
+  const hasThickness = Boolean(enableTonnageObjective);
+  const fallbackMode = enableTonnageObjective ? 'TONNAGE' : 'AREA';
+  const thicknessReason = enableTonnageObjective
+    ? (sampler0?.reason || (swapXY ? THICKNESS_REASON.AXIS_Y_THK_UNCHANGED : ''))
+    : THICKNESS_REASON.FALLBACK_AREA;
 
   const usedFallback = qualifiedCandidates.length === 0;
 
@@ -4838,10 +4845,95 @@ const compute = (payload) => {
   // 之前用 qualified+fallback 数组拼接在极端情况下可能漏掉后续 push 的候选，导致“perFace.generated>0 但 best 仍是 base”。
   const allCandidates = Array.from(allCandByKey.values());
 
-  const compareMain = compareByArea;
-  const rankedAll = (allCandidates ?? []).slice().sort(compareMain);
+  // v1.0 topK：严格截断（<=topK），不再强行“覆盖全 N”（避免 candidatesCount 波动）
+  // fast 预览：只输出 top1（配合 App.jsx 的 fast+refine 链路）
+  const wantK = fastMode ? 1 : Math.max(1, Math.round(Number(topK) || 10));
 
-  const best = rankedAll[0];
+  // === 候选排序主口径 ===
+  // - 默认：AREA（coverage 为主）
+  // - 启用厚度场：先按 AREA 取一批“可疑似最优”的候选，再用吨位近似计算重排，影响最终 topK。
+  const compareMain = enableTonnageObjective ? compareByRecovery : compareByArea;
+
+  const rankedAllArea = (allCandidates ?? []).slice().sort(compareByArea);
+  // 仅对一个小批次计算吨位（避免对全量候选做网格采样）。
+  const TONNAGE_POOL_MULT = clamp(Math.round(Number(toNum(payload?.tonnagePoolMult) ?? 6)), 2, 12);
+  const poolK = enableTonnageObjective ? Math.min(rankedAllArea.length, Math.max(wantK, wantK * TONNAGE_POOL_MULT)) : wantK;
+
+  let candidates = rankedAllArea.slice(0, poolK);
+
+  // 启用吨位目标：对 pool 内候选做吨位近似计算并重排。
+  if (enableTonnageObjective) {
+    try {
+      const omegaLoopsWorld0 = Array.isArray(candidates?.[0]?.render?.omegaLoops) ? candidates[0].render.omegaLoops : [];
+      const omegaLoop0 = omegaLoopsWorld0.find((l) => Array.isArray(l) && l.length >= 3) || null;
+      const omegaPoly = omegaLoop0 ? buildJstsPolygonFromLoop(omegaLoop0) : null;
+
+      const TONNAGE_STEP_M = clamp(Number(toNum(payload?.tonnageSampleStepM) ?? (fastMode ? 40 : 30)), 10, 120);
+
+      const computeTonnageForCandidate = (cand) => {
+        if (!cand || !cand.render || !omegaPoly || omegaPoly.isEmpty?.()) return;
+
+        // face loops：优先 facesLoops（可含非矩形），否则回退 rectLoops。
+        const faces0 = Array.isArray(cand?.render?.facesLoops) ? cand.render.facesLoops : null;
+        const rectLoops0 = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
+        const faces = (Array.isArray(faces0) && faces0.length)
+          ? faces0
+            .map((x, idx) => ({ faceIndex: Number(x?.faceIndex ?? (idx + 1)), loop: x?.loop }))
+            .filter((x) => Number.isFinite(Number(x?.faceIndex)) && Number(x.faceIndex) >= 1 && Array.isArray(x?.loop) && x.loop.length >= 3)
+          : rectLoops0
+            .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+            .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+        if (!faces.length) return;
+
+        let sum = 0;
+        for (const face of faces) {
+          const loop = face?.loop;
+          if (!Array.isArray(loop) || loop.length < 3) continue;
+
+          // strictInsideOmega：无需 overlay，直接采样。
+          if (cand?.render?.strictInsideOmega) {
+            const t0 = integrateTonnageForLoop({ loop, sampler: sampler0, gridRes: TONNAGE_STEP_M });
+            if (Number.isFinite(t0) && t0 > 0) sum += t0;
+            continue;
+          }
+
+          // 通用：面与 Ω 取交后采样（避免把 Ω 外也算进吨位）。
+          const facePoly = buildJstsPolygonFromLoop(loop);
+          if (!facePoly || facePoly.isEmpty?.()) continue;
+          let inter = null;
+          try {
+            inter = robustIntersection(omegaPoly, facePoly);
+          } catch {
+            inter = null;
+          }
+          if (!inter || inter.isEmpty?.()) continue;
+          const loops = polygonToLoops(inter);
+          const loops0 = Array.isArray(loops) ? loops : [];
+          for (const l of loops0) {
+            if (!Array.isArray(l) || l.length < 3) continue;
+            const t1 = integrateTonnageForLoop({ loop: l, sampler: sampler0, gridRes: TONNAGE_STEP_M });
+            if (Number.isFinite(t1) && t1 > 0) sum += t1;
+          }
+        }
+
+        if (!Number.isFinite(sum) || sum < 0) sum = 0;
+        cand.tonnageTotal = sum;
+        if (cand.metrics && typeof cand.metrics === 'object') cand.metrics.tonnageTotal = sum;
+      };
+
+      for (const c of candidates) computeTonnageForCandidate(c);
+
+      // 用吨位口径重排，并截断回 topK。
+      candidates = candidates.slice().sort(compareByRecovery).slice(0, wantK);
+    } catch {
+      // ignore: tonnage objective failures should not break baseline
+      candidates = candidates.slice(0, wantK);
+    }
+  } else {
+    candidates = candidates.slice(0, wantK);
+  }
+
+  const best = candidates[0];
   responseBase.attemptSummary.timeBudgetHit = Boolean(timeBudgetHit);
   const elapsedMs = Math.max(0, nowMs() - startMs);
   const partial = Boolean(timeBudgetHit && !fastMode);
@@ -4864,11 +4956,6 @@ const compute = (payload) => {
     };
   }
   const nStar = best.N;
-
-  // v1.0 topK：严格截断（<=topK），不再强行“覆盖全 N”（避免 candidatesCount 波动）
-  // fast 预览：只输出 top1（配合 App.jsx 的 fast+refine 链路）
-  const wantK = fastMode ? 1 : Math.max(1, Math.round(Number(topK) || 10));
-  let candidates = (rankedAll ?? []).slice(0, wantK);
 
   // === v1.1：工程化全覆盖（分段变宽 + 残煤清扫 cleanupResidual）===
   const segCfg0 = (payload?.segmentWidth && typeof payload.segmentWidth === 'object') ? payload.segmentWidth : {};
@@ -6174,6 +6261,24 @@ const compute = (payload) => {
     for (const c of (candidates ?? [])) {
       if (!c.render || typeof c.render !== 'object') c.render = {};
 
+      // 口径统一（UI候选表）：保留 raw（不扣煤柱）字段用于表格展示/对比。
+      // 注意：fullCover/补残煤/残煤轮廓仍使用 coverageRatioEff（扣煤柱有效Ω口径）。
+      try {
+        const rawCov0 = Number(c?.coverageRatio ?? c?.metrics?.coverageRatio);
+        const rawInner0 = Number(c?.innerArea ?? c?.metrics?.innerArea ?? c?.metrics?.omegaArea ?? c?.omegaArea);
+        const rawCovered0 = Number(c?.coveredArea ?? c?.metrics?.coveredArea ?? c?.metrics?.faceAreaTotal ?? c?.faceAreaTotal);
+        c.coverageRatioRaw = (Number.isFinite(rawCov0) ? rawCov0 : null);
+        c.innerAreaRaw = (Number.isFinite(rawInner0) ? rawInner0 : null);
+        c.coveredAreaRaw = (Number.isFinite(rawCovered0) ? rawCovered0 : null);
+        if (c.metrics && typeof c.metrics === 'object') {
+          c.metrics.coverageRatioRaw = c.coverageRatioRaw;
+          c.metrics.innerAreaRaw = c.innerAreaRaw;
+          c.metrics.coveredAreaRaw = c.coveredAreaRaw;
+        }
+      } catch {
+        // ignore
+      }
+
       const eff = computeEffectiveCoverage(c);
       if (!eff) continue;
       c.coverageRatioEff = eff.coverageRatioEff;
@@ -6190,7 +6295,8 @@ const compute = (payload) => {
         c.render.residualLoopsWorld = [];
       }
       c.qualifiedFullCover = FULL_COVER_ENABLED ? Boolean(eff.coverageRatioEff >= FULL_COVER_MIN) : null;
-      if (FULL_COVER_ENABLED) c.qualified = Boolean(eff.coverageRatioEff >= FULL_COVER_MIN);
+      // 口径调整（2026-01-22）：fullCover 允许不达标，但在评分中扣分。
+      // 因此这里不再用 fullCoverMin 覆盖 c.qualified（c.qualified 仍代表“硬约束/基础约束”是否满足）。
 
       // fullCover 口径下：用“有效Ω覆盖率”驱动排序/评分字段（compareByArea/scoreOf 都依赖 coverageRatio/efficiencyScore）
       if (FULL_COVER_ENABLED) {
@@ -6219,7 +6325,7 @@ const compute = (payload) => {
         c.metrics.residualAreaEff = eff.residualAreaEff;
         c.metrics.residualLoopsWorldCount = Array.isArray(c.render?.residualLoopsWorld) ? c.render.residualLoopsWorld.length : 0;
         c.metrics.qualifiedFullCover = c.qualifiedFullCover;
-        if (FULL_COVER_ENABLED) c.metrics.qualified = Boolean(c.qualified);
+        // 同上：不再由 fullCover 覆盖 qualified。
       }
 
       // base+patched 双版本字段（默认：未补片）。
@@ -6338,7 +6444,13 @@ const compute = (payload) => {
     wb: c.wb,
     wbFixedRaw,
     ws: c.ws,
-    coveragePct: c.coverageRatio * 100,
+    // UI候选表显示：raw 覆盖率（不扣煤柱）
+    coverageRatioRaw: (Number.isFinite(Number(c.coverageRatioRaw)) ? Number(c.coverageRatioRaw) : null),
+    coveragePct: (Number.isFinite(Number(c.coverageRatioRaw)) ? Number(c.coverageRatioRaw) : Number(c.coverageRatio)) * 100,
+    // fullCover 判定/诊断：effective 覆盖率（扣煤柱有效Ω）
+    coverageRatioEff: (Number.isFinite(Number(c.coverageRatioEff)) ? Number(c.coverageRatioEff) : null),
+    coveragePctEff: (Number.isFinite(Number(c.coverageRatioEff)) ? Number(c.coverageRatioEff) * 100 : null),
+    qualifiedFullCover: (Object.prototype.hasOwnProperty.call(c ?? {}, 'qualifiedFullCover') ? c.qualifiedFullCover : null),
     efficiencyScore: c.efficiencyScore,
     tonnageTotal: (c.tonnageTotal ?? c.metrics?.tonnageTotal ?? 0),
     recoveryScore: (c.recoveryScore ?? c.metrics?.recoveryScore ?? 0),
@@ -6352,8 +6464,8 @@ const compute = (payload) => {
       : (Array.isArray(c?.metrics?.abnormalFaces)
         ? c.metrics.abnormalFaces.map((x) => Number(x?.faceIndex)).filter((v) => Number.isFinite(v) && v >= 1).join(',')
         : ''),
-    innerArea: c.innerArea,
-    coveredArea: c.coveredArea,
+    innerArea: (Number.isFinite(Number(c.innerAreaRaw)) ? Number(c.innerAreaRaw) : c.innerArea),
+    coveredArea: (Number.isFinite(Number(c.coveredAreaRaw)) ? Number(c.coveredAreaRaw) : c.coveredArea),
     fallbackMode,
     thicknessReason: thicknessReason || (fallbackMode === 'AREA' ? THICKNESS_REASON.FALLBACK_AREA : ''),
   }));
@@ -6423,11 +6535,11 @@ const compute = (payload) => {
         ? Number(candidates?.[0]?.residualAreaEff ?? best?.residualAreaEff)
         : null,
       qualified: FULL_COVER_ENABLED
-        ? Boolean((candidates?.[0]?.coverageRatioEff ?? best?.coverageRatioEff ?? 0) >= FULL_COVER_MIN)
+        ? Boolean((candidates?.[0]?.coverageRatio ?? best?.coverageRatio) >= COVERAGE_MIN)
         : Boolean((candidates?.[0]?.coverageRatio ?? best?.coverageRatio) >= COVERAGE_MIN),
     },
     stats: {
-      candidateCount: rankedAll.length,
+      candidateCount: (allCandidates ?? []).length,
       topK: candidates.length,
       nStar,
       bestCoverageRatio: Number(candidates?.[0]?.coverageRatio ?? best?.coverageRatio),
