@@ -68,6 +68,13 @@ class SmartResourceTonnageRequest(BaseModel):
     candidates: List[SmartResourceCandidateIn] = Field(default_factory=list)
     thickness: Optional[ThicknessPayload] = None
 
+    # efficiency/disturbance display-only: optionally compute tonnage on a "patched" mining shape
+    # (approximate cleanupResidual behavior) to make cross-mode tonnage comparable.
+    preferPatched: Optional[bool] = False
+    # If provided (non-empty), patch only these candidate signatures.
+    preferPatchedSignatures: Optional[List[str]] = None
+    cleanupResidual: Optional[Dict[str, Any]] = None
+
     # optional knobs
     topK: Optional[int] = 10
     sampleStepM: Optional[float] = None
@@ -78,6 +85,10 @@ class SmartResourceTonnageRequest(BaseModel):
     wEngineering: Optional[float] = None
     fullCoverMin: Optional[float] = None
     fullCoverPenaltyFloor: Optional[float] = None
+
+    # diagnostics (optional)
+    debug: Optional[bool] = False
+    debugSignatures: Optional[List[str]] = None
 
 
 class SmartResourceTonnageResponse(BaseModel):
@@ -96,6 +107,9 @@ class SmartResourceTonnageResponse(BaseModel):
     tMax: float = 0
     method: str = 'grid-sampling'
     warnings: List[str] = Field(default_factory=list)
+
+    # optional debug payload (ignored by frontend unless used)
+    debugInfo: Optional[Dict[str, Any]] = None
 
 
 class SmartEfficiencyComputeRequest(BaseModel):
@@ -786,6 +800,303 @@ def _extract_faces_polygons(render: Optional[Dict[str, Any]]) -> List[Polygon]:
     return polys
 
 
+def _extract_rect_faces_polygons(render: Optional[Dict[str, Any]]) -> List[Polygon]:
+    """Extract axis-aligned rectLoops when available.
+
+    This is used by cleanupResidual-like patching (which assumes rect faces).
+    """
+
+    r = render or {}
+    rect_loops = r.get('rectLoops')
+    polys: List[Polygon] = []
+    if isinstance(rect_loops, list):
+        for loop in rect_loops:
+            poly = _loop_to_polygon(loop)
+            if poly is not None:
+                polys.append(poly)
+    return polys
+
+
+def _is_axis_aligned_rect(poly: Polygon, *, rel_tol: float = 1e-3) -> bool:
+    try:
+        if poly is None or poly.is_empty:
+            return False
+        minx, miny, maxx, maxy = poly.bounds
+        if not all(np.isfinite(v) for v in [minx, miny, maxx, maxy]):
+            return False
+        if not (maxx > minx and maxy > miny):
+            return False
+        bbox_area = (maxx - minx) * (maxy - miny)
+        if not np.isfinite(bbox_area) or bbox_area <= 0:
+            return False
+        a = float(poly.area)
+        if not np.isfinite(a) or a <= 0:
+            return False
+        if abs(a - bbox_area) / bbox_area > rel_tol:
+            return False
+        # typical rectangle ring has 5 points (closed); allow a tiny bit more after buffer(0)
+        try:
+            n = len(list(poly.exterior.coords))
+            if n > 8:
+                return False
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _rect_from_bounds(minx: float, miny: float, maxx: float, maxy: float) -> Optional[Polygon]:
+    try:
+        if not all(np.isfinite(v) for v in [minx, miny, maxx, maxy]):
+            return None
+        if not (maxx > minx and maxy > miny):
+            return None
+        p = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy)])
+        if p.is_empty:
+            return None
+        if not p.is_valid:
+            p = p.buffer(0)
+        return p if (p is not None and not getattr(p, 'is_empty', True)) else None
+    except Exception:
+        return None
+
+
+def _cleanup_residual_patch_faces(
+    *,
+    omega: Polygon,
+    base_faces: List[Polygon],
+    axis: str,
+    ws_hard: float,
+    cfg: Dict[str, Any],
+) -> List[Polygon]:
+    """A lightweight, deterministic approximation of smartResource.worker.js cleanupResidual.
+
+    Assumptions:
+    - faces are axis-aligned rectangles
+    - we only do whole-rectangle widening on the residual side (no segmented widths)
+
+    The patch is intended for *tonnage display only*.
+    """
+
+    if omega is None or omega.is_empty:
+        return base_faces
+    if not base_faces:
+        return base_faces
+
+    enabled = bool(cfg.get('enabled', True))
+    if not enabled:
+        return base_faces
+
+    try:
+        max_faces = int(cfg.get('maxFacesToAdjust', 5) or 5)
+    except Exception:
+        max_faces = 5
+    max_faces = int(np.clip(max_faces, 1, 12))
+
+    try:
+        max_repl = int(cfg.get('maxReplacements', 2) or 2)
+    except Exception:
+        max_repl = 2
+    max_repl = int(np.clip(max_repl, 0, 6))
+
+    try:
+        delta_max = float(cfg.get('deltaBMaxM', cfg.get('deltaBMaxCleanupM', 10)) or 10)
+    except Exception:
+        delta_max = 10.0
+    delta_max = max(0.0, float(delta_max))
+
+    try:
+        delta_step = float(cfg.get('deltaBStepM', 1) or 1)
+    except Exception:
+        delta_step = 1.0
+    delta_step = float(np.clip(delta_step, 0.5, 10.0))
+
+    ws = float(ws_hard) if np.isfinite(ws_hard) and ws_hard > 0 else 0.0
+
+    a = 'y' if str(axis) == 'y' else 'x'
+    w_axis = 'x' if a == 'y' else 'y'  # width direction
+
+    # Normalize faces to rectangles and sort by width-axis position.
+    rects: List[Tuple[float, float, float, float]] = []
+    for p in base_faces:
+        if not isinstance(p, Polygon) or p.is_empty:
+            continue
+        if not _is_axis_aligned_rect(p):
+            return base_faces
+        minx, miny, maxx, maxy = p.bounds
+        rects.append((float(minx), float(miny), float(maxx), float(maxy)))
+    if not rects:
+        return base_faces
+
+    def w_min(r: Tuple[float, float, float, float]) -> float:
+        return r[0] if w_axis == 'x' else r[1]
+
+    rects.sort(key=w_min)
+
+    def rect_poly(r: Tuple[float, float, float, float]) -> Optional[Polygon]:
+        return _rect_from_bounds(r[0], r[1], r[2], r[3])
+
+    def rect_box_expand(r: Tuple[float, float, float, float], pad_a: float, pad_w: float) -> Optional[Polygon]:
+        minx, miny, maxx, maxy = r
+        if a == 'x':
+            minx2, maxx2 = minx - pad_a, maxx + pad_a
+            miny2, maxy2 = miny - pad_w, maxy + pad_w
+        else:
+            minx2, maxx2 = minx - pad_w, maxx + pad_w
+            miny2, maxy2 = miny - pad_a, maxy + pad_a
+        return _rect_from_bounds(minx2, miny2, maxx2, maxy2)
+
+    def intersects_any(idx: int, cand: Tuple[float, float, float, float]) -> bool:
+        pc = rect_poly(cand)
+        if pc is None or pc.is_empty:
+            return True
+        for j, rj in enumerate(rects):
+            if j == idx:
+                continue
+            pj = rect_poly(rj)
+            if pj is None or pj.is_empty:
+                continue
+            try:
+                inter = pc.intersection(pj)
+                if inter is not None and not inter.is_empty and float(inter.area) > 1e-6:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # iterative improvements
+    for _rep in range(max_repl):
+        try:
+            union0 = unary_union([rect_poly(r) for r in rects if rect_poly(r) is not None])
+        except Exception:
+            break
+        if union0 is None or getattr(union0, 'is_empty', True):
+            break
+        try:
+            residual = omega.difference(union0)
+        except Exception:
+            residual = None
+        if residual is None or getattr(residual, 'is_empty', True):
+            break
+        r_area = float(getattr(residual, 'area', 0.0) or 0.0)
+        if not (np.isfinite(r_area) and r_area > 1e-6):
+            break
+
+        # score faces by nearby residual area
+        scores: List[Tuple[float, int]] = []
+        for i, r in enumerate(rects):
+            minx, miny, maxx, maxy = r
+            len_a = (maxx - minx) if a == 'x' else (maxy - miny)
+            len_w = (maxy - miny) if w_axis == 'y' else (maxx - minx)
+            pad_a = max(5.0, min(60.0, float(len_a) * 0.15))
+            pad_w = max(5.0, min(60.0, float(len_w) * 0.30))
+            win = rect_box_expand(r, pad_a, pad_w)
+            if win is None:
+                continue
+            try:
+                near = residual.intersection(win)
+                a0 = float(getattr(near, 'area', 0.0) or 0.0)
+            except Exception:
+                a0 = 0.0
+            if np.isfinite(a0) and a0 > 1e-6:
+                scores.append((a0, i))
+        scores.sort(reverse=True)
+        target = [i for _a0, i in scores[:max_faces]]
+        if not target:
+            break
+
+        best_move = None
+        for idx in target:
+            r = rects[idx]
+            minx, miny, maxx, maxy = r
+            # determine residual side using centroid of nearby residual
+            len_a = (maxx - minx) if a == 'x' else (maxy - miny)
+            len_w = (maxy - miny) if w_axis == 'y' else (maxx - minx)
+            pad_a = max(1.0, min(20.0, float(len_w) * 0.2))
+            win = rect_box_expand(r, pad_a, pad_a)
+            if win is None:
+                continue
+            try:
+                near = residual.intersection(win)
+                if near is None or near.is_empty:
+                    continue
+                cy = float(near.centroid.x if w_axis == 'x' else near.centroid.y)
+            except Exception:
+                continue
+            mid = ((minx + maxx) / 2.0) if w_axis == 'x' else ((miny + maxy) / 2.0)
+            side = 'top' if cy >= mid else 'bottom'
+
+            # neighbor constraints along width axis
+            min_allowed = -1e30
+            max_allowed = 1e30
+            if idx - 1 >= 0:
+                prev = rects[idx - 1]
+                prev_max_w = prev[2] if w_axis == 'x' else prev[3]
+                min_allowed = float(prev_max_w + ws)
+            if idx + 1 < len(rects):
+                nxt = rects[idx + 1]
+                next_min_w = nxt[0] if w_axis == 'x' else nxt[1]
+                max_allowed = float(next_min_w - ws)
+
+            # base width
+            baseB = len_w
+            if not (np.isfinite(baseB) and baseB > 0):
+                continue
+
+            d = 0.0
+            while d <= delta_max + 1e-9:
+                # build widened rect
+                if w_axis == 'y':
+                    if side == 'top':
+                        y0 = miny
+                        y1 = min(max_allowed, y0 + baseB + d)
+                    else:
+                        y1 = maxy
+                        y0 = max(min_allowed, y1 - (baseB + d))
+                    cand = (minx, y0, maxx, y1)
+                else:
+                    if side == 'top':
+                        x0 = minx
+                        x1 = min(max_allowed, x0 + baseB + d)
+                    else:
+                        x1 = maxx
+                        x0 = max(min_allowed, x1 - (baseB + d))
+                    cand = (x0, miny, x1, maxy)
+
+                pc = rect_poly(cand)
+                if pc is None or pc.is_empty:
+                    d += delta_step
+                    continue
+                if intersects_any(idx, cand):
+                    d += delta_step
+                    continue
+                try:
+                    gain = residual.intersection(pc)
+                    gainA = float(getattr(gain, 'area', 0.0) or 0.0)
+                except Exception:
+                    gainA = 0.0
+                if not (np.isfinite(gainA) and gainA > 1e-6):
+                    d += delta_step
+                    continue
+                score = float(gainA - (abs(d) * 0.01))
+                if best_move is None or score > best_move['score'] + 1e-9:
+                    best_move = {'idx': idx, 'cand': cand, 'score': score}
+                d += delta_step
+
+        if best_move is None:
+            break
+        rects[best_move['idx']] = best_move['cand']
+
+    # build polygons
+    out: List[Polygon] = []
+    for r in rects:
+        p = rect_poly(r)
+        if p is not None and not p.is_empty:
+            out.append(p)
+    return out if out else base_faces
+
+
 def _extract_omega_polygon(candidates: List[SmartResourceCandidateIn]) -> Optional[Polygon]:
     if not candidates:
         return None
@@ -1127,6 +1438,60 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
     has_thk = sampler.has_thickness
     fallback_mode = 'TONNAGE' if has_thk else 'AREA'
 
+    # -----------------------------
+    # Optional diagnostics
+    # -----------------------------
+    debug_sig_set: Optional[set] = None
+    if bool(req.debug):
+        try:
+            if isinstance(req.debugSignatures, list):
+                cleaned = [str(s).strip() for s in req.debugSignatures if str(s).strip()]
+                if cleaned:
+                    debug_sig_set = set(cleaned)
+        except Exception:
+            debug_sig_set = None
+
+    debug_info: Optional[Dict[str, Any]] = None
+    if bool(req.debug):
+        debug_info = {'perCandidate': {}}
+        try:
+            if sampler.kind == 'grid' and sampler._field is not None:
+                f = sampler._field
+                m = np.isfinite(f) & (f > 0)
+                valid = f[m]
+                if valid.size:
+                    debug_info['thicknessFieldStats'] = {
+                        'kind': 'grid',
+                        'rho': float(sampler.rho),
+                        'gridW': int(sampler._gridW),
+                        'gridH': int(sampler._gridH),
+                        'validCount': int(valid.size),
+                        'min': float(np.min(valid)),
+                        'max': float(np.max(valid)),
+                        'mean': float(np.mean(valid)),
+                    }
+                else:
+                    debug_info['thicknessFieldStats'] = {
+                        'kind': 'grid',
+                        'rho': float(sampler.rho),
+                        'gridW': int(sampler._gridW),
+                        'gridH': int(sampler._gridH),
+                        'validCount': 0,
+                    }
+            elif sampler.kind == 'constant':
+                debug_info['thicknessFieldStats'] = {
+                    'kind': 'constant',
+                    'rho': float(sampler.rho),
+                    'constantM': float(sampler._constant) if sampler._constant is not None else None,
+                }
+            else:
+                debug_info['thicknessFieldStats'] = {
+                    'kind': 'none',
+                    'rho': float(sampler.rho),
+                }
+        except Exception:
+            pass
+
     omega_shared = _extract_omega_polygon(req.candidates)
     warnings: List[str] = []
     if omega_shared is None:
@@ -1145,6 +1510,15 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
     coverage_by_sig: Dict[str, float] = {}
     eng_by_sig: Dict[str, float] = {}
 
+    patch_sig_set: Optional[set] = None
+    try:
+        if isinstance(req.preferPatchedSignatures, list):
+            cleaned = [str(s).strip() for s in req.preferPatchedSignatures if str(s).strip()]
+            if cleaned:
+                patch_sig_set = set(cleaned)
+    except Exception:
+        patch_sig_set = None
+
     for c in req.candidates:
         sig = str(c.signature)
         render = c.render or {}
@@ -1157,7 +1531,48 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
         method = 'no-thickness'
         w_local: List[str] = []
         if omega is not None:
-            ton, method, w_local = _compute_tonnage_for_candidate(omega, faces, sampler, float(sample_step))
+            # Optional: for efficiency/disturbance cross-mode display, compute tonnage on a patched
+            # mining shape (approximate cleanupResidual) based on rectLoops.
+            do_patch = bool(req.preferPatched) and (patch_sig_set is None or sig in patch_sig_set)
+            if do_patch:
+                try:
+                    rect_faces = _extract_rect_faces_polygons(render)
+                    base_for_patch = rect_faces if rect_faces else faces
+                    axis = str(c.axis or render.get('axis') or 'x')
+                    ws_hard = float(c.ws) if c.ws is not None and np.isfinite(float(c.ws)) else 0.0
+                    cfg = req.cleanupResidual if isinstance(req.cleanupResidual, dict) else {'enabled': True}
+                    patched = _cleanup_residual_patch_faces(
+                        omega=omega,
+                        base_faces=base_for_patch,
+                        axis=axis,
+                        ws_hard=ws_hard,
+                        cfg=cfg,
+                    )
+                    faces_use = patched if patched else faces
+                except Exception:
+                    faces_use = faces
+            else:
+                faces_use = faces
+            ton, method, w_local = _compute_tonnage_for_candidate(omega, faces_use, sampler, float(sample_step))
+
+            if debug_info is not None and (debug_sig_set is None or sig in debug_sig_set):
+                try:
+                    face_union = unary_union(faces_use) if faces_use else None
+                    mined = omega.intersection(face_union) if (face_union is not None and not getattr(face_union, 'is_empty', True)) else None
+                    mined_area = float(getattr(mined, 'area', 0.0) or 0.0) if mined is not None else 0.0
+                    mean_thk = None
+                    if mined_area > 1e-9 and float(sampler.rho) > 0:
+                        mean_thk = float(ton / (mined_area * float(sampler.rho)))
+                    debug_info['perCandidate'][sig] = {
+                        'minedArea': mined_area,
+                        'meanThicknessM': mean_thk,
+                        'rho': float(sampler.rho),
+                        'samplerKind': str(sampler.kind),
+                        'patchedUsed': bool(do_patch),
+                        'sampleStepM': float(sample_step),
+                    }
+                except Exception:
+                    pass
         else:
             w_local = ['OMEGA_MISSING']
 
@@ -1315,4 +1730,5 @@ def smart_resource_tonnage(req: SmartResourceTonnageRequest) -> SmartResourceTon
         tMax=float(max(ts)) if ts else 0.0,
         method='grid-sampling' if sampler.kind == 'grid' else ('constant-exact' if sampler.kind == 'constant' else 'no-thickness'),
         warnings=sorted(list({w for w in warnings if w})),
+        debugInfo=debug_info,
     )

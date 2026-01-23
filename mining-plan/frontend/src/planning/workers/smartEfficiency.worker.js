@@ -26,6 +26,93 @@ const uniqNums = (arr, eps = 1e-9) => {
   return out;
 };
 
+const hash32FNV1a = (str) => {
+  const s = String(str ?? '');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // eslint-disable-next-line no-bitwise
+    h = (h * 0x01000193) >>> 0;
+  }
+  // eslint-disable-next-line no-bitwise
+  return (h >>> 0).toString(16).padStart(8, '0');
+};
+
+const makeRng = (seedStr) => {
+  let state = 0;
+  try {
+    const h = hash32FNV1a(seedStr);
+    state = parseInt(h, 16) >>> 0;
+  } catch {
+    state = 123456789;
+  }
+  const nextU32 = () => {
+    // xorshift32
+    // eslint-disable-next-line no-bitwise
+    state ^= state << 13;
+    // eslint-disable-next-line no-bitwise
+    state ^= state >>> 17;
+    // eslint-disable-next-line no-bitwise
+    state ^= state << 5;
+    // eslint-disable-next-line no-bitwise
+    return state >>> 0;
+  };
+  return {
+    u01: () => nextU32() / 0xffffffff,
+    int: (lo, hi) => {
+      const a = Math.ceil(Number(lo));
+      const b = Math.floor(Number(hi));
+      if (!(Number.isFinite(a) && Number.isFinite(b) && b >= a)) return a;
+      const r = nextU32();
+      return a + (r % (b - a + 1));
+    },
+    pick: (arr) => {
+      const a = Array.isArray(arr) ? arr : [];
+      if (!a.length) return null;
+      const idx = Math.floor((nextU32() / 0xffffffff) * a.length);
+      return a[Math.max(0, Math.min(a.length - 1, idx))];
+    },
+  };
+};
+
+const clampInt = (v, lo, hi) => {
+  const x = Math.round(Number(v));
+  const a = Math.round(Number(lo));
+  const b = Math.round(Number(hi));
+  if (!Number.isFinite(x) || !Number.isFinite(a) || !Number.isFinite(b) || b < a) return a;
+  return Math.max(a, Math.min(b, x));
+};
+
+const enumRangeByStepInt = (minV, maxV, step = 10) => {
+  const a0 = Number(minV);
+  const b0 = Number(maxV);
+  const lo = Math.max(0, Math.min(a0, b0));
+  const hi = Math.max(0, Math.max(a0, b0));
+  const s = Math.max(1, Math.round(Number(step) || 10));
+  const loI = Math.ceil(lo);
+  const hiI = Math.floor(hi);
+  if (!(Number.isFinite(loI) && Number.isFinite(hiI) && hiI >= loI)) return [lo];
+  const out = [];
+  out.push(loI);
+  const start = Math.ceil(loI / s) * s;
+  for (let x = start; x <= hiI; x += s) out.push(x);
+  out.push(hiI);
+  return uniqNums(out, 1e-9).map((x) => Math.round(Number(x))).filter((x) => Number.isFinite(x) && x >= loI && x <= hiI);
+};
+
+const pickEvenly = (list0, maxCount = 5) => {
+  const list = Array.isArray(list0) ? list0.slice() : [];
+  if (list.length <= maxCount) return list;
+  const m = Math.max(2, Math.round(Number(maxCount) || 5));
+  const out = [];
+  for (let i = 0; i < m; i++) {
+    const t = m === 1 ? 0 : (i / (m - 1));
+    const idx = Math.round(t * (list.length - 1));
+    out.push(list[Math.max(0, Math.min(list.length - 1, idx))]);
+  }
+  return uniqNums(out, 1e-9);
+};
+
 // 区段煤柱 ws：按 1m 步长在范围内枚举。
 // 若范围内不存在整数米（例如 [3.2, 3.8]），则退化为取 lo（仍保证在范围内）。
 const enumRangeBy1m = (minV, maxV) => {
@@ -1364,11 +1451,382 @@ const buildDesignRectsForN = ({
   };
 };
 
+// 序列型规则矩形：允许每个工作面宽度 B_i 不同，且每个区段煤柱 ws_i 不同。
+// - BSeq: length=N
+// - WsSeq: length=N-1
+const buildDesignRectsForSeq = ({
+  omegaPoly,
+  omegaPrepared = null,
+  axis,
+  N,
+  BSeq,
+  WsSeq,
+  Lmax,
+  includeClipped = false,
+  collectLoops = true,
+  bumpFail,
+  debugRef,
+  fast = false,
+  coordSpace = 'local',
+}) => {
+  const emptyOut = {
+    rectLoopsLocal: [],
+    clippedLoopsLocal: [],
+    faceCount: 0,
+    rectAreaTotal: 0,
+    clippedAreaTotal: 0,
+    lengths: [],
+  };
+  if (!omegaPoly || omegaPoly.isEmpty?.()) return emptyOut;
+  const n0 = Math.max(1, Math.round(Number(N) || 0));
+  if (!(Number.isFinite(n0) && n0 >= 1)) return emptyOut;
+  const bArr0 = Array.isArray(BSeq) ? BSeq.slice(0, n0) : [];
+  if (bArr0.length !== n0) return emptyOut;
+  const wsArr0 = Array.isArray(WsSeq) ? WsSeq.slice(0, Math.max(0, n0 - 1)) : [];
+  if ((n0 - 1) !== wsArr0.length) return emptyOut;
+  for (const b of bArr0) {
+    if (!(Number.isFinite(Number(b)) && Number(b) > 0)) return emptyOut;
+  }
+  for (const w of wsArr0) {
+    if (!(Number.isFinite(Number(w)) && Number(w) >= 0)) return emptyOut;
+  }
+
+  const prep = (omegaPrepared && omegaPrepared.omegaSafe && omegaPrepared.bboxOmega)
+    ? omegaPrepared
+    : prepareOmegaForRects({ omegaPoly, debugRef });
+  if (!prep) return emptyOut;
+  const omegaSafe = prep.omegaSafe;
+  const bboxOmega = prep.bboxOmega;
+  const spanX = prep.spanX;
+  const spanY = prep.spanY;
+
+  const Lcap = (Number.isFinite(Number(Lmax)) && Number(Lmax) > 0)
+    ? Number(Lmax)
+    : (axis === 'x' ? spanX : spanY);
+
+  const minB = Math.max(1e-6, Math.min(...bArr0.map((x) => Number(x))));
+  const insideEps = Math.max(0.05, Math.min(1.0, 0.002 * Math.min(minB, spanX, spanY)));
+
+  const totalW = bArr0.reduce((s, x) => s + Math.max(0, Number(x) || 0), 0)
+    + wsArr0.reduce((s, x) => s + Math.max(0, Number(x) || 0), 0);
+
+  const doAssertRectInsideOmega = Boolean(debugRef?.assertRectInsideOmega);
+
+  const bandMemo = new Map();
+  const buildBandPoly = (bandLo, bandHi) => {
+    const lo = Number(bandLo);
+    const hi = Number(bandHi);
+    if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)) return null;
+
+    const key = `${Math.round(lo * 1000)}|${Math.round(hi * 1000)}`;
+    if (bandMemo.has(key)) return bandMemo.get(key);
+
+    try {
+      let bandRect = null;
+      if (axis === 'x') {
+        bandRect = rectPoly(bboxOmega.minX - 1, lo, bboxOmega.maxX + 1, hi);
+      } else {
+        bandRect = rectPoly(lo, bboxOmega.minY - 1, hi, bboxOmega.maxY + 1);
+      }
+      if (!bandRect || bandRect.isEmpty?.()) {
+        bandMemo.set(key, null);
+        return null;
+      }
+      const inter = robustIntersection(omegaSafe, bandRect);
+      const picked = fixPolygonSafe(pickLargestPolygon(inter));
+      const v = ensureValid(picked, 'bandPoly', debugRef);
+      if (!v || v.isEmpty?.() || !(Number(v.getArea?.()) > 1e-6)) {
+        bandMemo.set(key, null);
+        return null;
+      }
+      // 重用 buildDesignRectsForN 的 fastRing 能力：直接复刻其内部实现会太大；这里走通用 getIntervalsAt（JSTS line overlay）。
+      bandMemo.set(key, { poly: v, fastRing: null });
+      return { poly: v, fastRing: null };
+    } catch {
+      bandMemo.set(key, null);
+      return null;
+    }
+  };
+
+  const geomToLineStrings = (geom) => {
+    const out = [];
+    const walk = (g) => {
+      if (!g || g.isEmpty?.()) return;
+      try {
+        const t = String(g.getGeometryType?.() ?? '');
+        if (t === 'LineString' || t === 'LinearRing') {
+          out.push(g);
+          return;
+        }
+        const n = Number(g.getNumGeometries?.());
+        if (Number.isFinite(n) && n > 0) {
+          for (let i = 0; i < n; i++) walk(g.getGeometryN(i));
+        }
+      } catch {
+        // ignore
+      }
+    };
+    walk(geom);
+    return out;
+  };
+
+  const getIntervalsAt = (bandData, yOrX) => {
+    const bandPoly = bandData?.poly ?? bandData;
+    if (!bandPoly || bandPoly.isEmpty?.()) return [];
+    if (axis === 'x') {
+      const y = Number(yOrX);
+      if (!Number.isFinite(y)) return [];
+      const line = gf.createLineString([
+        new Coordinate(bboxOmega.minX - 1, y),
+        new Coordinate(bboxOmega.maxX + 1, y),
+      ]);
+      const inter = robustIntersection(bandPoly, line);
+      const lines = geomToLineStrings(inter);
+      const intervals = [];
+      for (const ln of lines) {
+        const coords = ln?.getCoordinates?.() ?? [];
+        if (!coords || coords.length < 2) continue;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        for (const c of coords) {
+          const x = Number(c?.x);
+          if (!Number.isFinite(x)) continue;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+        if (Number.isFinite(minX) && Number.isFinite(maxX) && maxX > minX + 1e-6) intervals.push({ a: minX, b: maxX });
+      }
+      return mergeIntervals(intervals);
+    }
+    const x = Number(yOrX);
+    if (!Number.isFinite(x)) return [];
+    const line = gf.createLineString([
+      new Coordinate(x, bboxOmega.minY - 1),
+      new Coordinate(x, bboxOmega.maxY + 1),
+    ]);
+    const inter = robustIntersection(bandPoly, line);
+    const lines = geomToLineStrings(inter);
+    const intervals = [];
+    for (const ln of lines) {
+      const coords = ln?.getCoordinates?.() ?? [];
+      if (!coords || coords.length < 2) continue;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const c of coords) {
+        const y = Number(c?.y);
+        if (!Number.isFinite(y)) continue;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      if (Number.isFinite(minY) && Number.isFinite(maxY) && maxY > minY + 1e-6) intervals.push({ a: minY, b: maxY });
+    }
+    return mergeIntervals(intervals);
+  };
+
+  const pickBandMaxInterval = (bandData, bandLo, bandHi, sampleCount = 9) => {
+    const bandPoly = bandData?.poly ?? bandData;
+    if (!bandPoly || bandPoly.isEmpty?.()) return null;
+    const lo = Number(bandLo);
+    const hi = Number(bandHi);
+    if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)) return null;
+    const m = Math.max(5, Math.min(51, Math.round(sampleCount)));
+    const samples = [];
+    for (let k = 0; k < m; k++) samples.push(lo + ((k + 0.5) / m) * (hi - lo));
+    let common = null;
+    for (const s of samples) {
+      const ints = getIntervalsAt(bandData, s);
+      if (!ints.length) return null;
+      common = common ? intersectIntervals(common, ints) : ints;
+      if (!common.length) return null;
+    }
+    let best = null;
+    let bestLen = -Infinity;
+    for (const it of common) {
+      const len = it.b - it.a;
+      if (len > bestLen) {
+        bestLen = len;
+        best = it;
+      }
+    }
+    return best && bestLen > 1e-6 ? best : null;
+  };
+
+  const buildForStart = (start0) => {
+    const out = {
+      rectLoopsLocal: [],
+      clippedLoopsLocal: [],
+      faceCount: 0,
+      rectAreaTotal: 0,
+      clippedAreaTotal: 0,
+      lengths: [],
+      area: 0,
+    };
+    let cur = Number(start0);
+    for (let i = 0; i < n0; i++) {
+      const Bi = Number(bArr0[i]);
+      const Wsi = (i < n0 - 1) ? Math.max(0, Number(wsArr0[i]) || 0) : 0;
+      const bandLo = cur;
+      const bandHi = cur + Bi;
+      cur = bandHi + Wsi;
+
+      const band = buildBandPoly(bandLo, bandHi);
+      if (!band) {
+        if (typeof bumpFail === 'function') bumpFail('BAND_POLY_EMPTY');
+        continue;
+      }
+
+      let it = pickBandMaxInterval(band, bandLo, bandHi, fast ? 7 : 9);
+      if (!it && !fast) it = pickBandMaxInterval(band, bandLo, bandHi, 21);
+      if (!it) {
+        if (typeof bumpFail === 'function') bumpFail(axis === 'x' ? 'BAND_NO_FEASIBLE_X' : 'BAND_NO_FEASIBLE_Y');
+        continue;
+      }
+
+      const rawLen0 = Math.max(0, it.b - it.a);
+      const safeLen = rawLen0 - 2 * insideEps;
+      const Lgeom = Math.max(0, safeLen);
+      const L = Math.min(Lgeom, Lcap);
+      if (!(Number.isFinite(L) && L > 1e-6)) {
+        if (typeof bumpFail === 'function') bumpFail(axis === 'x' ? 'BAND_NO_FEASIBLE_X' : 'BAND_NO_FEASIBLE_Y');
+        continue;
+      }
+
+      if (axis === 'x') {
+        const x0 = it.a + insideEps;
+        const x1 = x0 + L;
+        const y0 = bandLo;
+        const y1 = bandHi;
+        if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) {
+          if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+          continue;
+        }
+
+        if (doAssertRectInsideOmega || includeClipped) {
+          const rect = rectPoly(x0, y0, x1, y1);
+          if (!rect || rect.isEmpty?.()) {
+            if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+            continue;
+          }
+          if (doAssertRectInsideOmega && !isRectInsideOmega(omegaSafe, rect)) {
+            if (typeof bumpFail === 'function') bumpFail('ASSERT_RECT_OUTSIDE_OMEGA');
+            continue;
+          }
+          if (includeClipped) {
+            try {
+              const inter = robustIntersection(omegaSafe, rect);
+              const a = Number(inter?.getArea?.());
+              if (Number.isFinite(a) && a > 1e-6) out.clippedAreaTotal += a;
+              const loops = polygonToLoops(inter);
+              for (const l of loops) out.clippedLoopsLocal.push(l);
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (collectLoops) {
+          const loop = rectToLoop(x0, y0, x1, y1);
+          if (!loop) {
+            if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+            continue;
+          }
+          out.rectLoopsLocal.push(loop);
+        }
+
+        out.faceCount += 1;
+        out.lengths.push(L);
+        out.rectAreaTotal += Math.max(0, (x1 - x0) * (y1 - y0));
+      } else {
+        const y0 = it.a + insideEps;
+        const y1 = y0 + L;
+        const x0 = bandLo;
+        const x1 = bandHi;
+        if (![x0, y0, x1, y1].every(Number.isFinite) || !(x1 > x0) || !(y1 > y0)) {
+          if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+          continue;
+        }
+
+        if (doAssertRectInsideOmega || includeClipped) {
+          const rect = rectPoly(x0, y0, x1, y1);
+          if (!rect || rect.isEmpty?.()) {
+            if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+            continue;
+          }
+          if (doAssertRectInsideOmega && !isRectInsideOmega(omegaSafe, rect)) {
+            if (typeof bumpFail === 'function') bumpFail('ASSERT_RECT_OUTSIDE_OMEGA');
+            continue;
+          }
+          if (includeClipped) {
+            try {
+              const inter = robustIntersection(omegaSafe, rect);
+              const a = Number(inter?.getArea?.());
+              if (Number.isFinite(a) && a > 1e-6) out.clippedAreaTotal += a;
+              const loops = polygonToLoops(inter);
+              for (const l of loops) out.clippedLoopsLocal.push(l);
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (collectLoops) {
+          const loop = rectToLoop(x0, y0, x1, y1);
+          if (!loop) {
+            if (typeof bumpFail === 'function') bumpFail('RECT_BUILD_FAIL');
+            continue;
+          }
+          out.rectLoopsLocal.push(loop);
+        }
+
+        out.faceCount += 1;
+        out.lengths.push(L);
+        out.rectAreaTotal += Math.max(0, (x1 - x0) * (y1 - y0));
+      }
+    }
+    out.area = out.rectAreaTotal;
+    return out;
+  };
+
+  if (axis === 'x') {
+    const span = spanY;
+    const margin = Math.max(0, span - totalW);
+    const startMin = bboxOmega.minY;
+    const startMax = bboxOmega.maxY - totalW;
+    const startGuess = bboxOmega.minY + margin / 2;
+    const best = chooseBestStart(startMin, startMax, startGuess, buildForStart, fast ? 6 : 10);
+    return {
+      rectLoopsLocal: Array.isArray(best?.rectLoopsLocal) ? best.rectLoopsLocal : [],
+      clippedLoopsLocal: Array.isArray(best?.clippedLoopsLocal) ? best.clippedLoopsLocal : [],
+      faceCount: Number(best?.faceCount) || 0,
+      rectAreaTotal: Number(best?.rectAreaTotal) || 0,
+      clippedAreaTotal: Number(best?.clippedAreaTotal) || 0,
+      lengths: Array.isArray(best?.lengths) ? best.lengths : [],
+    };
+  }
+
+  // axis === 'y'
+  const span = spanX;
+  const margin = Math.max(0, span - totalW);
+  const startMin = bboxOmega.minX;
+  const startMax = bboxOmega.maxX - totalW;
+  const startGuess = bboxOmega.minX + margin / 2;
+  const best = chooseBestStart(startMin, startMax, startGuess, buildForStart, fast ? 6 : 10);
+  return {
+    rectLoopsLocal: Array.isArray(best?.rectLoopsLocal) ? best.rectLoopsLocal : [],
+    clippedLoopsLocal: Array.isArray(best?.clippedLoopsLocal) ? best.clippedLoopsLocal : [],
+    faceCount: Number(best?.faceCount) || 0,
+    rectAreaTotal: Number(best?.rectAreaTotal) || 0,
+    clippedAreaTotal: Number(best?.clippedAreaTotal) || 0,
+    lengths: Array.isArray(best?.lengths) ? best.lengths : [],
+  };
+};
+
 const compute = (payload) => {
   const reqSeq = Number(payload?.reqSeq);
   const cacheKey = String(payload?.cacheKey ?? '');
   const originalAxis = String(payload?.axis ?? 'x') === 'y' ? 'y' : 'x';
-  const optMode = 'efficiency';
+  const optMode0 = String(payload?.input?.mode ?? payload?.optMode ?? 'efficiency');
+  const optMode = (optMode0 === 'disturbance') ? 'disturbance' : 'efficiency';
   const internalAxis = 'x';
   const swapXY = originalAxis === 'y';
   const fastMode = Boolean(payload?.fast);
@@ -1398,12 +1856,18 @@ const compute = (payload) => {
   let progressNTotal = 0;
   let lastPercentSent = 0;
 
-  // fast 模式时间预算：保证切换轴向/煤柱范围时能快速返回
-  const TIME_BUDGET_MS = fastMode ? 280 : Infinity;
-  const deadlineMs = fastMode ? (nowMs() + TIME_BUDGET_MS) : Infinity;
+  // 时间预算：
+  // - fast：保证快速返回
+  // - disturbance：按 UI 默认 180s（可通过 payload.maxTimeMs 覆盖）
+  const TIME_BUDGET_MS = fastMode
+    ? 280
+    : (optMode === 'disturbance'
+      ? Math.max(5000, Math.round(toNum(payload?.maxTimeMs) ?? 180000))
+      : Infinity);
+  const deadlineMs = Number.isFinite(TIME_BUDGET_MS) ? (nowMs() + TIME_BUDGET_MS) : Infinity;
   let timeBudgetHit = false;
   const timeExceeded = () => {
-    if (!fastMode) return false;
+    if (!Number.isFinite(TIME_BUDGET_MS)) return false;
     if (timeBudgetHit) return true;
     if (nowMs() > deadlineMs) {
       timeBudgetHit = true;
@@ -1412,7 +1876,7 @@ const compute = (payload) => {
     return false;
   };
 
-  // 覆盖率阈值：工程效率模式保留历史默认
+  // 覆盖率阈值：保留历史默认（disturbance 也沿用作为 qualified 标记）
   const COVERAGE_MIN = 0.70;
 
   const responseBase = {
@@ -1470,8 +1934,10 @@ const compute = (payload) => {
       lastProgressMs = t;
       if (phaseStr) lastPhaseSent = phaseStr;
 
-      const doneEval = Number(responseBase?.attemptSummary?.Bsearch?.coarseEvaluatedBCount ?? 0)
-        + Number(responseBase?.attemptSummary?.Bsearch?.fineEvaluatedBCount ?? 0);
+      const doneEval = (optMode === 'disturbance')
+        ? attempted
+        : (Number(responseBase?.attemptSummary?.Bsearch?.coarseEvaluatedBCount ?? 0)
+          + Number(responseBase?.attemptSummary?.Bsearch?.fineEvaluatedBCount ?? 0));
       const denomEval = Math.max(1, Number(progressTotalEvalUpper) || 0);
       const evalFrac = Math.max(0, Math.min(1, doneEval / denomEval));
 
@@ -1545,6 +2011,16 @@ const compute = (payload) => {
   const wbMin = toNum(payload?.boundaryPillarMin) ?? 0;
   const wbMax = toNum(payload?.boundaryPillarMax) ?? wbMin;
 
+  // disturbance：左右边界煤柱（允许不对称）
+  const wbLeftMin = toNum(payload?.boundaryPillarLeftMin ?? wbMin) ?? wbMin;
+  const wbLeftMax = toNum(payload?.boundaryPillarLeftMax ?? wbMax) ?? wbMax;
+  const wbRightMin = toNum(payload?.boundaryPillarRightMin ?? wbMin) ?? wbMin;
+  const wbRightMax = toNum(payload?.boundaryPillarRightMax ?? wbMax) ?? wbMax;
+
+  const BAdjMax = Math.max(0, Math.round(toNum(payload?.faceWidthAdjacentMaxDelta) ?? 30));
+  const wsAdjMax = Math.max(0, Math.round(toNum(payload?.coalPillarAdjacentMaxDelta) ?? 20));
+  const maxCandidates = Math.max(30, Math.min(800, Math.round(toNum(payload?.maxCandidates) ?? 220)));
+
   const wsMin = toNum(payload?.coalPillarMin) ?? 0;
   const wsMax = toNum(payload?.coalPillarMax) ?? wsMin;
   const wsTarget = toNum(payload?.coalPillarTarget);
@@ -1614,9 +2090,60 @@ const compute = (payload) => {
 
   const stripDebug = { sampleNoOverlap: null, sanity: null, valid: null, fallbackUsed: false, stripIntersectionEmptySample: null };
 
-  // 先用 wbMin 构造 innerOmega（不通过则直接退出，避免“笼统未找到方案”）
+  // 候选容器（efficiency/disturbance 共用）
+  const qualifiedCandidates = [];
+  const fallbackCandidates = [];
+  const allCandByKey = new Map();
+  let omegaCtxForRender = null;
+  const pushCandidateUnique = (c) => {
+    if (!c) return;
+    const k = String(c.signature ?? '');
+    if (!k || allCandByKey.has(k)) return;
+    allCandByKey.set(k, c);
+    if (c.qualified) qualifiedCandidates.push(c);
+    else fallbackCandidates.push(c);
+  };
+
+  const trimPolyByAxisPillars = (poly, axis, wbL, wbR) => {
+    if (!poly || poly.isEmpty?.()) return null;
+    const wbl = Math.max(0, Number(wbL) || 0);
+    const wbr = Math.max(0, Number(wbR) || 0);
+    try {
+      const env = poly.getEnvelopeInternal();
+      const minX = Number(env.getMinX());
+      const maxX = Number(env.getMaxX());
+      const minY = Number(env.getMinY());
+      const maxY = Number(env.getMaxY());
+      if (![minX, maxX, minY, maxY].every(Number.isFinite)) return null;
+      let clip = null;
+      if (axis === 'x') {
+        const y0 = minY + wbl;
+        const y1 = maxY - wbr;
+        if (!(Number.isFinite(y0) && Number.isFinite(y1) && y1 > y0 + 1e-6)) return null;
+        clip = rectPoly(minX - 1, y0, maxX + 1, y1);
+      } else {
+        const x0 = minX + wbl;
+        const x1 = maxX - wbr;
+        if (!(Number.isFinite(x0) && Number.isFinite(x1) && x1 > x0 + 1e-6)) return null;
+        clip = rectPoly(x0, minY - 1, x1, maxY + 1);
+      }
+      const inter = robustIntersection(poly, clip);
+      const picked = fixPolygonSafe(pickLargestPolygon(inter));
+      const v = ensureValid(picked, 'omegaTrim', stripDebug);
+      if (!v || v.isEmpty?.() || !(Number(v.getArea?.()) > 1e-6)) return null;
+      return v;
+    } catch {
+      return null;
+    }
+  };
+
+  // 先构造 omega（用于粉色可采区展示与快速失败诊断）：
+  // - efficiency：全边界内缩 wbMin（历史口径）
+  // - disturbance：全边界内缩 wbMax（口径：边界煤柱读取输入框最大值；粉色Ω=整体内缩）
   const wbMinUsed = Math.abs(Number(wbMin) || 0);
-  const bufferDistance0 = -Math.abs(wbMinUsed);
+  const wbMaxUsed = Math.abs(Number(wbMax) || 0);
+  const wbOmegaUsed = (optMode === 'disturbance') ? Math.max(wbMinUsed, wbMaxUsed) : wbMinUsed;
+  const bufferDistance0 = -Math.abs(wbOmegaUsed);
   let omegaLocal0 = null;
   let omegaErr0 = '';
   try {
@@ -1633,7 +2160,7 @@ const compute = (payload) => {
   const omegaLoopsWorld0Out = swapXY ? swapXYLoops(omegaLoopsWorld0) : omegaLoopsWorld0;
 
   const omegaDebug0 = {
-    wbUsed: wbMinUsed,
+    wbUsed: wbOmegaUsed,
     bboxLocal: baseLocal.bboxLocal ?? null,
     omegaArea: Number.isFinite(omegaArea0) ? omegaArea0 : null,
     omegaLoopsCount: omegaLoopsWorld0.length,
@@ -1662,7 +2189,7 @@ const compute = (payload) => {
   }
 
   if (!omegaPoly0 || omegaPoly0.isEmpty?.() || !(Number.isFinite(omegaArea0) && omegaArea0 > 1e-6) || omegaLoopsWorld0.length === 0) {
-    const reason = `内缩后可采区为空（wb=${wbMinUsed}m）`;
+    const reason = `内缩后可采区为空（wb=${omegaDebug0?.wbUsed ?? wbMinUsed}m）`;
     responseBase.failedReason = reason;
     bumpFail('OMEGA_EMPTY');
     return {
@@ -1755,13 +2282,24 @@ const compute = (payload) => {
   }
 
   // === 决策层规则（更新：2026-01-20）：
-  // - 边界煤柱 wb：固定取最小值（不做搜索/枚举）
-  // - 区段煤柱 ws：默认使用“均衡档”采样（更快）；如需精算可传 searchProfile='exact'
-  const wbFixedRaw = (Number.isFinite(Number(wbMin)) && Number.isFinite(Number(wbMax)))
-    ? Math.min(Number(wbMin), Number(wbMax))
-    : (Number.isFinite(Number(wbMin)) ? Number(wbMin) : 0);
+  // - 边界煤柱 wb：不做搜索/枚举。
+  //   - efficiency：取最小值（历史口径）
+  //   - disturbance：取最大值（用户确认口径）
+  // - 区段煤柱 ws：
+  //   - disturbance：全范围 1m 枚举（保证多方案密度；且不施加相邻差约束）
+  //   - efficiency：默认使用“均衡档”采样（更快）；如需精算可传 searchProfile='exact'
+  const wbFixedRaw = (() => {
+    const a = Number(wbMin);
+    const b = Number(wbMax);
+    const hasA = Number.isFinite(a);
+    const hasB = Number.isFinite(b);
+    if (hasA && hasB) return (optMode === 'disturbance') ? Math.max(a, b) : Math.min(a, b);
+    if (hasA) return a;
+    if (hasB) return b;
+    return 0;
+  })();
   const wbSamples = [wbFixedRaw];
-  const wsSamples = (fastMode || searchProfile === 'exact')
+  const wsSamples = (optMode === 'disturbance' || fastMode || searchProfile === 'exact')
     ? enumRangeBy1m(wsMin, wsMax)
     : sampleWsCoarse(wsMin, wsMax, wsTarget, 9);
 
@@ -1907,9 +2445,14 @@ const compute = (payload) => {
       signature,
       axis: originalAxis,
       wb: wbUsed,
+      wbUsed,
       ws: wsNonNeg,
+      wsMin: wsNonNeg,
+      wsMax: wsNonNeg,
       N: actualN,
       B,
+      Bmin: B,
+      Bmax: B,
       coverageMin: COVERAGE_MIN,
       qualified,
       lowCoverage: !qualified,
@@ -1954,21 +2497,137 @@ const compute = (payload) => {
     return candidate;
   };
 
-  const qualifiedCandidates = [];
-  const fallbackCandidates = [];
-  const allCandByKey = new Map();
+  const buildCandidateForSeq = ({ innerPoly, innerArea, omegaLoops, wbUsed, N, BSeq, WsSeq }) => {
+    const built = buildDesignRectsForSeq({
+      omegaPoly: innerPoly,
+      omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
+      axis: internalAxis,
+      N,
+      BSeq,
+      WsSeq,
+      Lmax: faceAdvanceMax,
+      includeClipped: false,
+      collectLoops: false,
+      bumpFail,
+      debugRef: stripDebug,
+      fast: fastMode,
+      coordSpace: 'local',
+    });
 
-  // wb 固定时，innerPoly 对所有候选相同：用于回包阶段重建 loops（避免全枚举阶段存大数组）
-  let omegaCtxForRender = null;
+    const actualN = Math.max(0, Math.round(Number(built?.faceCount) || 0));
+    if (!built || actualN < 1) return null;
+    if (actualN !== N) {
+      bumpFail('FACECOUNT_NEQ_TARGET');
+      return null;
+    }
 
-  const pushCandidateUnique = (c) => {
-    if (!c) return;
-    const k = String(c.signature ?? '');
-    if (!k || allCandByKey.has(k)) return;
-    allCandByKey.set(k, c);
-    if (c.qualified) qualifiedCandidates.push(c);
-    else fallbackCandidates.push(c);
+    const rectAreaTotal = Number(built?.rectAreaTotal);
+    if (!(Number.isFinite(rectAreaTotal) && rectAreaTotal > 1e-6)) {
+      bumpFail('FACE_UNION_EMPTY');
+      return null;
+    }
+
+    const coverageRatio = rectAreaTotal / innerArea;
+    if (!(Number.isFinite(coverageRatio) && coverageRatio >= 0)) {
+      bumpFail('RATIO_INVALID');
+      return null;
+    }
+
+    const bArr = (Array.isArray(BSeq) ? BSeq : []).map((x) => Math.round(Number(x))).filter(Number.isFinite);
+    const wsArr = (Array.isArray(WsSeq) ? WsSeq : []).map((x) => Math.round(Number(x))).filter((x) => Number.isFinite(x) && x >= 0);
+    if (bArr.length !== actualN) return null;
+    if (wsArr.length !== Math.max(0, actualN - 1)) return null;
+
+    const bMin = bArr.length ? Math.min(...bArr) : null;
+    const bMax = bArr.length ? Math.max(...bArr) : null;
+    const wsMin0 = wsArr.length ? Math.min(...wsArr) : 0;
+    const wsMax0 = wsArr.length ? Math.max(...wsArr) : 0;
+    const bMean = bArr.length ? (bArr.reduce((s, x) => s + x, 0) / bArr.length) : 0;
+    const wsMean = wsArr.length ? (wsArr.reduce((s, x) => s + x, 0) / wsArr.length) : 0;
+
+    const lengths = Array.isArray(built?.lengths) ? built.lengths : [];
+    const sumL = lengths.reduce((s, x) => s + (Number.isFinite(Number(x)) ? Number(x) : 0), 0);
+    const minL = lengths.length ? Math.min(...lengths) : 0;
+    const meanL = lengths.length ? sumL / lengths.length : 0;
+    const stdL = lengths.length
+      ? Math.sqrt(lengths.reduce((s, x) => {
+        const v = Number(x);
+        if (!Number.isFinite(v)) return s;
+        const d = v - meanL;
+        return s + d * d;
+      }, 0) / lengths.length)
+      : 0;
+    const lenCV = meanL > 1e-9 ? stdL / meanL : 0;
+
+    const qualified = coverageRatio >= COVERAGE_MIN;
+    const efficiencyScore = computeEfficiencyScoreV2({ coverageRatio, N: actualN, lenCV, minL });
+    const seqHash = hash32FNV1a(`${bArr.join(',')}|${wsArr.join(',')}`);
+    const signature = `${originalAxis}|wb=${wbUsed.toFixed(4)}|ws=${Math.round(wsMin0)}-${Math.round(wsMax0)}|N=${actualN}|B=${Math.round(bMin)}-${Math.round(bMax)}|h=${seqHash}`;
+
+    return {
+      key: signature,
+      signature,
+      axis: originalAxis,
+      wb: wbUsed,
+      wbUsed,
+      ws: wsMean,
+      wsMin: wsMin0,
+      wsMax: wsMax0,
+      N: actualN,
+      B: bMean,
+      Bmin: bMin,
+      Bmax: bMax,
+      coverageMin: COVERAGE_MIN,
+      qualified,
+      lowCoverage: !qualified,
+      efficiencyScore,
+      efficiencyScoreDetail: null,
+      __effInputs: { coverageRatio, N: actualN, lenCV, minL },
+      minL,
+      sumL,
+      lenCV,
+      genes: {
+        axis: originalAxis,
+        wb: wbUsed,
+        ws: wsMean,
+        wsMin: wsMin0,
+        wsMax: wsMax0,
+        N: actualN,
+        B: bMean,
+        Bmin: bMin,
+        Bmax: bMax,
+        BSeq: bArr,
+        WsSeq: wsArr,
+        Nreq: N,
+      },
+      metrics: {
+        omegaArea: innerArea,
+        faceAreaTotal: rectAreaTotal,
+        coverageRatio,
+        efficiencyScore,
+        faceCount: actualN,
+        faceCountRequested: N,
+        minL,
+        sumL,
+        lenCV,
+        efficiencyScoreDetail: null,
+      },
+      innerArea,
+      coveredArea: rectAreaTotal,
+      coverageRatio,
+      omegaRender: { loops: omegaLoops },
+      render: {
+        omegaLoops,
+        rectLoops: [],
+        clippedLoops: [],
+      },
+      __dx: offset.dx,
+      __dy: offset.dy,
+      __swapXY: swapXY,
+    };
   };
+
+    // wb 固定时，innerPoly 对所有候选相同：用于回包阶段重建 loops（避免全枚举阶段存大数组）
 
   let lastInnerReason = '';
   let lastInnerDebug = null;
@@ -2027,6 +2686,161 @@ const compute = (payload) => {
     const env = innerPoly.getEnvelopeInternal();
     const span = internalAxis === 'x' ? (env.getMaxY() - env.getMinY()) : (env.getMaxX() - env.getMinX());
     if (!(Number.isFinite(span) && span > 1e-6)) continue;
+
+    // === disturbance：序列枚举（BSeq/WsSeq），仅作用于 disturbance 分支，efficiency 不受影响 ===
+    if (optMode === 'disturbance') {
+      const BminInt = Math.ceil(Bmin);
+      const BmaxInt = Math.floor(Bmax);
+      const wsMinInt = Math.max(0, Math.ceil(Number(wsMin) || 0));
+      const wsMaxInt = Math.max(wsMinInt, Math.floor(Number(wsMax) || 0));
+      if (!(Number.isFinite(BminInt) && Number.isFinite(BmaxInt) && BmaxInt >= BminInt && BminInt > 0)) {
+        bumpFail('B_RANGE_NO_INT');
+        continue;
+      }
+
+      // N 上限：用最紧凑组合（Bmin + wsMin）推上界，然后全枚举到 Ncap。
+      const computeNmaxSeq = (spanV, bMinV, wsMinV) => {
+        const s = Number(spanV);
+        const b = Number(bMinV);
+        const w = Math.max(0, Number(wsMinV) || 0);
+        if (!(Number.isFinite(s) && s > 0 && Number.isFinite(b) && b > 0)) return 0;
+        return Math.floor((s + w) / (b + w));
+      };
+      const NmaxAtBest = computeNmaxSeq(span, BminInt, wsMinInt);
+      const NcapLimit = fastMode ? 12 : 20;
+      const Ncap = Math.max(1, Math.min(NcapLimit, NmaxAtBest));
+      progressWsTotal = 1;
+      progressWsIndex = 1;
+      progressNTotal = Ncap;
+
+      const rng = makeRng(`${cacheKey}|disturbance|seq|wb=${wbUsed}|axis=${originalAxis}`);
+
+      const mkWsSeqVariants = (N) => {
+        const m = Math.max(0, Math.round(Number(N) || 0) - 1);
+        if (m <= 0) return [[]];
+        const mid = Math.round((wsMinInt + wsMaxInt) / 2);
+        const out = [];
+        const push = (arr) => {
+          const a = Array.isArray(arr) ? arr.map((x) => Math.max(0, Math.round(Number(x) || 0))) : [];
+          if (a.length !== m) return;
+          out.push(a);
+        };
+        push(Array(m).fill(wsMinInt));
+        push(Array(m).fill(wsMaxInt));
+        push(Array(m).fill(mid));
+        push(Array(m).fill(Number.isFinite(Number(wsTarget)) ? Math.round(Number(wsTarget)) : mid));
+        // 少量随机序列：提升多样性（ws 无相邻差约束）
+        const randK = fastMode ? 1 : 3;
+        for (let k = 0; k < randK; k++) {
+          const a = [];
+          for (let i = 0; i < m; i++) a.push(rng.int(wsMinInt, wsMaxInt));
+          push(a);
+        }
+        // 去重
+        const seen = new Set();
+        return out.filter((a) => {
+          const key = a.join(',');
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+
+      const mkBSeqVariants = (N, wsSeq) => {
+        const n = Math.max(1, Math.round(Number(N) || 0));
+        const sumWs = (Array.isArray(wsSeq) ? wsSeq : []).reduce((s, x) => s + Math.max(0, Math.round(Number(x) || 0)), 0);
+        const maxSumB = Math.floor(span - sumWs);
+        if (!(Number.isFinite(maxSumB) && maxSumB >= n * BminInt)) return [];
+        const mid = Math.round((BminInt + BmaxInt) / 2);
+
+        const out = [];
+        const push = (arr) => {
+          const a = Array.isArray(arr) ? arr.map((x) => Math.round(Number(x))) : [];
+          if (a.length !== n) return;
+          for (const v of a) {
+            if (!(Number.isFinite(v) && v >= BminInt && v <= BmaxInt)) return;
+          }
+          for (let i = 1; i < a.length; i++) {
+            if (Math.abs(a[i] - a[i - 1]) > BAdjMax) return;
+          }
+          const sumB = a.reduce((s, x) => s + x, 0);
+          if (sumB + sumWs > span + 1e-6) return;
+          out.push(a);
+        };
+
+        // 基础常数序列
+        push(Array(n).fill(BminInt));
+        push(Array(n).fill(mid));
+        push(Array(n).fill(BmaxInt));
+
+        // ramp（受相邻差约束）
+        if (BAdjMax > 0 && n >= 2) {
+          const step = Math.max(1, Math.min(BAdjMax, Math.max(1, Math.round((BmaxInt - BminInt) / Math.max(1, n - 1)))));
+          const up = [];
+          let cur = BminInt;
+          for (let i = 0; i < n; i++) { up.push(cur); cur = Math.min(BmaxInt, cur + step); }
+          push(up);
+          const down = [];
+          cur = BmaxInt;
+          for (let i = 0; i < n; i++) { down.push(cur); cur = Math.max(BminInt, cur - step); }
+          push(down);
+        }
+
+        // random-walk：提升多样性
+        const randK = fastMode ? 2 : 6;
+        for (let k = 0; k < randK; k++) {
+          const a = [];
+          let cur = rng.int(BminInt, BmaxInt);
+          a.push(cur);
+          for (let i = 1; i < n; i++) {
+            const d = (BAdjMax > 0) ? rng.int(-BAdjMax, BAdjMax) : 0;
+            cur = clampInt(cur + d, BminInt, BmaxInt);
+            a.push(cur);
+          }
+          push(a);
+        }
+
+        // 去重
+        const seen = new Set();
+        return out.filter((a) => {
+          const key = a.join(',');
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+
+      let capHit = false;
+      for (let Nreq = 1; Nreq <= Ncap; Nreq++) {
+        if (timeExceeded() || capHit) break;
+        progressNIndex = Nreq;
+        maybePostProgress('枚举', { force: Nreq === 1 });
+
+        const wsSeqVariants = mkWsSeqVariants(Nreq);
+        for (const wsSeq of wsSeqVariants) {
+          if (timeExceeded() || capHit) break;
+          const bSeqVariants = mkBSeqVariants(Nreq, wsSeq);
+          for (const bSeq of bSeqVariants) {
+            if (timeExceeded()) break;
+            responseBase.attemptSummary.attemptedCombos += 1;
+            if (responseBase.attemptSummary.attemptedCombos === 1) maybePostProgress('枚举', { force: true });
+            maybePostProgress('枚举');
+
+            const c = buildCandidateForSeq({ innerPoly, innerArea, omegaLoops, wbUsed, N: Nreq, BSeq: bSeq, WsSeq: wsSeq });
+            if (!c) continue;
+            responseBase.attemptSummary.feasibleCombos += 1;
+            pushCandidateUnique(c);
+
+            if (allCandByKey.size >= maxCandidates) {
+              capHit = true;
+              break;
+            }
+          }
+        }
+      }
+
+      continue;
+    }
 
     const wsList = wsSamples.length ? wsSamples : [0];
     progressWsTotal = wsList.length;
@@ -2182,7 +2996,9 @@ const compute = (payload) => {
 
   responseBase.attemptSummary.timeBudgetHit = Boolean(timeBudgetHit);
 
-  const allCandidates = qualifiedCandidates.length ? qualifiedCandidates : fallbackCandidates;
+  const allCandidates = (optMode === 'disturbance')
+    ? [...qualifiedCandidates, ...fallbackCandidates]
+    : (qualifiedCandidates.length ? qualifiedCandidates : fallbackCandidates);
 
   if (!allCandidates.length) {
     const reason = lastInnerReason || '可采区已生成，但未找到满足当前参数范围的条带组合（请检查面宽/煤柱/区段煤柱范围）';
@@ -2228,9 +3044,12 @@ const compute = (payload) => {
     return Number.isFinite(v) ? v : -Infinity;
   };
   const compareCoverageFirst = (a, b) => {
-    const qa = Boolean(a?.qualified);
-    const qb = Boolean(b?.qualified);
-    if (qa !== qb) return qa ? -1 : 1; // qualified 优先
+    const preferQualified = (optMode !== 'disturbance');
+    if (preferQualified) {
+      const qa = Boolean(a?.qualified);
+      const qb = Boolean(b?.qualified);
+      if (qa !== qb) return qa ? -1 : 1; // qualified 优先
+    }
 
     const ra = coverageOf(a);
     const rb = coverageOf(b);
@@ -2346,21 +3165,40 @@ const compute = (payload) => {
       if (c.render && Array.isArray(c.render.rectLoops) && c.render.rectLoops.length === 0) {
         const omegaPoly = omegaCtxForRender?.innerPoly;
         if (omegaPoly) {
-          const rebuilt = buildDesignRectsForN({
-            omegaPoly,
-            omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
-            axis: internalAxis,
-            N: Math.max(1, Math.round(Number(c.N) || 0)),
-            B: Number(c.B),
-            Ws: Math.max(0, Number(c.ws) || 0),
-            Lmax: faceAdvanceMax,
-            includeClipped: false,
-            collectLoops: true,
-            bumpFail: null,
-            debugRef: null,
-            fast: fastMode,
-            coordSpace: 'local',
-          });
+          const bSeq = Array.isArray(c?.genes?.BSeq) ? c.genes.BSeq : null;
+          const wsSeq = Array.isArray(c?.genes?.WsSeq) ? c.genes.WsSeq : null;
+
+          const rebuilt = (bSeq && wsSeq)
+            ? buildDesignRectsForSeq({
+              omegaPoly,
+              omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
+              axis: internalAxis,
+              N: Math.max(1, Math.round(Number(c.N) || 0)),
+              BSeq: bSeq,
+              WsSeq: wsSeq,
+              Lmax: faceAdvanceMax,
+              includeClipped: false,
+              collectLoops: true,
+              bumpFail: null,
+              debugRef: null,
+              fast: fastMode,
+              coordSpace: 'local',
+            })
+            : buildDesignRectsForN({
+              omegaPoly,
+              omegaPrepared: omegaCtxForRender?.omegaPrepared ?? null,
+              axis: internalAxis,
+              N: Math.max(1, Math.round(Number(c.N) || 0)),
+              B: Number(c.B),
+              Ws: Math.max(0, Number(c.ws) || 0),
+              Lmax: faceAdvanceMax,
+              includeClipped: false,
+              collectLoops: true,
+              bumpFail: null,
+              debugRef: null,
+              fast: fastMode,
+              coordSpace: 'local',
+            });
 
           const rectLoopsLocal = Array.isArray(rebuilt?.rectLoopsLocal) ? rebuilt.rectLoopsLocal : [];
           const clippedLoopsLocal = Array.isArray(rebuilt?.clippedLoopsLocal) ? rebuilt.clippedLoopsLocal : [];

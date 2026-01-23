@@ -4853,6 +4853,8 @@ const compute = (payload) => {
   // - 默认：AREA（coverage 为主）
   // - 启用厚度场：先按 AREA 取一批“可疑似最优”的候选，再用吨位近似计算重排，影响最终 topK。
   const compareMain = enableTonnageObjective ? compareByRecovery : compareByArea;
+  // compareFinal：最终对外返回（rows/bestKey）的排序口径（可能在 eff 口径与扣分策略注入后重排）
+  let compareFinal = compareMain;
 
   const rankedAllArea = (allCandidates ?? []).slice().sort(compareByArea);
   // 仅对一个小批次计算吨位（避免对全量候选做网格采样）。
@@ -6347,6 +6349,204 @@ const compute = (payload) => {
     // ignore
   }
 
+  // === v2.0：回收评分=排序（用户确认：评分代表可采储量/覆盖（扣煤柱），不追求 100，Top≈90）===
+  // 说明：
+  // - 主口径：TONNAGE（有效Ω内地质吨位）或 AREA（有效Ω覆盖率）
+  // - 护栏：主指标差距超过阈值时，次指标不得反超
+  // - 扣分项：残煤/未达 fullCover/异常面 等只扣不加
+  // - 最终 score 由 rank 生成，并施加扣分；再强制单调递减，保证“score 与排序一致”
+  // 默认分段（用户期望）：Top≈90，末尾≈80，不出现 0/100。
+  const RECOVERY_SCORE_MIN = clamp(Number(toNum(payload?.recoveryScoreMin) ?? 80), 0, 99);
+  const RECOVERY_SCORE_MAX = clamp(Number(toNum(payload?.recoveryScoreMax) ?? 90), RECOVERY_SCORE_MIN, 99);
+  const RECOVERY_SCORE_FLOOR = clamp(Number(toNum(payload?.recoveryScoreFloor) ?? (RECOVERY_SCORE_MIN - 10)), 0, RECOVERY_SCORE_MAX);
+  const RECOVERY_GUARD_FRAC = clamp(Number(toNum(payload?.recoveryGuardFrac) ?? 0.015), 0, 0.2);
+  const RECOVERY_GUARD_COV_ABS = clamp(Number(toNum(payload?.recoveryGuardCoverageAbs) ?? 0.002), 0, 0.2);
+  const RECOVERY_SCORE_GAMMA = clamp(Number(toNum(payload?.recoveryScoreGamma) ?? 1.0), 0.2, 3.0);
+
+  const effCoverageOf = (c) => {
+    const rEff = Number(c?.coverageRatioEff ?? c?.metrics?.coverageRatioEff);
+    if (Number.isFinite(rEff)) return rEff;
+    const r = Number(c?.coverageRatio ?? c?.metrics?.coverageRatio);
+    return Number.isFinite(r) ? r : -Infinity;
+  };
+
+  const effResidualRatioOf = (c) => {
+    const omegaA = Number(c?.omegaAreaEff ?? c?.metrics?.omegaAreaEff);
+    const resA = Number(c?.residualAreaEff ?? c?.metrics?.residualAreaEff);
+    if (!(Number.isFinite(omegaA) && omegaA > 1e-9 && Number.isFinite(resA) && resA >= 0)) return 0;
+    return Math.max(0, Math.min(1, resA / omegaA));
+  };
+
+  const penaltyOf = (c) => {
+    let p = 0;
+    // 残煤：按占比扣分（上限 20 分）
+    const rr = effResidualRatioOf(c);
+    // 默认调轻：避免尾部被拉到很低（rank 已经体现主排序）
+    p += clamp(rr * 16, 0, 8);
+
+    // fullCover 未达标：按缺口扣分（上限 12 分）
+    if (FULL_COVER_ENABLED) {
+      const rEff = effCoverageOf(c);
+      if (Number.isFinite(rEff) && Number.isFinite(Number(FULL_COVER_MIN)) && Number(FULL_COVER_MIN) > 1e-9) {
+        const short = Math.max(0, Number(FULL_COVER_MIN) - rEff) / Number(FULL_COVER_MIN);
+        p += clamp(short * 12, 0, 6);
+      }
+    }
+
+    // 异常面：每个扣 1.2，上限 10
+    const abn = Number(c?.abnormalFaceCount ?? c?.metrics?.abnormalFaceCount);
+    if (Number.isFinite(abn) && abn > 0) p += clamp(abn * 1.0, 0, 6);
+
+    return p;
+  };
+
+  // 可采吨位：优先用 tonnageTotal（若后续能按有效Ω重算，会覆盖）
+  const effTonnageOf = (c) => {
+    const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
+    return Number.isFinite(t) ? t : -Infinity;
+  };
+
+  const compareByRecoveryEff = (a, b) => {
+    const qa = Boolean(a?.qualified);
+    const qb = Boolean(b?.qualified);
+    if (qa !== qb) return qa ? -1 : 1;
+
+    const ta = effTonnageOf(a);
+    const tb = effTonnageOf(b);
+    const hasT = (ta > -Infinity) && (tb > -Infinity);
+    if (hasT) {
+      const denom = Math.max(1e-12, Math.max(Math.abs(ta), Math.abs(tb)));
+      const rel = Math.abs(tb - ta) / denom;
+      if (rel > RECOVERY_GUARD_FRAC && tb !== ta) return tb - ta; // 护栏：吨位差距大时只看吨位
+    }
+
+    // 吨位接近：优先有效覆盖率更高、残煤更少、异常更少
+    const ra = effCoverageOf(a);
+    const rb = effCoverageOf(b);
+    if (Number.isFinite(ra) && Number.isFinite(rb) && rb !== ra) return rb - ra;
+
+    const pa = penaltyOf(a);
+    const pb = penaltyOf(b);
+    if (pb !== pa) return pa - pb;
+
+    const na = Number(a?.N);
+    const nb = Number(b?.N);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+
+    const la = Number(a?.lenCV ?? a?.metrics?.lenCV ?? 0);
+    const lb = Number(b?.lenCV ?? b?.metrics?.lenCV ?? 0);
+    if (Number.isFinite(la) && Number.isFinite(lb) && la !== lb) return la - lb;
+
+    return String(a?.signature ?? '').localeCompare(String(b?.signature ?? ''));
+  };
+
+  const compareByAreaEff = (a, b) => {
+    const qa = Boolean(a?.qualified);
+    const qb = Boolean(b?.qualified);
+    if (qa !== qb) return qa ? -1 : 1;
+
+    const ra = effCoverageOf(a);
+    const rb = effCoverageOf(b);
+    if (Number.isFinite(ra) && Number.isFinite(rb)) {
+      const abs = Math.abs(rb - ra);
+      if (abs > RECOVERY_GUARD_COV_ABS && rb !== ra) return rb - ra; // 护栏：覆盖率差距大时只看覆盖率
+    }
+
+    const pa = penaltyOf(a);
+    const pb = penaltyOf(b);
+    if (pb !== pa) return pa - pb;
+
+    // 兜底：工程偏好 + 稳定排序
+    const aMinR = Number(a?.minInRatio ?? a?.metrics?.minFaceInRatio ?? a?.metrics?.minInRatio ?? 0);
+    const bMinR = Number(b?.minInRatio ?? b?.metrics?.minFaceInRatio ?? b?.metrics?.minInRatio ?? 0);
+    if (Number.isFinite(aMinR) && Number.isFinite(bMinR) && bMinR !== aMinR) return bMinR - aMinR;
+
+    const na = Number(a?.N);
+    const nb = Number(b?.N);
+    if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+
+    return String(a?.signature ?? '').localeCompare(String(b?.signature ?? ''));
+  };
+
+  // TONNAGE 模式：对返回候选按“有效Ω口径”重算吨位（覆盖旧的 tonnageTotal），并按新 comparator 重排。
+  if (enableTonnageObjective) {
+    try {
+      const TONNAGE_STEP_M = clamp(Number(toNum(payload?.tonnageSampleStepM) ?? (fastMode ? 40 : 30)), 10, 120);
+
+      const buildOmegaEffPolyFromCandidate = (cand) => {
+        const loops = Array.isArray(cand?.render?.omegaEffLoopsWorld) ? cand.render.omegaEffLoopsWorld : [];
+        let u = null;
+        for (const loop of loops) {
+          if (!Array.isArray(loop) || loop.length < 3) continue;
+          const p = buildJstsPolygonFromLoop(loop);
+          if (!p || p.isEmpty?.()) continue;
+          u = u ? (robustUnion(u, p) || u.union?.(p) || u) : p;
+        }
+        return u;
+      };
+
+      const computeTonnageEffForCandidate = (cand) => {
+        if (!cand || !cand.render) return;
+        const omegaEffPoly = buildOmegaEffPolyFromCandidate(cand);
+        if (!omegaEffPoly || omegaEffPoly.isEmpty?.()) return;
+
+        // 面 loops：优先 clippedFacesLoops / plannedWorkfaceLoopsWorld（更贴近最终裁剪形状），否则回退 rectLoops。
+        const facesLoops = Array.isArray(cand?.render?.clippedFacesLoops)
+          ? cand.render.clippedFacesLoops
+          : (Array.isArray(cand?.render?.plannedWorkfaceLoopsWorld)
+            ? cand.render.plannedWorkfaceLoopsWorld
+            : null);
+        const rectLoops0 = Array.isArray(cand?.render?.rectLoops) ? cand.render.rectLoops : [];
+        const faces = (Array.isArray(facesLoops) && facesLoops.length)
+          ? facesLoops
+            .map((x, idx) => ({ faceIndex: Number(x?.faceIndex ?? (idx + 1)), loop: x?.loop }))
+            .filter((x) => Number.isFinite(Number(x?.faceIndex)) && Number(x.faceIndex) >= 1 && Array.isArray(x?.loop) && x.loop.length >= 3)
+          : rectLoops0
+            .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
+            .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
+        if (!faces.length) return;
+
+        let sum = 0;
+        for (const face of faces) {
+          const loop = face?.loop;
+          if (!Array.isArray(loop) || loop.length < 3) continue;
+          const facePoly = buildJstsPolygonFromLoop(loop);
+          if (!facePoly || facePoly.isEmpty?.()) continue;
+          let inter = null;
+          try {
+            inter = robustIntersection(omegaEffPoly, facePoly);
+          } catch {
+            inter = null;
+          }
+          if (!inter || inter.isEmpty?.()) continue;
+          const loops = polygonToLoops(inter);
+          const loops0 = Array.isArray(loops) ? loops : [];
+          for (const l of loops0) {
+            if (!Array.isArray(l) || l.length < 3) continue;
+            const t1 = integrateTonnageForLoop({ loop: l, sampler: sampler0, gridRes: TONNAGE_STEP_M });
+            if (Number.isFinite(t1) && t1 > 0) sum += t1;
+          }
+        }
+
+        if (!Number.isFinite(sum) || sum < 0) sum = 0;
+        cand.tonnageTotal = sum;
+        if (cand.metrics && typeof cand.metrics === 'object') cand.metrics.tonnageTotal = sum;
+      };
+
+      for (const c of (candidates ?? [])) computeTonnageEffForCandidate(c);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 最终重排：以 eff 口径（扣煤柱）为准
+  try {
+    compareFinal = (fallbackMode === 'TONNAGE') ? compareByRecoveryEff : compareByAreaEff;
+    candidates = (candidates ?? []).slice().sort(compareFinal);
+  } catch {
+    compareFinal = compareMain;
+  }
+
   // Scheme C：Top3 轻修补（LIGHT），不改变候选排序，不改 signature。
   // - 输出：renderPatched + patchBudgetTier + fullCoverAchieved_patched + metrics.patchStats
   // - base+patched 双版本：前端可先画 base，再异步替换 patched；patched 失败可回退 base。
@@ -6400,7 +6600,7 @@ const compute = (payload) => {
   const byN = {};
   for (const n of nValuesAll) {
     const list = candidates.filter((c) => Number(c?.N) === n);
-    list.sort(compareMain);
+    list.sort(compareFinal);
     const keys = list.map((c) => String(c?.signature ?? '')).filter(Boolean);
     candidatesByN[String(n)] = keys;
     bestKeyByN[String(n)] = String(list?.[0]?.signature ?? '');
@@ -6408,28 +6608,24 @@ const compute = (payload) => {
   }
 
   {
-    // recoveryScore：在 TONNAGE 模式下做 0-100 归一化；AREA 模式下用 coverage 兜底
-    const ts = (fallbackMode === 'TONNAGE')
-      ? candidates
-        .map((c) => Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal))
-        .filter((v) => Number.isFinite(v))
-      : [];
-    const tMin = ts.length ? Math.min(...ts) : 0;
-    const tMax = ts.length ? Math.max(...ts) : 0;
-    for (const c of candidates) {
-      const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
-      let score = 0;
-      if (fallbackMode === 'TONNAGE' && Number.isFinite(t) && Number.isFinite(tMin) && Number.isFinite(tMax) && tMax > tMin + 1e-9) {
-        score = 100 * ((t - tMin) / (tMax - tMin));
-      } else if (fallbackMode === 'TONNAGE' && Number.isFinite(t) && Number.isFinite(tMin) && Number.isFinite(tMax) && Math.abs(tMax - tMin) <= 1e-9) {
-        score = 100;
-      } else {
-        // AREA：口径改为“有效覆盖率%”（与面积优先排序一致，便于表格验收）
-        const r = Number(c?.coverageRatio ?? c?.metrics?.coverageRatio);
-        score = Number.isFinite(r) ? Math.max(0, Math.min(100, r * 100)) : 0;
-      }
+    // recoveryScore：评分就是排序（eff 口径 + 软上限 + 只扣分）；保证与 candidates 顺序一致
+    const k = Math.max(1, candidates.length);
+    let prev = Infinity;
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      const t = (k <= 1) ? 0 : (i / (k - 1));
+      const shaped = Math.pow(t, RECOVERY_SCORE_GAMMA);
+      const baseScore = RECOVERY_SCORE_MAX - (RECOVERY_SCORE_MAX - RECOVERY_SCORE_MIN) * shaped;
+      const pen = penaltyOf(c);
+      let score = baseScore - pen;
+      // 强制单调递减，避免扣分导致“后面的分数反超前面”
+      if (Number.isFinite(prev)) score = Math.min(score, prev - 0.01);
+      score = clamp(score, RECOVERY_SCORE_FLOOR, RECOVERY_SCORE_MAX);
+      prev = score;
+
       c.recoveryScore = score;
       if (c.metrics) c.metrics.recoveryScore = score;
+
       // v1.0：补齐诊断字段（每个候选都带）
       c.hasThickness = hasThickness;
       c.fallbackMode = fallbackMode;
