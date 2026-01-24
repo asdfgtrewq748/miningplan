@@ -53,7 +53,7 @@ const thetaStatsDeg = (thetaDegList) => {
     thetaStdDeg: Number.isFinite(thetaStdDeg) ? thetaStdDeg : null,
     maxAbsThetaDeg: Number.isFinite(maxAbsThetaDeg) ? maxAbsThetaDeg : null,
     sumAbsDeltaThetaDeg: Number.isFinite(sumAbsDeltaThetaDeg) ? sumAbsDeltaThetaDeg : null,
-  };
+};
 };
 
 const sampleRange3 = (minV, maxV) => {
@@ -6783,10 +6783,10 @@ const compute = (payload) => {
       columns: [
         '序号',
         '方案选择',
-        '工作面个数 N（个）',
-        '工作面宽度 B（m）',
-        '边界煤柱 w_b（m）',
-        '区段煤柱 w_s（m）',
+        '工作面个数（个）',
+        '工作面宽度B（m）',
+        '边界煤柱（m）',
+        '区段煤柱（m）',
         '覆盖率（%）',
         '回采面积（㎡）',
         '总储量（t）',

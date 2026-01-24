@@ -2123,10 +2123,10 @@ const App = () => {
         // fullCover/残煤补片/残煤轮廓仍按 effective（扣煤柱有效Ω）口径。
         coverageTable: 'raw(no_pillar_deduction)',
         fullCoverCheck: 'effective(deduct_pillars_when_enabled)',
-        thickness: 'grid_first_constant_fallback',
+        thickness: 'constant_first_grid_fallback',
       },
       calcProcess: {
-        tonnageDefinition: 'tonnage ≈ minedArea * meanThickness * rho（minedArea 取候选采出覆盖域；thickness=grid_first/constant_fallback）',
+        tonnageDefinition: 'tonnage ≈ minedArea * meanThickness * rho（minedArea 取候选采出覆盖域；thickness=constant_first/grid_fallback）',
         rhoUsed,
         thickness: {
           kind: String(req?.payload?.thickness?.interpVersion ? 'grid' : (req?.payload?.thickness ? 'grid' : 'unknown')),
@@ -2380,7 +2380,7 @@ const App = () => {
       ts: Date.now(),
       policies: {
         coverageTable: 'raw(no_pillar_deduction)',
-        thickness: 'grid_first_constant_fallback',
+        thickness: 'constant_first_grid_fallback',
         // 工程效率本身不计算“扣煤柱有效覆盖率”；这里只标注表格口径与吨位厚度口径。
       },
       ui: {
@@ -2604,10 +2604,26 @@ const App = () => {
       ? boreholeParamSamples.CoalThk
       : buildCoalThkSamplesByCoalName(fallbackCoal);
 
-    // 口径统一：不再用“钻孔煤厚均值”自动兜底常数厚度。
-    // - 有厚度插值场 -> 用插值场
-    // - 无插值场 -> 仅允许用户手填 seamThickness 作为常数厚度
-    const seamThickness = hasConstThkRaw ? seamThicknessRaw : null;
+    const meanThicknessFromSamples = (() => {
+      try {
+        const xs = (Array.isArray(thkSamples) ? thkSamples : [])
+          .map((s) => Number(s?.value))
+          .filter((v) => Number.isFinite(v) && v > 0);
+        if (!xs.length) return null;
+        const m = xs.reduce((sum, v) => sum + v, 0) / xs.length;
+        return (Number.isFinite(m) && m > 0) ? m : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    // 储量兜底策略：
+    // - 用户手填 seamThickness：按用户常数厚度（constantFrom=user）
+    // - 否则若存在插值场：使用插值场（grid）
+    // - 否则若钻孔煤厚样本足够：用“钻孔煤厚均值”作为常数厚度兜底（constantFrom=borehole_mean）
+    const seamThicknessUser = hasConstThkRaw ? seamThicknessRaw : null;
+    const seamThicknessAuto = (!hasConstThkRaw) ? meanThicknessFromSamples : null;
+    const seamThickness = (seamThicknessUser != null) ? seamThicknessUser : seamThicknessAuto;
     const hasConstThk = Number.isFinite(seamThickness) && seamThickness > 0;
     const thicknessDataHash = hashCoalThicknessSamples(thkSamples);
     const targetSeam = 'CoalThk';
@@ -2626,17 +2642,21 @@ const App = () => {
       }
       : null;
 
+    // 只要已有插值场（fieldPack）就允许按 grid 口径回填吨位。
+    // 备注：thkSamples 的数量在导入/切换煤层时可能短暂为 0，但插值场本身仍可用。
     const hasGridThk = Boolean(
-      (thkSamples?.length ?? 0) >= 3
-      && fieldPack?.field
+      fieldPack?.field
       && fieldPack?.gridW
       && fieldPack?.gridH
     );
-    const kind = hasGridThk ? 'grid' : (hasConstThk ? 'constant' : 'none');
+    // 口径统一：用户明确填写 seamThickness 时 constant-first；否则 grid-first；两者都无才 fallback 到 borehole_mean constant。
+    const kind = (seamThicknessUser != null)
+      ? 'constant'
+      : (hasGridThk ? 'grid' : (hasConstThk ? 'constant' : 'none'));
 
     const thickness = {
       fieldPack,
-      // 口径统一：插值场优先；常数作为 fallback（grid_first_constant_fallback）
+      // 口径统一：常数优先（用户明确输入时）；否则插值场；两者都无则 none。
       constantM: (hasConstThk ? seamThickness : null),
       rho,
       gridRes,
@@ -2645,7 +2665,7 @@ const App = () => {
       targetSeam,
       source: {
         coal: fallbackCoal || null,
-        constantFrom: hasGridThk ? null : (hasConstThkRaw ? 'user' : null),
+        constantFrom: (seamThicknessUser != null) ? 'user' : ((seamThicknessAuto != null) ? 'borehole_mean' : null),
         samplesCount: Array.isArray(thkSamples) ? thkSamples.length : 0,
       },
     };
@@ -2714,6 +2734,162 @@ const App = () => {
     const r0 = c?.render;
     if (r0 && typeof r0 === 'object') return r0;
     return {};
+  };
+
+  const estimateCandidateTonnageLocal = (candidate, thickness) => {
+    try {
+      const c = candidate ?? null;
+      if (!c) return null;
+
+      const canApprox = (areaM2, tM, rho) => {
+        const a = Number(areaM2);
+        const t = Number(tM);
+        const r = Number(rho);
+        if (!Number.isFinite(a) || !(a > 0)) return null;
+        if (!Number.isFinite(t) || !(t > 0)) return null;
+        if (!Number.isFinite(r) || !(r > 0)) return null;
+        const ton = a * t * r;
+        return Number.isFinite(ton) && ton > 0 ? ton : null;
+      };
+
+      const boundsOfLoop = (loop) => {
+        const pts = Array.isArray(loop) ? loop : [];
+        let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+        let ok = 0;
+        for (const p of pts) {
+          const x = Number(p?.x);
+          const y = Number(p?.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          ok += 1;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        if (ok < 3 || !Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
+        return { minX, minY, maxX, maxY };
+      };
+
+      const loopsFromCandidateForTonnage = (cand) => {
+        const r0 = pickRenderForTonnage(cand);
+        if (Array.isArray(r0?.rectLoops) && r0.rectLoops.length) {
+          return r0.rectLoops.filter((loop) => Array.isArray(loop) && loop.length >= 3);
+        }
+        const faces = Array.isArray(r0?.plannedWorkfaceLoopsWorld)
+          ? r0.plannedWorkfaceLoopsWorld
+          : (Array.isArray(r0?.facesLoops) ? r0.facesLoops : (Array.isArray(r0?.clippedFacesLoops) ? r0.clippedFacesLoops : []));
+        const out = [];
+        for (const f of (faces ?? [])) {
+          const loop = Array.isArray(f?.loop) ? f.loop : (Array.isArray(f) ? f : null);
+          if (Array.isArray(loop) && loop.length >= 3) out.push(loop);
+        }
+        return out;
+      };
+
+      const estimateByThicknessFieldFast = (cand) => {
+        try {
+          const fp = thickness?.fieldPack;
+          const rho = Number(thickness?.rho);
+          if (!fp?.field || !fp.gridW || !fp.gridH) return null;
+          if (!Number.isFinite(rho) || !(rho > 0)) return null;
+          const loops = loopsFromCandidateForTonnage(cand);
+          if (!loops.length) return null;
+
+          // “第一时间可见”口径：快速估算，采样步长偏大 + 限制点数。
+          const stepM0 = Number(thickness?.gridRes ?? 20);
+          const stepM = Number.isFinite(stepM0) && stepM0 > 0 ? Math.max(12, Math.min(20, stepM0)) : 15;
+          const maxSamples = 2500;
+
+          let sampled = 0;
+          let sumThk = 0;
+          for (const loop of loops) {
+            const bb = boundsOfLoop(loop);
+            if (!bb) continue;
+            for (let x = bb.minX; x <= bb.maxX; x += stepM) {
+              for (let y = bb.minY; y <= bb.maxY; y += stepM) {
+                if (sampled >= maxSamples) break;
+                if (!polygonContainsPoint(loop, { x, y })) continue;
+                const thk = sampleFieldAtWorldXY(fp, x, y);
+                if (Number.isFinite(thk) && thk > 0) {
+                  sumThk += thk;
+                  sampled += 1;
+                }
+              }
+              if (sampled >= maxSamples) break;
+            }
+            if (sampled >= maxSamples) break;
+          }
+          if (!(sampled > 0)) return null;
+          const cellArea = stepM * stepM;
+          const volume = sumThk * cellArea;
+          const ton = volume * rho;
+          return Number.isFinite(ton) && ton > 0 ? ton : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const preferConst = Number.isFinite(Number(thickness?.constantM)) && Number(thickness.constantM) > 0;
+      const areaForApprox = (c?.metrics?.faceAreaTotal ?? c?.coveredArea);
+      const t = preferConst
+        ? (canApprox(areaForApprox, thickness?.constantM, thickness?.rho) ?? estimateByThicknessFieldFast(c))
+        : (estimateByThicknessFieldFast(c) ?? canApprox(areaForApprox, thickness?.constantM, thickness?.rho));
+      return Number.isFinite(Number(t)) && Number(t) > 0 ? Number(t) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const patchEfficiencyResultTop1TonnageImmediate = (resultPayload, preferredSig) => {
+    try {
+      const r0 = resultPayload ?? null;
+      if (!r0?.ok) return r0;
+
+      const candidates0 = Array.isArray(r0?.candidates) ? r0.candidates : [];
+      const rows0 = Array.isArray(r0?.table?.rows) ? r0.table.rows : [];
+      if (!candidates0.length || !rows0.length) return r0;
+
+      // 若 Top1 已有吨位，不重复估算。
+      const topRow0 = rows0[0] ?? null;
+      const topSig = String(preferredSig || topRow0?.signature || candidates0?.[0]?.signature || '').trim();
+      if (!topSig) return r0;
+
+      const topRowHas = Number(topRow0?.tonnageTotal);
+      if (Number.isFinite(topRowHas) && topRowHas > 0) return r0;
+
+      const topCand0 = candidates0.find((c) => String(c?.signature ?? '').trim() === topSig) ?? candidates0[0];
+      if (!topCand0) return r0;
+      const candHas = Number(topCand0?.tonnageTotal ?? topCand0?.metrics?.tonnageTotal);
+      if (Number.isFinite(candHas) && candHas > 0) return r0;
+
+      const { kind, thickness } = buildEfficiencyTonnagePostContext();
+      if (kind === 'none') return r0;
+
+      const t = estimateCandidateTonnageLocal(topCand0, thickness);
+      if (!(Number.isFinite(t) && t > 0)) return r0;
+
+      // shallow-copy：只改 Top1 对应 candidate + table row
+      const candidates1 = candidates0.map((c) => {
+        const sig = String(c?.signature ?? '').trim();
+        if (sig !== topSig) return c;
+        const next = { ...(c ?? {}), tonnageTotal: t };
+        if (next.metrics && typeof next.metrics === 'object') next.metrics.tonnageTotal = t;
+        return next;
+      });
+      const rows1 = rows0.map((row) => {
+        const sig = String(row?.signature ?? '').trim();
+        if (sig !== topSig) return row;
+        return { ...(row ?? {}), tonnageTotal: t };
+      });
+
+      return {
+        ...(r0 ?? {}),
+        candidates: candidates1,
+        table: (r0?.table && typeof r0.table === 'object') ? { ...(r0.table ?? {}), rows: rows1 } : r0?.table,
+      };
+    } catch {
+      return resultPayload;
+    }
   };
 
   const maybePostprocessEfficiencyTonnage = (payloadUi, { cacheKeyForTonnage, preferredSig, reason = '' } = {}) => {
@@ -2929,14 +3105,15 @@ const App = () => {
               }
             };
 
-            const preferGrid = Boolean(thickness?.fieldPack?.field && thickness?.fieldPack?.gridW && thickness?.fieldPack?.gridH);
+            const preferConst = Number.isFinite(Number(thickness?.constantM)) && Number(thickness.constantM) > 0;
             const cand1 = cand0.map((c) => {
               const sig0 = String(c?.signature ?? '').trim();
               const tBackend = Number(tonBySig?.[sig0]);
               const t0 = (Number.isFinite(tBackend) ? tBackend : null);
-              const tLocal = preferGrid
-                ? (estimateByThicknessField(c) ?? canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho))
-                : (canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho) ?? estimateByThicknessField(c));
+              // 口径统一：用户填写常数厚度时，按常数优先（与资源回收最优一致）；否则优先用插值厚度场。
+              const tLocal = preferConst
+                ? (canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho) ?? estimateByThicknessField(c))
+                : (estimateByThicknessField(c) ?? canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho));
               const t = (t0 != null && t0 > 0) ? t0 : tLocal;
               const next = { ...(c ?? {}) };
               if (Number.isFinite(t)) next.tonnageTotal = t;
@@ -3153,9 +3330,13 @@ const App = () => {
     }
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
+    // 先判定这次请求的目标模式（optMode 参数优先），避免 setPlanningOptMode 尚未生效时漏门禁。
+    const optModeWanted = (String(optMode ?? planningOptMode ?? 'efficiency') === 'disturbance') ? 'disturbance' : 'efficiency';
+    const isDisturbanceWanted = optModeWanted === 'disturbance';
+
     // 覆岩扰动最优：无 ODI 插值场时，禁止触发布局计算（包括复用 efficiency 计算的流程）。
     // 注意：disturbance 会通过 force=true 绕过“planningOptMode===efficiency”的早退逻辑，因此门禁必须下沉到这里。
-    if (mainViewMode === 'planning' && planningOptMode === 'disturbance') {
+    if (mainViewMode === 'planning' && isDisturbanceWanted) {
       const odiReady = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
       if (!odiReady) {
         if (!planningDisturbanceOdiGateOpen) {
@@ -3170,7 +3351,6 @@ const App = () => {
     const fastFinal = false;
     const refineFinal = false;
 
-    const optModeWanted = (String(optMode ?? planningOptMode ?? 'efficiency') === 'disturbance') ? 'disturbance' : 'efficiency';
     const isDisturbance = optModeWanted === 'disturbance';
     const cacheKey = isDisturbance ? buildDisturbanceCacheKey() : buildEfficiencyCacheKey();
     planningEfficiencyCacheKeyRef.current = String(cacheKey);
@@ -3274,7 +3454,7 @@ const App = () => {
       && cachedAxis === axisNow
       && cachedSig.startsWith(`${axisNow}|`);
 
-    if (!ignoreCacheFinal && cachedLooksConsistent) {
+      if (!ignoreCacheFinal && cachedLooksConsistent) {
       workerLog('[worker][efficiency] cache-hit', { cacheKey, axis: axisNow, sig: cachedSig });
       setPlanningEfficiencyComputeSource('cache');
       // cache-hit：disturbance 也要按“当前参数”重算派生表，避免旧 tuning/旧 ODI 门禁残留。
@@ -3297,7 +3477,14 @@ const App = () => {
           setPlanningEfficiencyResult(cached.result);
         }
       } else {
-        setPlanningEfficiencyResult(cached.result);
+        // 让 Top1 储量“第一时间可见”：先快速估算回填 Top1，再异步精算回填 TopK。
+        const patched = patchEfficiencyResultTop1TonnageImmediate(cached.result, cachedSig);
+        setPlanningEfficiencyResult(patched);
+        try {
+          if (patched && patched !== cached.result) efficiencyCacheRef.current.set(cacheKey, { ...(cached ?? {}), result: patched, selectedSig: String(cached?.selectedSig ?? '') });
+        } catch {
+          // ignore
+        }
       }
       try {
         efficiencyLastResponseRef.current = cached.result;
@@ -5133,13 +5320,15 @@ const App = () => {
           // ignore
         }
       } else {
-        setPlanningEfficiencyResult(payloadUi);
+        // 让 Top1 储量“第一时间可见”：先快速估算回填 Top1，再异步精算回填 TopK。
+        const payloadUiPatched = patchEfficiencyResultTop1TonnageImmediate(payloadUi, preferredSig);
+        setPlanningEfficiencyResult(payloadUiPatched);
         try {
-          efficiencyLastResponseRef.current = payloadUi;
+          efficiencyLastResponseRef.current = payloadUiPatched;
         } catch {
           // ignore
         }
-        applyEfficiencyCandidateBySignature(preferredSig, payloadUi);
+        applyEfficiencyCandidateBySignature(preferredSig, payloadUiPatched);
         // compute 成功：清理预览（回到“真实候选集”）
         setPlanningEfficiencyPreview(null);
         setPlanningEfficiencyPreviewBusy(false);
@@ -5158,7 +5347,7 @@ const App = () => {
 
         // 方案A：工程效率 compute 完成后，对 TopK 候选异步回填吨位，并按“效率主、储量辅”重排。
         // 说明：这是“后处理回填吨位”，不影响效率搜索本身；厚度优先插值场，常数厚度仅允许用户手填兜底（不再用钻孔均值自动兜底）。
-        maybePostprocessEfficiencyTonnage(payloadUi, { cacheKeyForTonnage: String(payloadUi?.cacheKey ?? cacheKey), preferredSig, reason: 'compute-ok' });
+        maybePostprocessEfficiencyTonnage(payloadUiPatched, { cacheKeyForTonnage: String(payloadUi?.cacheKey ?? cacheKey), preferredSig, reason: 'compute-ok' });
       }
 
       if (DEBUG_PANEL && !isRecovery) {
@@ -5890,6 +6079,18 @@ const App = () => {
     }
 
     if (m === 'disturbance') {
+      // 覆岩扰动最优：必须先具备 ODI 插值场；否则直接弹门禁提示。
+      try {
+        const odiReady = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
+        if (!odiReady) {
+          if (!planningDisturbanceOdiGateOpen) openPlanningDisturbanceOdiGate();
+          return;
+        }
+      } catch {
+        if (!planningDisturbanceOdiGateOpen) openPlanningDisturbanceOdiGate();
+        return;
+      }
+
       try {
         const currentKey = String(buildDisturbanceCacheKey());
         const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
@@ -14920,15 +15121,15 @@ const App = () => {
                           <tr>
                             <th className="w-12 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">序号</th>
                             <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
-                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
-                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m）</th>
-                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
-                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数（个）</th>
+                            <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度B（m）</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱（m）</th>
+                            <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
                             <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
-                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
-                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
-                            <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
-                            <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
+                            <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">可采区面积（㎡）</th>
+                            <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">回采面积（㎡）</th>
+                            <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
+                            <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工程效率综合评分</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -15055,17 +15256,17 @@ const App = () => {
                           <thead className="sticky top-0 bg-white border-b border-slate-100">
                             <tr>
                               <th className="w-12 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">序号</th>
-                              <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数 N（个）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度 B（m）</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱 w_b（m）</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱 w_s（m）</th>
+                              <th className="w-16 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
+                              <th className="min-w-[100px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数（个）</th>
+                              <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度B（m）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱（m）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
                               <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
-                              <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI均值</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI P90</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI超阈值占比（%）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">扰动得分（100分制，越大越好）</th>
+                              <th className="min-w-[110px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
+                              <th className="min-w-[80px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI均值</th>
+                              <th className="min-w-[80px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI P90</th>
+                              <th className="min-w-[128px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">ODI超阈值占比（%）</th>
+                              <th className="min-w-[100px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">扰动总结评分</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -15193,10 +15394,10 @@ const App = () => {
                               <th className="w-12 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">序号</th>
                               <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
                               <th className="min-w-[84px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">来源</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">N</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">B</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">w_b</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">w_s</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数（个）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度B（m）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱（m）</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
                               <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
                               <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">扰动得分（100）</th>
                               <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
