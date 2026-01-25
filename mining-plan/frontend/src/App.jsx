@@ -49,7 +49,7 @@ import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
 import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
 import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
-import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort } from './api.js';
+import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedCompute } from './api.js';
 
 const DEFAULT_PLANNING_PARAMS = {
   mineCapacity: '',
@@ -136,38 +136,55 @@ const App = () => {
     return 0;
   };
   const [planningOptWeights, setPlanningOptWeights] = useState({ efficiency: 0.34, disturbance: 0.33, recovery: 0.33 });
-  // 智能规划：扰动评分参数（UI 可调；不改变 ODI 计算/插值算法）
-  const [planningDisturbanceTuningOpen, setPlanningDisturbanceTuningOpen] = useState(false);
+  // 智能规划：扰动评分参数（用于 disturbance/weighted 扰动评分；当前 UI 不开放调节）
   const [planningDisturbanceParams, setPlanningDisturbanceParams] = useState({
     ...DEFAULT_DISTURBANCE_PARAMS,
   });
-  // 受控输入体验：允许清空/输入中间态（如 0. / .7），再在失焦时落盘
-  const [planningDisturbanceExceedThresholdDraft, setPlanningDisturbanceExceedThresholdDraft] = useState(null);
+  // disturbance/weighted：参数改动后不自动刷新表；点击“启动智能采区规划”时显式派生
+  const [planningDisturbanceApplySeq, setPlanningDisturbanceApplySeq] = useState(0);
+  const [planningWeightedApplySeq, setPlanningWeightedApplySeq] = useState(0);
   const planningDisturbanceParamsRef = useRef(planningDisturbanceParams);
   useEffect(() => {
     planningDisturbanceParamsRef.current = planningDisturbanceParams;
   }, [planningDisturbanceParams]);
 
-  useEffect(() => {
-    // 收起面板时清空草稿；展开时若尚未编辑则初始化为当前值
-    if (!planningDisturbanceTuningOpen) {
-      setPlanningDisturbanceExceedThresholdDraft(null);
-      return;
-    }
-    setPlanningDisturbanceExceedThresholdDraft((prev) => {
-      if (prev != null) return prev;
-      return String(planningDisturbanceParams?.exceedThreshold ?? 0.7);
-    });
-  }, [planningDisturbanceTuningOpen, planningDisturbanceParams?.exceedThreshold]);
-
   // 智能规划：权重自定义（weighted）结果与选中态（独立于 efficiency/recovery 以免互相污染）
   const [planningWeightedResult, setPlanningWeightedResult] = useState(null);
+  const [planningWeightedBusy, setPlanningWeightedBusy] = useState(false);
+  const [planningWeightedProgress, setPlanningWeightedProgress] = useState(null);
   const [planningWeightedSelected, setPlanningWeightedSelected] = useState({ sig: '', source: '' });
   const [planningWeightedShowAllCandidates, setPlanningWeightedShowAllCandidates] = useState(false);
+  const [planningWeightedDebugOpen, setPlanningWeightedDebugOpen] = useState(false);
+  const [planningWeightedDebugText, setPlanningWeightedDebugText] = useState('');
+  const planningWeightedReqSeqRef = useRef(0);
+  const planningWeightedHandledApplySeqRef = useRef(0);
+  const planningWeightedInFlightKeyRef = useRef('');
   const planningOptWeightsRef = useRef(planningOptWeights);
   useEffect(() => {
     planningOptWeightsRef.current = planningOptWeights;
   }, [planningOptWeights]);
+
+  const detectWeightedSingleObjectiveMode = (weights0) => {
+    const w = (weights0 && typeof weights0 === 'object') ? weights0 : {};
+    const a0 = Number(w?.efficiency);
+    const b0 = Number(w?.recovery);
+    const c0 = Number(w?.disturbance);
+    const a = Number.isFinite(a0) ? Math.max(0, a0) : 0;
+    const b = Number.isFinite(b0) ? Math.max(0, b0) : 0;
+    const c = Number.isFinite(c0) ? Math.max(0, c0) : 0;
+    const s = a + b + c;
+    if (!(s > 1e-12)) return null;
+    const ne = a / s;
+    const nr = b / s;
+    const nd = c / s;
+    const eps = 1e-6;
+    const near1 = (x) => Number.isFinite(x) && x >= 1 - eps;
+    const near0 = (x) => Number.isFinite(x) && x <= eps;
+    if (near1(ne) && near0(nr) && near0(nd)) return 'efficiency';
+    if (near1(nr) && near0(ne) && near0(nd)) return 'recovery';
+    if (near1(nd) && near0(ne) && near0(nr)) return 'disturbance';
+    return null;
+  };
 
   // 智能规划：计算门禁（2026-01-22）
   // 目标：导入/更新输入后不自动计算；用户点击“启动智能采区规划”后才允许计算。
@@ -212,6 +229,7 @@ const App = () => {
   // - progress timer：后端无 progress 时提供“伪进度”避免 UI 卡死感
   const efficiencyResultHandlerRef = useRef(null);
   const efficiencyBackendProgressRef = useRef({ timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' });
+  const weightedBackendProgressRef = useRef({ timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' });
   const efficiencyForceTop1Ref = useRef({ reqSeq: 0, cacheKey: '' });
   const efficiencyAutoSelectAfterTonnageRef = useRef({ reqSeq: 0, cacheKey: '', sig: '' });
 
@@ -575,222 +593,6 @@ const App = () => {
         const qb = b.qualified ? 1 : 0;
         if (qb !== qa) return qb - qa;
 
-      const buildWeightedRankingPack = ({ effResult, recResult, odiPack, distParams, weights }) => {
-        const eff = effResult?.ok ? effResult : null;
-        const rec = recResult?.ok ? recResult : null;
-        const effCands = Array.isArray(eff?.candidates) ? eff.candidates : [];
-        const recCands = Array.isArray(rec?.candidates) ? rec.candidates : [];
-        if (!effCands.length && !recCands.length) return { ok: false, message: '暂无候选：请先计算工程效率/资源回收。' };
-
-        const clamp01 = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
-        const norm2 = (a, b) => {
-          const x = clamp01(a);
-          const y = clamp01(b);
-          const s = x + y;
-          if (!(s > 1e-12)) return { a: 0.5, b: 0.5 };
-          return { a: x / s, b: y / s };
-        };
-
-        const canonicalKey = (c) => {
-          const axis = String(c?.axis ?? c?.metrics?.axis ?? c?.render?.axis ?? '').trim();
-          const theta = Number(c?.thetaDeg ?? c?.metrics?.thetaDeg);
-          const N = Number(c?.N ?? c?.metrics?.faceCount);
-          const B = Number(c?.B ?? c?.metrics?.B);
-          const wb = Number(c?.wb ?? c?.genes?.wb ?? c?.metrics?.wb);
-          const ws = Number(c?.ws ?? c?.genes?.ws ?? c?.metrics?.ws);
-          const fmt = (v, d = 1) => (Number.isFinite(v) ? Number(v).toFixed(d) : 'na');
-          return [axis || 'na', fmt(theta, 1), fmt(N, 0), fmt(B, 1), fmt(wb, 1), fmt(ws, 1)].join('|');
-        };
-
-        const effBySig = new Map();
-        const recBySig = new Map();
-        const effByKey = new Map();
-        const recByKey = new Map();
-        for (const c of effCands) {
-          const sig = String(c?.signature ?? '').trim();
-          if (sig) effBySig.set(sig, c);
-          effByKey.set(canonicalKey(c), c);
-        }
-        for (const c of recCands) {
-          const sig = String(c?.signature ?? '').trim();
-          if (sig) recBySig.set(sig, c);
-          recByKey.set(canonicalKey(c), c);
-        }
-
-        // 统一候选池（方案B）：union(eff, rec)
-        const pool = [];
-        for (const c of effCands) pool.push({ source: 'efficiency', candidate: c });
-        for (const c of recCands) pool.push({ source: 'recovery', candidate: c });
-
-        // 扰动评分：用 source::signature 做唯一键，避免 signature 冲突
-        const distMap = new Map();
-        try {
-          if (odiPack?.field) {
-            const tmp = {
-              ok: true,
-              candidates: pool.map((x) => ({
-                ...(x.candidate ?? {}),
-                signature: `${x.source}::${String(x.candidate?.signature ?? '').trim()}`,
-              })),
-            };
-            const pack = buildDisturbanceRankingPackForEfficiencyResult(tmp, odiPack, distParams);
-            const by = pack?.bySignature ?? {};
-            for (const [k, v] of Object.entries(by)) distMap.set(String(k), v);
-          }
-        } catch {
-          // ignore
-        }
-
-        const getEffScore = (c) => {
-          const v = Number(c?.efficiencyScore ?? c?.metrics?.efficiencyScore);
-          return Number.isFinite(v) ? v : null;
-        };
-        const getRecScore = (c) => {
-          const v = Number(c?.recoveryScore ?? c?.metrics?.recoveryScore);
-          if (Number.isFinite(v)) return v;
-          const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
-          return Number.isFinite(t) ? t : null;
-        };
-
-        const rows0 = pool.map((x, idx) => {
-          const c = x.candidate;
-          const sig = String(c?.signature ?? '').trim();
-          const key = canonicalKey(c);
-          const peerEff = (x.source === 'efficiency') ? c : (effBySig.get(sig) ?? effByKey.get(key) ?? null);
-          const peerRec = (x.source === 'recovery') ? c : (recBySig.get(sig) ?? recByKey.get(key) ?? null);
-          const effScore = getEffScore(peerEff);
-          const recScore = getRecScore(peerRec);
-
-          const tonnageTotal0 = Number(
-            peerRec?.tonnageTotal
-            ?? peerRec?.metrics?.tonnageTotal
-            ?? c?.tonnageTotal
-            ?? c?.metrics?.tonnageTotal
-          );
-          const tonnageTotal = Number.isFinite(tonnageTotal0) ? tonnageTotal0 : null;
-
-          const distKey = `${x.source}::${sig}`;
-          const dist = distMap.get(distKey) ?? null;
-          const distScore = Number.isFinite(Number(dist?.score)) ? Number(dist.score) : Infinity;
-
-          const N = Number(c?.N ?? c?.metrics?.faceCount);
-          const B = Number(c?.B ?? c?.metrics?.B);
-          const wb = Number(c?.wb ?? c?.genes?.wb);
-          const ws = Number(c?.ws ?? c?.genes?.ws);
-          const coverage = pickCoverageForDisplay(c);
-
-          return {
-            idx,
-            signature: sig,
-            source: x.source,
-            N: Number.isFinite(N) ? N : null,
-            B: Number.isFinite(B) ? B : null,
-            wb: Number.isFinite(wb) ? wb : null,
-            ws: Number.isFinite(ws) ? ws : null,
-            coveragePct: Number.isFinite(coverage) ? coverage * 100 : null,
-            distMean: dist?.mean ?? null,
-            distP90: dist?.p90 ?? null,
-            distExceedPct: Number.isFinite(dist?.exceedRatio) ? dist.exceedRatio * 100 : null,
-            distScore: Number.isFinite(distScore) ? distScore : null,
-            _distScore: distScore,
-            distPoints: null,
-            tonnageTotal,
-            effScore,
-            recScore,
-          };
-        });
-
-        // 扰动得分（100分制）相对标定：仅展示，不参与排序
-        const quantile = (arr, q) => {
-          const a = (arr ?? []).filter(Number.isFinite).slice().sort((x, y) => x - y);
-          if (!a.length) return null;
-          const qq = Math.max(0, Math.min(1, Number(q)));
-          const pos = (a.length - 1) * qq;
-          const lo = Math.floor(pos);
-          const hi = Math.min(a.length - 1, lo + 1);
-          const t = pos - lo;
-          const v = a[lo] * (1 - t) + a[hi] * t;
-          return Number.isFinite(v) ? v : null;
-        };
-        const distScoresFinite = rows0.map((r) => Number(r?._distScore)).filter(Number.isFinite);
-        const distLo = quantile(distScoresFinite, 0.05);
-        const distHi = quantile(distScoresFinite, 0.95);
-        const toDistPoints = (rawScore) => {
-          const s = Number(rawScore);
-          if (!Number.isFinite(s)) return null;
-          const best = 95;
-          const worst = 60;
-          if (!(Number.isFinite(distLo) && Number.isFinite(distHi) && distHi > distLo)) return best;
-          const t = Math.max(0, Math.min(1, (s - distLo) / (distHi - distLo)));
-          const p = best - t * (best - worst);
-          return Math.max(0, Math.min(100, p));
-        };
-
-        const rows0b = rows0.map((r) => ({
-          ...r,
-          distPoints: toDistPoints(r?._distScore),
-        }));
-
-        const normMinMax = (vals) => {
-          const a = (vals ?? []).filter(Number.isFinite);
-          if (!a.length) return { min: 0, max: 1 };
-          let min = Infinity; let max = -Infinity;
-          for (const v of a) {
-            if (v < min) min = v;
-            if (v > max) max = v;
-          }
-          if (!(max > min)) return { min, max: min + 1 };
-          return { min, max };
-        };
-
-        const effMM = normMinMax(rows0.map((r) => r.effScore));
-        const recMM = normMinMax(rows0.map((r) => r.recScore));
-        const nEff = (v) => {
-          const x = Number(v);
-          if (!Number.isFinite(x)) return 0;
-          return (x - effMM.min) / ((effMM.max - effMM.min) || 1);
-        };
-        const nRec = (v) => {
-          const x = Number(v);
-          if (!Number.isFinite(x)) return 0;
-          return (x - recMM.min) / ((recMM.max - recMM.min) || 1);
-        };
-
-        const w0 = weights && typeof weights === 'object' ? weights : { efficiency: 0.5, recovery: 0.5 };
-        const w2 = norm2(w0.efficiency, w0.recovery);
-        const wEff = w2.a;
-        const wRec = w2.b;
-
-        const rows1 = rows0b.map((r) => {
-          const effN = clamp01(nEff(r.effScore));
-          const recN = clamp01(nRec(r.recScore));
-          const combined = wEff * effN + wRec * recN;
-          return { ...r, effNorm: effN, recNorm: recN, combinedScore: combined };
-        });
-
-        // 排序：主键扰动（越小越好），次键 eff+rec 加权（越大越好）
-        const ranked = rows1
-          .slice()
-          .sort((a, b) => {
-            const da = Number(a._distScore);
-            const db = Number(b._distScore);
-            if (da !== db) return da - db;
-            const ca = Number(a.combinedScore);
-            const cb = Number(b.combinedScore);
-            if (cb !== ca) return cb - ca;
-            return a.idx - b.idx;
-          })
-          .map((r, i) => ({ ...r, rank: i + 1 }));
-
-        const best = ranked[0] ?? null;
-        return {
-          ok: true,
-          best: best ? { signature: String(best.signature || ''), source: String(best.source || '') } : { signature: '', source: '' },
-          table: { rows: ranked },
-          weightsUsed: { wEff, wRec },
-          hasOdiField: Boolean(odiPack?.field),
-        };
-      };
         const sa = Number(a.score);
         const sb = Number(b.score);
         if (sb !== sa) return sa - sb; // 越小越好
@@ -878,6 +680,410 @@ const App = () => {
       table: { rows: tableRows },
     };
   };
+
+    const buildWeightedRankingPack = ({ effResult, recResult, odiPack, distParams, weights }) => {
+      const eff = effResult?.ok ? effResult : null;
+      const rec = recResult?.ok ? recResult : null;
+      const effCands = Array.isArray(eff?.candidates) ? eff.candidates : [];
+      const recCands = Array.isArray(rec?.candidates) ? rec.candidates : [];
+      if (!effCands.length && !recCands.length) return { ok: false, message: '暂无候选：请先计算工程效率/资源回收。' };
+
+      // 方案1：单目标权重=1 时，严格等价到对应模式（候选池/排序/Top1）
+      const singleMode = detectWeightedSingleObjectiveMode(weights);
+
+      const clamp01 = (v) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
+      const nonNeg = (v) => {
+        const x = Number(v);
+        return Number.isFinite(x) ? Math.max(0, x) : 0;
+      };
+      const norm3 = (a, b, c) => {
+        const x = nonNeg(a);
+        const y = nonNeg(b);
+        const z = nonNeg(c);
+        const s = x + y + z;
+        if (!(s > 1e-12)) return { a: 1 / 3, b: 1 / 3, c: 1 / 3 };
+        return { a: x / s, b: y / s, c: z / s };
+      };
+
+      const canonicalKey = (c) => {
+        const axis = String(c?.axis ?? c?.metrics?.axis ?? c?.render?.axis ?? '').trim();
+        const theta = Number(c?.thetaDeg ?? c?.metrics?.thetaDeg);
+        const N = Number(c?.N ?? c?.metrics?.faceCount);
+        const B = Number(c?.B ?? c?.metrics?.B);
+        const wb = Number(c?.wb ?? c?.genes?.wb ?? c?.metrics?.wb);
+        const ws = Number(c?.ws ?? c?.genes?.ws ?? c?.metrics?.ws);
+        const fmt = (v, d = 1) => (Number.isFinite(v) ? Number(v).toFixed(d) : 'na');
+        return [axis || 'na', fmt(theta, 1), fmt(N, 0), fmt(B, 1), fmt(wb, 1), fmt(ws, 1)].join('|');
+      };
+
+      const effBySig = new Map();
+      const recBySig = new Map();
+      const effByKey = new Map();
+      const recByKey = new Map();
+      for (const c of effCands) {
+        const sig = String(c?.signature ?? '').trim();
+        if (sig) effBySig.set(sig, c);
+        effByKey.set(canonicalKey(c), c);
+      }
+      for (const c of recCands) {
+        const sig = String(c?.signature ?? '').trim();
+        if (sig) recBySig.set(sig, c);
+        recByKey.set(canonicalKey(c), c);
+      }
+
+      // 候选池：多目标用 union；单目标用对应模式候选池
+      const pool = [];
+      if (singleMode === 'efficiency') {
+        for (const c of effCands) pool.push({ source: 'efficiency', candidate: c });
+      } else if (singleMode === 'recovery') {
+        for (const c of recCands) pool.push({ source: 'recovery', candidate: c });
+      } else if (singleMode === 'disturbance') {
+        for (const c of effCands) pool.push({ source: 'disturbance', candidate: c });
+      } else {
+        for (const c of effCands) pool.push({ source: 'efficiency', candidate: c });
+        for (const c of recCands) pool.push({ source: 'recovery', candidate: c });
+      }
+
+      // 单目标=扰动：直接复用 disturbance 模式的排名函数，确保与 disturbance 模式严格一致
+      if (singleMode === 'disturbance') {
+        if (!odiPack?.field) return { ok: false, message: '未检测到 ODI 场：扰动权重=1 时需要先完成 ODI 插值。' };
+        try {
+          const tmp = {
+            ok: true,
+            candidates: pool.map((x) => ({
+              ...(x.candidate ?? {}),
+              signature: String(x.candidate?.signature ?? '').trim(),
+            })),
+          };
+          const distPack = buildDisturbanceRankingPackForEfficiencyResult(tmp, odiPack, distParams);
+          if (!distPack?.ok) return { ok: false, message: String(distPack?.message ?? '扰动评分失败') };
+          const rows0d = Array.isArray(distPack?.table?.rows) ? distPack.table.rows : [];
+          const rows = rows0d.map((r, idx) => ({
+            idx,
+            rank: Number(r?.rank ?? (idx + 1)),
+            signature: String(r?.signature ?? ''),
+            source: 'disturbance',
+            qualified: Boolean(r?.qualified ?? true),
+            N: r?.N ?? null,
+            B: r?.B ?? null,
+            wb: r?.wb ?? null,
+            ws: r?.ws ?? null,
+            coveragePct: r?.coveragePct ?? null,
+            tonnageTotal: r?.tonnageTotal ?? null,
+            distMean: r?.distMean ?? null,
+            distP90: r?.distP90 ?? null,
+            distExceedPct: r?.distExceedPct ?? null,
+            distScore: r?.distScore ?? null,
+            _distScore: Number.isFinite(Number(r?.distScore)) ? Number(r.distScore) : Infinity,
+            distPoints: r?.distPoints ?? null,
+            effScore: null,
+            recScore: null,
+            effNorm: 0,
+            recNorm: 0,
+            distNorm: 1, // 单目标扰动：展示为 1（排序由 distPack 决定）
+            totalScore: 1,
+            combinedScore: 1,
+          }));
+
+          const bestSig = String(distPack?.bestSignature ?? rows?.[0]?.signature ?? '').trim();
+          return {
+            ok: true,
+            best: bestSig ? { signature: bestSig, source: 'disturbance' } : { signature: '', source: 'disturbance' },
+            table: { rows },
+            weightsInput: {
+              efficiency: Number.isFinite(Number(weights?.efficiency)) ? Number(weights.efficiency) : null,
+              recovery: Number.isFinite(Number(weights?.recovery)) ? Number(weights.recovery) : null,
+              disturbance: Number.isFinite(Number(weights?.disturbance)) ? Number(weights.disturbance) : null,
+            },
+            weightsUsed: { wEff: 0, wRec: 0, wDist: 1 },
+            hasOdiField: true,
+            derived: {
+              hasDist: true,
+              ranges: distPack?.params ? { distParams: distPack.params } : null,
+              distParams: distParams ?? null,
+              disturbanceStrictMode: true,
+            },
+          };
+        } catch {
+          return { ok: false, message: '扰动权重=1：扰动评分/排序派生失败。' };
+        }
+      }
+
+      // 扰动评分：用 source::signature 做唯一键，避免 signature 冲突
+      const distMap = new Map();
+      try {
+        if (odiPack?.field) {
+          const tmp = {
+            ok: true,
+            candidates: pool.map((x) => ({
+              ...(x.candidate ?? {}),
+              signature: `${x.source}::${String(x.candidate?.signature ?? '').trim()}`,
+            })),
+          };
+          const pack = buildDisturbanceRankingPackForEfficiencyResult(tmp, odiPack, distParams);
+          const by = pack?.bySignature ?? {};
+          for (const [k, v] of Object.entries(by)) distMap.set(String(k), v);
+        }
+      } catch {
+        // ignore
+      }
+
+      const getEffScore = (c) => {
+        const v = Number(c?.efficiencyScore ?? c?.metrics?.efficiencyScore);
+        return Number.isFinite(v) ? v : null;
+      };
+      const getRecScore = (c) => {
+        const v = Number(c?.recoveryScore ?? c?.metrics?.recoveryScore);
+        if (Number.isFinite(v)) return v;
+        const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
+        return Number.isFinite(t) ? t : null;
+      };
+
+      const rows0 = pool.map((x, idx) => {
+        const c = x.candidate;
+        const sig = String(c?.signature ?? '').trim();
+        const key = canonicalKey(c);
+        const peerEff = (x.source === 'efficiency') ? c : (effBySig.get(sig) ?? effByKey.get(key) ?? null);
+        const peerRec = (x.source === 'recovery') ? c : (recBySig.get(sig) ?? recByKey.get(key) ?? null);
+      const effScore = getEffScore(peerEff ?? c);
+      const recScore = getRecScore(peerRec ?? c);
+
+        const tonnageTotal0 = Number(
+          peerRec?.tonnageTotal
+          ?? peerRec?.metrics?.tonnageTotal
+          ?? c?.tonnageTotal
+          ?? c?.metrics?.tonnageTotal
+        );
+        const tonnageTotal = Number.isFinite(tonnageTotal0) ? tonnageTotal0 : null;
+
+        const distKey = `${x.source}::${sig}`;
+        const dist = distMap.get(distKey) ?? null;
+        const distScore = Number.isFinite(Number(dist?.score)) ? Number(dist.score) : Infinity;
+
+        const N = Number(c?.N ?? c?.metrics?.faceCount);
+        const B = Number(c?.B ?? c?.metrics?.B);
+        const wb = Number(c?.wb ?? c?.genes?.wb);
+        const ws = Number(c?.ws ?? c?.genes?.ws);
+        const coverage = pickCoverageForDisplay(c);
+        const qualified = Boolean(c?.qualified ?? c?.metrics?.qualified ?? true);
+
+        return {
+          idx,
+          signature: sig,
+          source: x.source,
+          qualified,
+          N: Number.isFinite(N) ? N : null,
+          B: Number.isFinite(B) ? B : null,
+          wb: Number.isFinite(wb) ? wb : null,
+          ws: Number.isFinite(ws) ? ws : null,
+          coveragePct: Number.isFinite(coverage) ? coverage * 100 : null,
+          distMean: dist?.mean ?? null,
+          distP90: dist?.p90 ?? null,
+          distExceedPct: Number.isFinite(dist?.exceedRatio) ? dist.exceedRatio * 100 : null,
+          distScore: Number.isFinite(distScore) ? distScore : null,
+          _distScore: distScore,
+          distPoints: null,
+          tonnageTotal,
+          effScore,
+          recScore,
+        };
+      });
+
+      // 扰动得分（100分制）相对标定：仅展示（排序使用 distNorm + 权重）
+      const quantile = (arr, q) => {
+        const a = (arr ?? []).filter(Number.isFinite).slice().sort((x, y) => x - y);
+        if (!a.length) return null;
+        const qq = Math.max(0, Math.min(1, Number(q)));
+        const pos = (a.length - 1) * qq;
+        const lo = Math.floor(pos);
+        const hi = Math.min(a.length - 1, lo + 1);
+        const t = pos - lo;
+        const v = a[lo] * (1 - t) + a[hi] * t;
+        return Number.isFinite(v) ? v : null;
+      };
+      const distScoresFinite = rows0.map((r) => Number(r?._distScore)).filter(Number.isFinite);
+      const distLo = quantile(distScoresFinite, 0.05);
+      const distHi = quantile(distScoresFinite, 0.95);
+      const hasDist = Boolean(odiPack?.field && distScoresFinite.length);
+      const toDistPoints = (rawScore) => {
+        const s = Number(rawScore);
+        if (!Number.isFinite(s)) return null;
+        const best = 95;
+        const worst = 60;
+        if (!(Number.isFinite(distLo) && Number.isFinite(distHi) && distHi > distLo)) return best;
+        const t = Math.max(0, Math.min(1, (s - distLo) / (distHi - distLo)));
+        const p = best - t * (best - worst);
+        return Math.max(0, Math.min(100, p));
+      };
+
+      const rows0b = rows0.map((r) => ({
+        ...r,
+        distPoints: toDistPoints(r?._distScore),
+      }));
+
+      const normMinMax = (vals) => {
+        const a = (vals ?? []).filter(Number.isFinite);
+        if (!a.length) return { min: 0, max: 1 };
+        let min = Infinity; let max = -Infinity;
+        for (const v of a) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        if (!(max > min)) return { min, max: min + 1 };
+        return { min, max };
+      };
+
+      const effMM = normMinMax(rows0.map((r) => r.effScore));
+      const recMM = normMinMax(rows0.map((r) => r.recScore));
+      const distMM = normMinMax(distScoresFinite);
+      const nEff = (v) => {
+        const x = Number(v);
+        if (!Number.isFinite(x)) return 0;
+        return (x - effMM.min) / ((effMM.max - effMM.min) || 1);
+      };
+      const nRec = (v) => {
+        const x = Number(v);
+        if (!Number.isFinite(x)) return 0;
+        return (x - recMM.min) / ((recMM.max - recMM.min) || 1);
+      };
+
+      // distScore 越小越好 => distNorm 越大越好
+      const nDist = (raw) => {
+        const x = Number(raw);
+        if (!Number.isFinite(x)) return 0;
+        const den = (distMM.max - distMM.min) || 1;
+        if (!(den > 1e-12)) return 1;
+        return 1 - (x - distMM.min) / den;
+      };
+
+      const w0 = weights && typeof weights === 'object'
+        ? weights
+        : { efficiency: 0.34, recovery: 0.33, disturbance: 0.33 };
+      let wEff = 0.5;
+      let wRec = 0.5;
+      let wDist = 0;
+      if (hasDist) {
+        const w3 = norm3(w0.efficiency, w0.recovery, w0.disturbance);
+        wEff = w3.a;
+        wRec = w3.b;
+        wDist = w3.c;
+      } else {
+        const a = nonNeg(w0.efficiency);
+        const b = nonNeg(w0.recovery);
+        const s = a + b;
+        if (s > 1e-12) {
+          wEff = a / s;
+          wRec = b / s;
+        }
+        wDist = 0;
+      }
+
+      const rows1 = rows0b.map((r) => {
+        const effN = clamp01(nEff(r.effScore));
+        const recN = clamp01(nRec(r.recScore));
+        const distN = clamp01(nDist(r._distScore));
+        const total = wEff * effN + wRec * recN + wDist * distN;
+        return { ...r, effNorm: effN, recNorm: recN, distNorm: distN, totalScore: total, combinedScore: total };
+      });
+
+      // 单目标=效率/回收：严格复用对应模式候选顺序（不重排）
+      if (singleMode === 'efficiency') {
+        const bestSig = String(eff?.bestSignature ?? eff?.bestKey ?? eff?.selectedCandidateKey ?? (effCands?.[0]?.signature ?? '')).trim();
+        const rows = rows1.map((r, i) => ({ ...r, rank: i + 1 }));
+        return {
+          ok: true,
+          best: bestSig ? { signature: bestSig, source: 'efficiency' } : { signature: '', source: 'efficiency' },
+          table: { rows },
+          weightsInput: {
+            efficiency: Number.isFinite(Number(w0?.efficiency)) ? Number(w0.efficiency) : null,
+            recovery: Number.isFinite(Number(w0?.recovery)) ? Number(w0.recovery) : null,
+            disturbance: Number.isFinite(Number(w0?.disturbance)) ? Number(w0.disturbance) : null,
+          },
+          weightsUsed: { wEff: 1, wRec: 0, wDist: 0 },
+          hasOdiField: Boolean(odiPack?.field),
+          derived: {
+            hasDist,
+            ranges: { eff: effMM, rec: recMM, distRaw: distMM, distPoints: { lo: distLo, hi: distHi } },
+            distParams: distParams ?? null,
+            strictSingleMode: 'efficiency',
+          },
+        };
+      }
+      if (singleMode === 'recovery') {
+        const bestSig = String(rec?.bestSignature ?? rec?.bestKey ?? rec?.selectedCandidateKey ?? (recCands?.[0]?.signature ?? '')).trim();
+        const rows = rows1.map((r, i) => ({ ...r, rank: i + 1 }));
+        return {
+          ok: true,
+          best: bestSig ? { signature: bestSig, source: 'recovery' } : { signature: '', source: 'recovery' },
+          table: { rows },
+          weightsInput: {
+            efficiency: Number.isFinite(Number(w0?.efficiency)) ? Number(w0.efficiency) : null,
+            recovery: Number.isFinite(Number(w0?.recovery)) ? Number(w0.recovery) : null,
+            disturbance: Number.isFinite(Number(w0?.disturbance)) ? Number(w0.disturbance) : null,
+          },
+          weightsUsed: { wEff: 0, wRec: 1, wDist: 0 },
+          hasOdiField: Boolean(odiPack?.field),
+          derived: {
+            hasDist,
+            ranges: { eff: effMM, rec: recMM, distRaw: distMM, distPoints: { lo: distLo, hi: distHi } },
+            distParams: distParams ?? null,
+            strictSingleMode: 'recovery',
+          },
+        };
+      }
+
+      // 排序：三目标加权总分（越大越好）；qualified 优先
+      const ranked = rows1
+        .slice()
+        .sort((a, b) => {
+          const qa = a.qualified ? 1 : 0;
+          const qb = b.qualified ? 1 : 0;
+          if (qb !== qa) return qb - qa;
+
+          const ca = Number(a.totalScore);
+          const cb = Number(b.totalScore);
+          if (cb !== ca) return cb - ca;
+
+          const da = Number(a.distNorm);
+          const db = Number(b.distNorm);
+          if (db !== da) return db - da;
+
+          const ea = Number(a.effNorm);
+          const eb = Number(b.effNorm);
+          if (eb !== ea) return eb - ea;
+
+          const ra = Number(a.recNorm);
+          const rb = Number(b.recNorm);
+          if (rb !== ra) return rb - ra;
+
+          return a.idx - b.idx;
+        })
+        .map((r, i) => ({ ...r, rank: i + 1 }));
+
+      const best = ranked[0] ?? null;
+      return {
+        ok: true,
+        best: best ? { signature: String(best.signature || ''), source: String(best.source || '') } : { signature: '', source: '' },
+        table: { rows: ranked },
+        weightsInput: {
+          efficiency: Number.isFinite(Number(w0?.efficiency)) ? Number(w0.efficiency) : null,
+          recovery: Number.isFinite(Number(w0?.recovery)) ? Number(w0.recovery) : null,
+          disturbance: Number.isFinite(Number(w0?.disturbance)) ? Number(w0.disturbance) : null,
+        },
+        weightsUsed: { wEff, wRec, wDist },
+        hasOdiField: Boolean(odiPack?.field),
+        derived: {
+          hasDist,
+          ranges: {
+            eff: effMM,
+            rec: recMM,
+            distRaw: distMM,
+            distPoints: { lo: distLo, hi: distHi },
+          },
+          distParams: distParams ?? null,
+        },
+      };
+    };
 
   const applyPlanningDisplayForActiveMode = () => {
     const m = (String(planningOptMode) === 'recovery') ? 'recovery' : 'efficiency';
@@ -2263,6 +2469,134 @@ const App = () => {
     }
   };
 
+  const buildWeightedDebugCopyPayload = (pack0) => {
+    const pack = pack0 ?? planningWeightedResult;
+    const rows0 = Array.isArray(pack?.table?.rows) ? pack.table.rows : [];
+    const top30 = rows0.slice(0, 30).map((r) => ({
+      rank: r?.rank ?? null,
+      source: String(r?.source ?? ''),
+      signature: String(r?.signature ?? ''),
+      qualified: Boolean(r?.qualified ?? true),
+      N: r?.N ?? null,
+      B: r?.B ?? null,
+      wb: r?.wb ?? null,
+      ws: r?.ws ?? null,
+      coveragePct: r?.coveragePct ?? null,
+      tonnageTotal: r?.tonnageTotal ?? null,
+      effScore: r?.effScore ?? null,
+      recScore: r?.recScore ?? null,
+      distRawScore: r?._distScore ?? null,
+      distPoints: r?.distPoints ?? null,
+      effNorm: r?.effNorm ?? null,
+      recNorm: r?.recNorm ?? null,
+      distNorm: r?.distNorm ?? null,
+      totalScore: r?.totalScore ?? r?.combinedScore ?? null,
+    }));
+
+    const wUsed = pack?.weightsUsed ?? null;
+    const fmtW = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+
+    return {
+      ts: Date.now(),
+      ui: {
+        mainViewMode,
+        planningOptMode,
+        weightedApplySeq: Number(planningWeightedApplySeq) || 0,
+        efficiencyOk: Boolean(planningEfficiencyResult?.ok),
+        recoveryOk: Boolean(planningRecoveryResult?.ok),
+        hasOdiField: Boolean(odiFieldPack?.field),
+        selected: {
+          sig: String(planningWeightedSelected?.sig ?? ''),
+          source: String(planningWeightedSelected?.source ?? ''),
+        },
+      },
+      inputs: {
+        weightsUi: {
+          efficiency: fmtW(planningOptWeightsRef.current?.efficiency ?? planningOptWeights?.efficiency),
+          recovery: fmtW(planningOptWeightsRef.current?.recovery ?? planningOptWeights?.recovery),
+          disturbance: fmtW(planningOptWeightsRef.current?.disturbance ?? planningOptWeights?.disturbance),
+        },
+        disturbanceTuning: (() => {
+          const p = planningDisturbanceParamsRef.current ?? planningDisturbanceParams ?? {};
+          return {
+            sampleStepM: Number(p?.sampleStepM) || 25,
+            maxSamples: Number(p?.maxSamples) || 4500,
+            exceedThreshold: Number(p?.exceedThreshold) || 0.7,
+            wMean: Number(p?.wMean) || 0.50,
+            wP90: Number(p?.wP90) || 0.35,
+            wExceed: Number(p?.wExceed) || 0.15,
+            outerBufferM: Number.isFinite(Number(p?.outerBufferM)) ? Number(p.outerBufferM) : 30,
+          };
+        })(),
+      },
+      weightedPack: pack ? {
+        ok: Boolean(pack?.ok),
+        message: String(pack?.message ?? ''),
+        best: pack?.best ?? null,
+        weightsInput: pack?.weightsInput ?? null,
+        weightsUsed: {
+          wEff: fmtW(wUsed?.wEff),
+          wRec: fmtW(wUsed?.wRec),
+          wDist: fmtW(wUsed?.wDist),
+        },
+        derived: pack?.derived ?? null,
+        stats: pack?.stats ?? null,
+        backendDebug: pack?.debug ?? null,
+        embeddedResults: {
+          hasEffResult: Boolean(pack?.effResult),
+          hasRecResult: Boolean(pack?.recResult),
+          hasDistResult: Boolean(pack?.distResult),
+        },
+        rowCount: rows0.length,
+      } : null,
+      sources: {
+        efficiencyCandidatesCount: Array.isArray(planningEfficiencyResult?.candidates) ? planningEfficiencyResult.candidates.length : null,
+        recoveryCandidatesCount: Array.isArray(planningRecoveryResult?.candidates) ? planningRecoveryResult.candidates.length : null,
+      },
+      top30,
+    };
+  };
+
+  const openWeightedDebugModal = () => {
+    try {
+      if (!planningWeightedResult) {
+        setPlanningWeightedDebugText(JSON.stringify({ ts: Date.now(), error: '暂无 weighted 结果：请先点击“启动智能采区规划”。' }, null, 2));
+        setPlanningWeightedDebugOpen(true);
+        return;
+      }
+      const blob = buildWeightedDebugCopyPayload(planningWeightedResult);
+      setPlanningWeightedDebugText(JSON.stringify(blob, null, 2));
+    } catch (e) {
+      setPlanningWeightedDebugText(JSON.stringify({ ts: Date.now(), error: String(e?.message ?? e) }, null, 2));
+    }
+    setPlanningWeightedDebugOpen(true);
+  };
+
+  const copyWeightedDebugText = async () => {
+    const text = String(planningWeightedDebugText ?? '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // fallback
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      ta.style.top = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch {
+      // ignore
+    }
+  };
+
   const buildEfficiencyDebugCopyPayload = (result, selectedSig) => {
     const r = result ?? planningEfficiencyResult;
     const req = efficiencyLastRequestRef.current;
@@ -3008,6 +3342,10 @@ const App = () => {
             // ignore
           }
 
+          // 注意：tonBySig2 原先只在 setState updater 内部定义，但外部也需要用它同步回填 weighted 表。
+          // 这里在外层预先声明一个容器，并在 updater 内写入；避免出现 "tonBySig2 is not defined"。
+          let tonBySig2Local = null;
+
           setPlanningEfficiencyResult((prev) => {
             if (!prev?.ok) return prev;
             const prevKey = String(prev?.cacheKey ?? '');
@@ -3165,6 +3503,7 @@ const App = () => {
               const t0 = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
               if (sig0 && Number.isFinite(t0)) tonBySig2[sig0] = t0;
             }
+            tonBySig2Local = tonBySig2;
 
             const rows0 = Array.isArray(prev?.table?.rows) ? prev.table.rows.slice() : [];
             const rows1 = rows0.map((r) => {
@@ -3257,12 +3596,14 @@ const App = () => {
             const tonBySig = (backendOk && resp?.tonnageBySignature && typeof resp.tonnageBySignature === 'object') ? resp.tonnageBySignature : {};
             setPlanningWeightedResult((prevW) => {
               if (!prevW?.ok) return prevW;
+              if (String(prevW?.mode ?? '') === 'smart-weighted') return prevW;
               const rows0 = Array.isArray(prevW?.table?.rows) ? prevW.table.rows.slice() : [];
               const rows1 = rows0.map((r) => {
-                if (String(r?.source) !== 'efficiency') return r;
+                const src0 = String(r?.source ?? '');
+                if (src0 !== 'efficiency' && src0 !== 'disturbance') return r;
                 const sig0 = String(r?.signature ?? '').trim();
                 // weighted 的 efficiency 行使用回填后的 candidates（含兜底）优先
-                const t = Number(tonBySig2?.[sig0] ?? tonBySig?.[sig0]);
+                const t = Number(tonBySig2Local?.[sig0] ?? tonBySig?.[sig0]);
                 if (!Number.isFinite(t)) return r;
                 return { ...(r ?? {}), tonnageTotal: t };
               });
@@ -5298,6 +5639,7 @@ const App = () => {
                   const tonBySig = resp?.tonnageBySignature && typeof resp.tonnageBySignature === 'object' ? resp.tonnageBySignature : {};
                   setPlanningWeightedResult((prevW) => {
                     if (!prevW?.ok) return prevW;
+                    if (String(prevW?.mode ?? '') === 'smart-weighted') return prevW;
                     const rows0 = Array.isArray(prevW?.table?.rows) ? prevW.table.rows.slice() : [];
                     const rows1 = rows0.map((r) => {
                       if (String(r?.source) !== 'recovery') return r;
@@ -5889,11 +6231,16 @@ const App = () => {
     if (planningOptMode !== 'weighted') return;
 
     setPlanningWeightedSelected({ sig, source: src });
+    const wr = planningWeightedResult;
     if (src === 'recovery') {
-      applyRecoveryCandidateBySignature(sig, planningRecoveryResult, { preferPatched: false });
-    } else {
-      applyEfficiencyCandidateBySignature(sig, planningEfficiencyResult);
+      applyRecoveryCandidateBySignature(sig, (wr?.recResult ?? planningRecoveryResult), { preferPatched: false });
+      return;
     }
+    if (src === 'disturbance') {
+      applyEfficiencyCandidateBySignature(sig, (wr?.distResult ?? planningEfficiencyResult));
+      return;
+    }
+    applyEfficiencyCandidateBySignature(sig, (wr?.effResult ?? planningEfficiencyResult));
   };
 
   const handleSelectEfficiencyCandidate = (signature) => {
@@ -6126,58 +6473,8 @@ const App = () => {
     }
 
     if (m === 'weighted') {
-      let needE = true;
-      let needR = true;
-      try {
-        const curE = String(buildEfficiencyCacheKey());
-        const inE = String(efficiencyInFlightKeyRef.current || '');
-        const lastE = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
-        const isComputingSameE = Boolean(planningEfficiencyBusy && inE && curE === inE);
-        const isUpToDateOkE = Boolean(!planningEfficiencyBusy && planningEfficiencyResult?.ok && lastE && curE === lastE);
-        needE = !(isComputingSameE || isUpToDateOkE);
-      } catch {
-        needE = true;
-      }
-
-      try {
-        const curR = String(buildRecoveryCacheKey());
-        const inR = String(recoveryInFlightKeyRef.current || '');
-        const lastR = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
-        const isComputingSameR = Boolean(planningRecoveryBusy && inR && curR === inR);
-        const isUpToDateOkR = Boolean(!planningRecoveryBusy && planningRecoveryResult?.ok && lastR && curR === lastR);
-        needR = !(isComputingSameR || isUpToDateOkR);
-      } catch {
-        needR = true;
-      }
-
-      if (needE) requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
-      if (needR) requestComputeRecovery({ force: true, fast: false, refine: false, background: false });
-
-      // 两侧都不需要重算：直接派生 weighted pack
-      if (!needE && !needR) {
-        try {
-          const distP = planningDisturbanceParamsRef.current ?? {};
-          const w = planningOptWeightsRef.current ?? planningOptWeights;
-          const pack = buildWeightedRankingPack({
-            effResult: planningEfficiencyResult,
-            recResult: planningRecoveryResult,
-            odiPack: odiFieldPack,
-            distParams: {
-              sampleStepM: Number(distP?.sampleStepM) || 25,
-              maxSamples: Number(distP?.maxSamples) || 4500,
-              exceedThreshold: Number(distP?.exceedThreshold) || 0.7,
-              wMean: Number(distP?.wMean) || 0.50,
-              wP90: Number(distP?.wP90) || 0.35,
-              wExceed: Number(distP?.wExceed) || 0.15,
-              outerBufferM: Number.isFinite(Number(distP?.outerBufferM)) ? Number(distP.outerBufferM) : 30,
-            },
-            weights: { efficiency: Number(w?.efficiency) || 0.5, recovery: Number(w?.recovery) || 0.5 },
-          });
-          setPlanningWeightedResult(pack);
-        } catch {
-          // ignore
-        }
-      }
+      // weighted 已改为“仅显式启动才计算”，且候选池由后端统一生成。
+      // 因此这里不再自动触发 efficiency/recovery 计算。
       return;
     }
 
@@ -8788,57 +9085,224 @@ const App = () => {
       // ignore
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainViewMode, planningOptMode, planningEfficiencyResult, odiFieldPack, planningDisturbanceParams]);
+  }, [mainViewMode, planningOptMode, planningEfficiencyResult, odiFieldPack, planningDisturbanceApplySeq]);
 
-  // weighted：当两侧结果 ready 时，派生“扰动优先 + eff+rec 加权”的对比表
+  // weighted：只在“启动智能采区规划”显式应用（planningWeightedApplySeq）时，调用后端生成候选池并返回 weighted pack。
   // 注意：依赖数组会立即读取 odiFieldPack，因此必须放在 odiFieldPack 初始化之后。
   useEffect(() => {
     if (mainViewMode !== 'planning') return;
     if (planningOptMode !== 'weighted') return;
-    const effOk = Boolean(planningEfficiencyResult?.ok);
-    const recOk = Boolean(planningRecoveryResult?.ok);
-    if (!effOk && !recOk) {
-      setPlanningWeightedResult(null);
+
+    const applySeq = Number(planningWeightedApplySeq) || 0;
+    if (!applySeq) return;
+    if (planningWeightedHandledApplySeqRef.current === applySeq) return;
+    planningWeightedHandledApplySeqRef.current = applySeq;
+
+    const boundaryLoopWorldNow = (() => {
+      try {
+        const pts = Array.isArray(boundaryData) ? boundaryData : [];
+        if (pts.length < 3) return [];
+        return computeNonSelfIntersectingLoop(pts, (p) => p?.x, (p) => p?.y);
+      } catch {
+        return [];
+      }
+    })();
+
+    if (!boundaryLoopWorldNow?.length || boundaryLoopWorldNow.length < 3) {
+      try {
+        const bp = weightedBackendProgressRef.current;
+        if (bp?.timer) clearInterval(bp.timer);
+        weightedBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+      } catch {
+        // ignore
+      }
+      setPlanningWeightedBusy(false);
+      setPlanningWeightedProgress(null);
+      setPlanningWeightedResult({ ok: false, mode: 'smart-weighted', message: '采区边界点不足，无法计算。', table: { rows: [] } });
       return;
     }
 
-    try {
-      const distP = planningDisturbanceParamsRef.current ?? {};
-      const w = planningOptWeightsRef.current ?? planningOptWeights;
-      const pack = buildWeightedRankingPack({
-        effResult: planningEfficiencyResult,
-        recResult: planningRecoveryResult,
-        odiPack: odiFieldPack,
-        distParams: {
-          sampleStepM: Number(distP?.sampleStepM) || 25,
-          maxSamples: Number(distP?.maxSamples) || 4500,
-          exceedThreshold: Number(distP?.exceedThreshold) || 0.7,
-          wMean: Number(distP?.wMean) || 0.50,
-          wP90: Number(distP?.wP90) || 0.35,
-          wExceed: Number(distP?.wExceed) || 0.15,
-          outerBufferM: Number.isFinite(Number(distP?.outerBufferM)) ? Number(distP.outerBufferM) : 30,
-        },
-        // 按你的要求：weighted 先只使用 eff+rec 两目标，disturbance 只做“主排序键”
-        weights: { efficiency: Number(w?.efficiency) || 0.5, recovery: Number(w?.recovery) || 0.5 },
-      });
-      setPlanningWeightedResult(pack);
+    const reqSeqNow = (planningWeightedReqSeqRef.current += 1);
 
-      // 默认联动展示 Top1（若用户尚未手动选）
-      const curSig = String(planningWeightedSelected?.sig ?? '').trim();
-      const curSrc = String(planningWeightedSelected?.source ?? '').trim();
-      const hasUserPick = Boolean(curSig && curSrc);
-      if (!hasUserPick && pack?.ok && pack?.best?.signature) {
-        const bestSig = String(pack.best.signature || '');
-        const bestSrc = String(pack.best.source || '');
-        setPlanningWeightedSelected({ sig: bestSig, source: bestSrc });
-        if (bestSrc === 'recovery') applyRecoveryCandidateBySignature(bestSig, planningRecoveryResult, { preferPatched: false });
-        else applyEfficiencyCandidateBySignature(bestSig, planningEfficiencyResult);
-      }
+    const effKey = String(buildEfficiencyCacheKey());
+    const recKey = String(buildRecoveryCacheKey());
+    const distKey = String(buildDisturbanceCacheKey());
+
+    const distP = planningDisturbanceParamsRef.current ?? {};
+    const w = planningOptWeightsRef.current ?? planningOptWeights;
+    const wEffIn = Number(w?.efficiency) || 0;
+    const wRecIn = Number(w?.recovery) || 0;
+    const wDistIn = Number(w?.disturbance) || 0;
+
+    const hasOdi = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
+    const { kind, thickness } = buildEfficiencyTonnagePostContext();
+    const thicknessForBackend = (kind === 'none') ? null : thickness;
+
+    const cacheKeyNow = [
+      'wgt|v2',
+      `E=${effKey}`,
+      `R=${recKey}`,
+      `D=${distKey}`,
+      `axis=${String(planningAdvanceAxis || '')}`,
+      `w=${Number.isFinite(wEffIn) ? wEffIn.toFixed(6) : '0.000000'},${Number.isFinite(wRecIn) ? wRecIn.toFixed(6) : '0.000000'},${Number.isFinite(wDistIn) ? wDistIn.toFixed(6) : '0.000000'}`,
+      `hasOdi=${hasOdi ? 1 : 0}`,
+      `distP=${Number(distP?.sampleStepM) || 25},${Number(distP?.maxSamples) || 4500},${Number(distP?.exceedThreshold) || 0.7},${Number(distP?.wMean) || 0.5},${Number(distP?.wP90) || 0.35},${Number(distP?.wExceed) || 0.15},${Number.isFinite(Number(distP?.outerBufferM)) ? Number(distP.outerBufferM) : 30}`,
+      `thk=${kind || 'none'}`,
+    ].join('|');
+
+    try {
+      planningWeightedInFlightKeyRef.current = cacheKeyNow;
     } catch {
       // ignore
     }
+
+    // 清理上一轮伪进度（避免叠加多个 interval）
+    try {
+      const bp = weightedBackendProgressRef.current;
+      if (bp?.timer) clearInterval(bp.timer);
+      weightedBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+    } catch {
+      // ignore
+    }
+
+    setPlanningWeightedBusy(true);
+    setPlanningWeightedProgress({ percent: 0, phase: '开始' });
+    setPlanningWeightedResult({ ok: false, mode: 'smart-weighted', message: '计算中…', reqSeq: reqSeqNow, cacheKey: cacheKeyNow, table: { rows: [] } });
+
+    // 伪进度：后端目前无 progress 推送，用 elapsedMs 线性映射到 0~95%
+    try {
+      const reqSeqForTimer = reqSeqNow;
+      const cacheKeyForTimer = String(cacheKeyNow);
+      weightedBackendProgressRef.current = {
+        ...weightedBackendProgressRef.current,
+        startedAt: Date.now(),
+        reqSeq: reqSeqForTimer,
+        cacheKey: cacheKeyForTimer,
+      };
+      const t = setInterval(() => {
+        try {
+          const bp = weightedBackendProgressRef.current;
+          if (!bp?.startedAt) return;
+          if (bp.reqSeq !== reqSeqForTimer) return;
+          if (bp.cacheKey && bp.cacheKey !== cacheKeyForTimer) return;
+
+          const elapsedMs = Date.now() - bp.startedAt;
+          const pct = Math.max(0, Math.min(95, Math.round((elapsedMs / 60000) * 95)));
+          setPlanningWeightedProgress((prev) => ({
+            ...(prev ?? {}),
+            percent: pct,
+            phase: '后端计算中',
+          }));
+          setPlanningWeightedResult((prev) => {
+            if (!prev || prev.ok) return prev;
+            if (Number(prev?.reqSeq) !== reqSeqForTimer) return prev;
+            const prevKey = String(prev?.cacheKey ?? '');
+            if (prevKey && prevKey !== cacheKeyForTimer) return prev;
+            const nextMsg = `计算中…（${pct}%，后端计算中）`;
+            const msg0 = String(prev?.message ?? '');
+            return (msg0 === nextMsg) ? prev : { ...prev, message: nextMsg };
+          });
+        } catch {
+          // ignore
+        }
+      }, 250);
+      weightedBackendProgressRef.current = { ...weightedBackendProgressRef.current, timer: t };
+    } catch {
+      // ignore
+    }
+
+    (async () => {
+      let resp = null;
+      try {
+        resp = await smartWeightedCompute({
+          reqSeq: reqSeqNow,
+          cacheKey: cacheKeyNow,
+
+          // IMPORTANT: keep per-mode cache keys so backend can align RNG seeds for strict equivalence when a single weight = 1
+          effCacheKey: effKey,
+          recCacheKey: recKey,
+          distCacheKey: distKey,
+
+          mode: 'smart-weighted',
+          boundaryLoopWorld: cloneJson(boundaryLoopWorldNow),
+          axis: planningAdvanceAxis,
+          fast: false,
+
+          searchProfile: planningParams?.searchProfile ?? null,
+          boundaryPillarMin: Number(planningParams?.boundaryPillarMin) || null,
+          boundaryPillarMax: Number(planningParams?.boundaryPillarMax) || null,
+          coalPillarMin: Number(planningParams?.coalPillarMin) || null,
+          coalPillarMax: Number(planningParams?.coalPillarMax) || null,
+          coalPillarTarget: Number(planningParams?.coalPillarTarget) || null,
+          faceWidthMin: Number(planningParams?.faceWidthMin) || null,
+          faceWidthMax: Number(planningParams?.faceWidthMax) || null,
+          faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
+
+          topK: 60,
+
+          weights: {
+            efficiency: wEffIn,
+            recovery: wRecIn,
+            disturbance: wDistIn,
+          },
+          odiFieldPack: hasOdi ? cloneJson(odiFieldPack) : null,
+          disturbanceParams: {
+            sampleStepM: Number(distP?.sampleStepM) || 25,
+            maxSamples: Number(distP?.maxSamples) || 4500,
+            exceedThreshold: Number(distP?.exceedThreshold) || 0.7,
+            wMean: Number(distP?.wMean) || 0.50,
+            wP90: Number(distP?.wP90) || 0.35,
+            wExceed: Number(distP?.wExceed) || 0.15,
+            outerBufferM: Number.isFinite(Number(distP?.outerBufferM)) ? Number(distP.outerBufferM) : 30,
+          },
+
+          // tonnage / recoveryScore evaluation
+          thickness: thicknessForBackend,
+        });
+      } catch (e) {
+        resp = { ok: false, mode: 'smart-weighted', message: String(e?.message ?? e), failedReason: String(e?.message ?? e), table: { rows: [] } };
+      }
+
+      // 丢弃过期回包
+      if (reqSeqNow !== planningWeightedReqSeqRef.current) return;
+      try {
+        if (String(planningWeightedInFlightKeyRef.current || '') !== String(cacheKeyNow || '')) return;
+      } catch {
+        // ignore
+      }
+
+      // 停止伪进度
+      try {
+        const bp = weightedBackendProgressRef.current;
+        if (bp?.timer) clearInterval(bp.timer);
+        weightedBackendProgressRef.current = { timer: null, startedAt: 0, reqSeq: 0, cacheKey: '' };
+      } catch {
+        // ignore
+      }
+
+      setPlanningWeightedBusy(false);
+      setPlanningWeightedProgress(null);
+      setPlanningWeightedResult(resp);
+
+      // 默认联动展示 Top1（若用户尚未手动选）
+      try {
+        const curSig = String(planningWeightedSelected?.sig ?? '').trim();
+        const curSrc = String(planningWeightedSelected?.source ?? '').trim();
+        const hasUserPick = Boolean(curSig && curSrc);
+        if (!hasUserPick && resp?.ok && resp?.best?.signature) {
+          const bestSig = String(resp.best.signature || '');
+          const bestSrc = String(resp.best.source || '');
+          setPlanningWeightedSelected({ sig: bestSig, source: bestSrc });
+          if (bestSrc === 'recovery') applyRecoveryCandidateBySignature(bestSig, (resp?.recResult ?? planningRecoveryResult), { preferPatched: false });
+          else if (bestSrc === 'disturbance') applyEfficiencyCandidateBySignature(bestSig, (resp?.distResult ?? planningEfficiencyResult));
+          else applyEfficiencyCandidateBySignature(bestSig, (resp?.effResult ?? planningEfficiencyResult));
+        }
+      } catch {
+        // ignore
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainViewMode, planningOptMode, planningEfficiencyResult, planningRecoveryResult, odiFieldPack]);
+  }, [mainViewMode, planningOptMode, boundaryData, planningAdvanceAxis, planningParams, odiFieldPack, planningWeightedApplySeq]);
 
   const odiLevelRanges = useMemo(() => {
     // 默认：ODI 0~1 均分 5 段
@@ -12276,6 +12740,8 @@ const App = () => {
       };
 
       if (planningOptMode === 'weighted') {
+        // 显式应用（不自动）：即使命中缓存、候选不变，也强制刷新 weighted 表
+        setPlanningWeightedApplySeq((s) => (Number(s) || 0) + 1);
         setPlanningPreStartSnapshot({
           planningParams: cloneJson(planningParams),
           planningReverseSolutions: cloneJson(planningReverseSolutions),
@@ -12286,17 +12752,24 @@ const App = () => {
           hasInitializedFaceWidthRange,
         });
 
+        setPlanningWeightedBusy(false);
         setPlanningWeightedResult(null);
         setPlanningWeightedSelected({ sig: '', source: '' });
         setPlanningEfficiencySelectedSig('');
         setPlanningRecoverySelectedSig('');
-        setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), efficiency: true, recovery: true }));
-        requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
-        requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
+
+        // weighted 已改为后端执行：
+        // - 候选池 / Pareto-TopK / 综合得分都由 /planning/smart-weighted/compute 统一返回
+        // - 单权重=1 的严格退化也由后端处理（避免前端触发额外计算造成重复耗时）
+        setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), weighted: true }));
         return;
       }
 
       if (planningOptMode === 'efficiency' || planningOptMode === 'disturbance') {
+        if (planningOptMode === 'disturbance') {
+          // 显式应用（不自动）：即使命中缓存、候选不变，也强制刷新 disturbance 表
+          setPlanningDisturbanceApplySeq((s) => (Number(s) || 0) + 1);
+        }
         startEfficiencyOrDisturbanceCompute();
         return;
       }
@@ -14802,230 +15275,15 @@ const App = () => {
                 onChange={handlePlanningOptModeChange}
                 weights={planningOptWeights}
                 onWeightsChange={setPlanningOptWeights}
+                weightedBusy={planningWeightedBusy}
+                weightedProgress={planningWeightedProgress}
                 dirtyByMode={planningDirtyByMode}
                 dirtyHint="参数已更新，请点击重新计算"
                 defaultCollapsed={false}
                 showSummaryWhenCollapsed={false}
               />
 
-              {(planningOptMode === 'disturbance' || planningOptMode === 'weighted') && (
-                <section className={`mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden transition-all ${planningDisturbanceTuningOpen ? 'h-auto' : 'h-14'}`}>
-                  <div
-                    className="p-4 border-b border-slate-100 flex items-center justify-between cursor-pointer hover:bg-slate-50"
-                    onClick={() => setPlanningDisturbanceTuningOpen((v) => !v)}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') setPlanningDisturbanceTuningOpen((v) => !v);
-                    }}
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">扰动评分参数（可调）</div>
-                      <div className="mt-1 text-[11px] text-slate-500">
-                        说明：仅影响候选“扰动评分/排序”，不改变 ODI 计算与插值。
-                      </div>
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-mono shrink-0">
-                      {planningDisturbanceTuningOpen ? '收起' : '展开'}
-                    </div>
-                  </div>
-
-                  {planningDisturbanceTuningOpen && (
-                    <div className="p-4 grid grid-cols-2 gap-4">
-                      {(() => {
-                        const p = planningDisturbanceParams;
-                        const setNum = (k, v, { min = null, max = null } = {}) => {
-                          const n = Number(v);
-                          if (!Number.isFinite(n)) return;
-                          const clamped = (min != null || max != null)
-                            ? clamp(n, (min ?? -Infinity), (max ?? Infinity))
-                            : n;
-                          setPlanningDisturbanceParams((prev) => ({ ...(prev ?? {}), [k]: clamped }));
-                        };
-
-                        const boundary45 = (() => {
-                          try {
-                            const r = Array.isArray(odiLevelRanges) && odiLevelRanges.length === 5 ? odiLevelRanges : null;
-                            const v = Number(r?.[3]?.hi);
-                            return Number.isFinite(v) ? clamp(v, 0, 1) : null;
-                          } catch {
-                            return null;
-                          }
-                        })();
-
-                        return (
-                          <>
-                            <div className="space-y-2">
-                              <div className="text-[11px] text-slate-600 font-bold">采样步长（m）</div>
-                              <input
-                                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                value={String(p.sampleStepM ?? 25)}
-                                onChange={(e) => setNum('sampleStepM', e.target.value, { min: 5, max: 200 })}
-                              />
-                              <div className="text-[10px] text-slate-400">建议 10~50；越小越慢。</div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <div className="text-[11px] text-slate-600 font-bold">采出区域外扩（m）</div>
-                              <input
-                                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                value={String(p.outerBufferM ?? 30)}
-                                onChange={(e) => setNum('outerBufferM', e.target.value)}
-                              />
-                              <div className="text-[10px] text-slate-400">默认 30；用于体现“超采出范围”覆岩影响（无上限，负数按 0 处理）。</div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <div className="text-[11px] text-slate-600 font-bold">最大采样点数</div>
-                              <input
-                                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                value={String(p.maxSamples ?? 4500)}
-                                onChange={(e) => setNum('maxSamples', e.target.value, { min: 500, max: 20000 })}
-                              />
-                              <div className="text-[10px] text-slate-400">用于控制单候选采样成本，过大可能卡顿。</div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] text-slate-600 font-bold">高扰动阈值（Ⅳ→Ⅴ）</div>
-                                <button
-                                  type="button"
-                                  className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
-                                  onClick={() => {
-                                    if (boundary45 != null) {
-                                      setPlanningDisturbanceParams((prev) => ({ ...(prev ?? {}), exceedThreshold: boundary45 }));
-                                      setPlanningDisturbanceExceedThresholdDraft(String(boundary45));
-                                    }
-                                  }}
-                                  title="一键设置为当前分级的 Ⅳ→Ⅴ 边界"
-                                  disabled={boundary45 == null}
-                                >
-                                  用当前分级
-                                </button>
-                              </div>
-                              <input
-                                className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                inputMode="decimal"
-                                spellCheck={false}
-                                value={planningDisturbanceExceedThresholdDraft != null ? planningDisturbanceExceedThresholdDraft : String(p.exceedThreshold ?? 0.7)}
-                                onChange={(e) => setPlanningDisturbanceExceedThresholdDraft(e.target.value)}
-                                onFocus={() => {
-                                  setPlanningDisturbanceExceedThresholdDraft((prev) => {
-                                    if (prev != null) return prev;
-                                    return String(p.exceedThreshold ?? 0.7);
-                                  });
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    try { e.currentTarget.blur(); } catch { /* ignore */ }
-                                  }
-                                }}
-                                onBlur={() => {
-                                  const raw = String(planningDisturbanceExceedThresholdDraft ?? '').trim();
-                                  const norm = raw
-                                    .replace(/，/g, '.')
-                                    .replace(/。/g, '.')
-                                    .replace(/％/g, '%');
-                                  if (!norm) {
-                                    setPlanningDisturbanceExceedThresholdDraft(null);
-                                    return;
-                                  }
-                                  const n = Number(norm);
-                                  if (!Number.isFinite(n)) {
-                                    setPlanningDisturbanceExceedThresholdDraft(null);
-                                    return;
-                                  }
-                                  const clamped = clamp(n, 0, 1);
-                                  setPlanningDisturbanceParams((prev) => ({ ...(prev ?? {}), exceedThreshold: clamped }));
-                                  setPlanningDisturbanceExceedThresholdDraft(null);
-                                }}
-                              />
-                              <div className="text-[10px] text-slate-400">默认 0.7；你当前口径建议用 Ⅳ→Ⅴ 边界。</div>
-                            </div>
-
-                            <div className="space-y-2">
-                              <div className="text-[11px] text-slate-600 font-bold">权重（mean / P90 / exceed）</div>
-                              <div className="grid grid-cols-3 gap-2">
-                                <input
-                                  className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                  value={String(p.wMean ?? 0.5)}
-                                  onChange={(e) => setNum('wMean', e.target.value, { min: 0, max: 1 })}
-                                  title="mean 权重"
-                                />
-                                <input
-                                  className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                  value={String(p.wP90 ?? 0.35)}
-                                  onChange={(e) => setNum('wP90', e.target.value, { min: 0, max: 1 })}
-                                  title="P90 权重"
-                                />
-                                <input
-                                  className="w-full rounded border border-slate-200 px-2 py-1 text-[12px] font-mono"
-                                  value={String(p.wExceed ?? 0.15)}
-                                  onChange={(e) => setNum('wExceed', e.target.value, { min: 0, max: 1 })}
-                                  title="exceed 权重"
-                                />
-                              </div>
-                              <div className="text-[10px] text-slate-400">提示：三者不要求和为1（会直接按输入计算）。</div>
-                            </div>
-
-                            <div className="col-span-2 flex items-center justify-end gap-2 pt-2">
-                              <button
-                                type="button"
-                                className="px-3 py-1.5 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                                onClick={() => {
-                                  // 仅重排：
-                                  // - disturbance：对当前 efficiencyResult 重新派生 disturbance
-                                  // - weighted：重算 weighted pack（不触发重新求候选）
-                                  try {
-                                    if (planningOptMode === 'disturbance' && planningEfficiencyResult?.ok) {
-                                      const pp = planningDisturbanceParamsRef.current ?? {};
-                                      const pack = buildDisturbanceRankingPackForEfficiencyResult(planningEfficiencyResult, odiFieldPack, {
-                                        sampleStepM: Number(pp?.sampleStepM) || 25,
-                                        maxSamples: Number(pp?.maxSamples) || 4500,
-                                        exceedThreshold: Number(pp?.exceedThreshold) || 0.7,
-                                        wMean: Number(pp?.wMean) || 0.50,
-                                        wP90: Number(pp?.wP90) || 0.35,
-                                        wExceed: Number(pp?.wExceed) || 0.15,
-                                        outerBufferM: Number.isFinite(Number(pp?.outerBufferM)) ? Number(pp.outerBufferM) : 30,
-                                      });
-                                      setPlanningEfficiencyResult((prev) => (prev?.ok ? ({ ...(prev ?? {}), disturbance: pack }) : prev));
-                                    }
-                                    if (planningOptMode === 'weighted') {
-                                      const pp = planningDisturbanceParamsRef.current ?? {};
-                                      const w = planningOptWeightsRef.current ?? planningOptWeights;
-                                      const pack = buildWeightedRankingPack({
-                                        effResult: planningEfficiencyResult,
-                                        recResult: planningRecoveryResult,
-                                        odiPack: odiFieldPack,
-                                        distParams: {
-                                          sampleStepM: Number(pp?.sampleStepM) || 25,
-                                          maxSamples: Number(pp?.maxSamples) || 4500,
-                                          exceedThreshold: Number(pp?.exceedThreshold) || 0.7,
-                                          wMean: Number(pp?.wMean) || 0.50,
-                                          wP90: Number(pp?.wP90) || 0.35,
-                                          wExceed: Number(pp?.wExceed) || 0.15,
-                                          outerBufferM: Number.isFinite(Number(pp?.outerBufferM)) ? Number(pp.outerBufferM) : 30,
-                                        },
-                                        weights: { efficiency: Number(w?.efficiency) || 0.5, recovery: Number(w?.recovery) || 0.5 },
-                                      });
-                                      setPlanningWeightedResult(pack);
-                                    }
-                                  } catch {
-                                    // ignore
-                                  }
-                                }}
-                                title="不重新生成候选，仅更新扰动评分/排序"
-                              >
-                                仅重排（不重算候选）
-                              </button>
-                            </div>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  )}
-                </section>
-              )}
+              {/* 按需求：已移除“扰动评分参数（可调）”板块（保持默认扰动评分参数不变）。 */}
 
               {planningOptMode === 'efficiency' && (
                 <section ref={planningEfficiencySectionRef} className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
@@ -15347,18 +15605,44 @@ const App = () => {
                 <section className="mt-4 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="min-w-0">
-                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">权重自定义候选对比表（扰动优先，其次 eff+rec 加权）</div>
-                      <div className="mt-1 text-[11px] text-slate-500">说明：当前仅使用 eff+rec 两目标权重；扰动仅作为主排序键。</div>
+                      <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">权重自定义候选对比表（三目标加权：效率/回收/扰动）</div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        说明：综合得分 = wEff·effNorm + wRec·recNorm + wDist·distNorm（distNorm 为扰动 rawScore 归一化反向，越大越好）。
+                      </div>
                       {(!odiFieldPack || !odiFieldPack?.field) && (
                         <div className="mt-1 text-[11px] text-amber-700">未检测到 ODI 场：扰动排序将退化（建议先算 ODI）。</div>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      {(planningEfficiencyBusy || planningRecoveryBusy) && (
-                        <div className="text-[10px] text-slate-400 font-mono">计算中…</div>
+                      {(planningEfficiencyBusy || planningRecoveryBusy || planningWeightedBusy) && (
+                        <div className="text-[10px] text-slate-400 font-mono">
+                          {(() => {
+                            if (!planningWeightedBusy) return '计算中…';
+                            const p = planningWeightedProgress;
+                            const pct = Number(p?.percent);
+                            const phase = String(p?.phase ?? '').trim();
+                            const pctTxt = Number.isFinite(pct) ? `${Math.max(0, Math.min(99, Math.round(pct)))}%` : '';
+                            if (!pctTxt && !phase) return '计算中…';
+                            if (pctTxt && phase) return `计算中…（${pctTxt}，${phase}）`;
+                            return `计算中…（${pctTxt || phase}）`;
+                          })()}
+                        </div>
+                      )}
+                      {planningWeightedResult && (
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                          onClick={openWeightedDebugModal}
+                          title="查看 weighted 的归一化区间、权重、Top候选与总分拆解（可复制JSON）"
+                        >
+                          计算过程
+                        </button>
                       )}
                       {planningWeightedResult?.ok && (
                         <>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            权重：wEff={Number(planningWeightedResult?.weightsUsed?.wEff ?? 0).toFixed(2)} / wRec={Number(planningWeightedResult?.weightsUsed?.wRec ?? 0).toFixed(2)} / wDist={Number(planningWeightedResult?.weightsUsed?.wDist ?? 0).toFixed(2)}
+                          </div>
                           <div className="text-[10px] text-slate-400 font-mono">候选：{planningWeightedResult?.table?.rows?.length ?? 0}</div>
                           {Array.isArray(planningWeightedResult?.table?.rows) && planningWeightedResult.table.rows.length > 1 && (
                             <button
@@ -15376,7 +15660,7 @@ const App = () => {
                   </div>
 
                   {!planningWeightedResult && (
-                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”（weighted 会同时计算效率+回收），再查看综合候选表。</div>
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”（weighted 将按权重计算；当单个权重=1 时只计算对应模式），再查看综合候选表。</div>
                   )}
 
                   {planningWeightedResult && !planningWeightedResult.ok && (
@@ -15401,9 +15685,10 @@ const App = () => {
                               <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
                               <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">扰动得分（100）</th>
                               <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">加权得分</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">综合得分</th>
                               <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">effNorm</th>
                               <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">recNorm</th>
+                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">distNorm</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -15420,7 +15705,7 @@ const App = () => {
                                 const sig = String(r?.signature ?? '');
                                 const src = String(r?.source ?? '');
                                 const active = sig && src && sig === planningWeightedSelected?.sig && src === planningWeightedSelected?.source;
-                                const srcLabel = (src === 'recovery') ? '回收' : '效率';
+                                const srcLabel = (src === 'recovery') ? '回收' : (src === 'disturbance' ? '扰动' : '效率');
                                 return (
                                   <tr
                                     key={`${src}::${sig}`}
@@ -15455,9 +15740,10 @@ const App = () => {
                                       {fmtPts(r?.distPoints)}
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWanT(r?.tonnageTotal)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.combinedScore)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.totalScore ?? r?.combinedScore)}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.effNorm)}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.recNorm)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.distNorm)}</td>
                                   </tr>
                                 );
                               });
@@ -15876,6 +16162,49 @@ const App = () => {
                       />
                       <div className="mt-2 text-[11px] text-slate-500">
                         提示：把这段JSON完整复制发我即可（包含请求参数、回包 stats、Top10 候选关键字段、扰动派生参数与摘要）。
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {planningWeightedDebugOpen && (
+                <div
+                  className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4"
+                  role="dialog"
+                  aria-modal="true"
+                  onMouseDown={(e) => {
+                    if (e.target === e.currentTarget) setPlanningWeightedDebugOpen(false);
+                  }}
+                >
+                  <div className="w-full max-w-3xl bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden">
+                    <div className="p-3 border-b border-slate-100 flex items-center justify-between">
+                      <div className="text-[12px] font-bold text-slate-700">权重自定义（weighted）计算过程（可复制）</div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                          onClick={copyWeightedDebugText}
+                        >
+                          复制JSON
+                        </button>
+                        <button
+                          type="button"
+                          className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                          onClick={() => setPlanningWeightedDebugOpen(false)}
+                        >
+                          关闭
+                        </button>
+                      </div>
+                    </div>
+                    <div className="p-3">
+                      <textarea
+                        className="w-full h-[70vh] font-mono text-[11px] rounded border border-slate-200 p-2 text-slate-700"
+                        readOnly
+                        value={String(planningWeightedDebugText ?? '')}
+                      />
+                      <div className="mt-2 text-[11px] text-slate-500">
+                        提示：把这段JSON完整复制发我即可（包含三目标权重、归一化区间、Top候选与总分拆解）。
                       </div>
                     </div>
                   </div>

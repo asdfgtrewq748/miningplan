@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
@@ -16,8 +17,46 @@ from shapely.geometry import GeometryCollection, Point, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 router = APIRouter()
+
+
+# -----------------------------
+# Weighted backend cache (in-memory)
+# -----------------------------
+
+
+_WEIGHTED_CACHE: Dict[str, Dict[str, Any]] = {}
+_WEIGHTED_CACHE_MAX = 32
+
+
+def _cache_get(cache_key: str) -> Optional[Dict[str, Any]]:
+    k = str(cache_key or '')
+    if not k:
+        return None
+    it = _WEIGHTED_CACHE.get(k)
+    if not isinstance(it, dict):
+        return None
+    return it
+
+
+def _cache_put(cache_key: str, value: Dict[str, Any]) -> None:
+    k = str(cache_key or '')
+    if not k:
+        return
+    try:
+        if len(_WEIGHTED_CACHE) >= _WEIGHTED_CACHE_MAX:
+            # naive eviction: drop oldest by ts
+            items = list(_WEIGHTED_CACHE.items())
+            items.sort(key=lambda kv: float(kv[1].get('_ts', 0.0)))
+            for kk, _ in items[: max(1, len(items) - _WEIGHTED_CACHE_MAX + 1)]:
+                _WEIGHTED_CACHE.pop(kk, None)
+        value['_ts'] = time.time()
+        _WEIGHTED_CACHE[k] = value
+    except Exception:
+        # ignore cache errors
+        return
 
 
 # -----------------------------
@@ -110,6 +149,426 @@ class SmartResourceTonnageResponse(BaseModel):
 
     # optional debug payload (ignored by frontend unless used)
     debugInfo: Optional[Dict[str, Any]] = None
+
+
+class SmartWeightedWeights(BaseModel):
+    efficiency: Optional[float] = 0.0
+    recovery: Optional[float] = 0.0
+    disturbance: Optional[float] = 0.0
+
+
+class SmartWeightedDisturbanceParams(BaseModel):
+    sampleStepM: Optional[float] = 25
+    maxSamples: Optional[int] = 4500
+    exceedThreshold: Optional[float] = 0.7
+    wMean: Optional[float] = 0.50
+    wP90: Optional[float] = 0.35
+    wExceed: Optional[float] = 0.15
+    outerBufferM: Optional[float] = 30
+
+
+class SmartWeightedComputeRequest(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+    reqSeq: Optional[int] = None
+    cacheKey: Optional[str] = None
+    mode: Optional[str] = 'smart-weighted'
+
+    # Optional: pass through per-mode cache keys so weighted can:
+    # - keep deterministic seeds aligned with existing modes (strict equivalence when a single weight = 1)
+    # - still use `cacheKey` as the weighted-output cache key
+    effCacheKey: Optional[str] = None
+    recCacheKey: Optional[str] = None
+    distCacheKey: Optional[str] = None
+
+    boundaryLoopWorld: Any = None
+    axis: Optional[str] = None
+
+    # knobs
+    fast: Optional[bool] = False
+    searchProfile: Optional[str] = None
+    boundaryPillarMin: Optional[float] = None
+    boundaryPillarMax: Optional[float] = None
+    coalPillarMin: Optional[float] = None
+    coalPillarMax: Optional[float] = None
+    coalPillarTarget: Optional[float] = None
+    faceWidthMin: Optional[float] = None
+    faceWidthMax: Optional[float] = None
+    faceAdvanceMax: Optional[float] = None
+
+    topK: Optional[int] = 60
+
+    weights: Optional[SmartWeightedWeights] = None
+    odiFieldPack: Optional[ThicknessFieldPack] = None
+    disturbanceParams: Optional[SmartWeightedDisturbanceParams] = None
+
+    # passthrough for worker
+    input: Optional[Dict[str, Any]] = None
+
+
+def _norm_weights_2(a: float, b: float) -> Tuple[float, float]:
+    aa = max(0.0, float(a or 0.0))
+    bb = max(0.0, float(b or 0.0))
+    s = aa + bb
+    if s <= 1e-12:
+        return 0.5, 0.5
+    return aa / s, bb / s
+
+
+def _norm_weights_3(a: float, b: float, c: float) -> Tuple[float, float, float]:
+    aa = max(0.0, float(a or 0.0))
+    bb = max(0.0, float(b or 0.0))
+    cc = max(0.0, float(c or 0.0))
+    s = aa + bb + cc
+    if s <= 1e-12:
+        return 1 / 3, 1 / 3, 1 / 3
+    return aa / s, bb / s, cc / s
+
+
+def _clamp01(x: float) -> float:
+    try:
+        v = float(x)
+    except Exception:
+        return 0.0
+    if not math.isfinite(v):
+        return 0.0
+    return max(0.0, min(1.0, v))
+
+
+def _minmax(values: List[Optional[float]]) -> Tuple[float, float]:
+    a = [float(v) for v in values if v is not None and math.isfinite(float(v))]
+    if not a:
+        return 0.0, 1.0
+    mn = min(a)
+    mx = max(a)
+    if not (mx > mn):
+        return mn, mn + 1.0
+    return mn, mx
+
+
+def _norm_minmax(v: Optional[float], mn: float, mx: float) -> float:
+    if v is None:
+        return 0.0
+    x = float(v)
+    if not math.isfinite(x):
+        return 0.0
+    den = (mx - mn) if (mx - mn) != 0 else 1.0
+    return _clamp01((x - mn) / den)
+
+
+def _quantile(values: List[float], q: float) -> Optional[float]:
+    a = [float(v) for v in values if math.isfinite(float(v))]
+    if not a:
+        return None
+    a.sort()
+    qq = max(0.0, min(1.0, float(q)))
+    pos = (len(a) - 1) * qq
+    lo = int(math.floor(pos))
+    hi = min(len(a) - 1, lo + 1)
+    t = pos - lo
+    v = a[lo] * (1 - t) + a[hi] * t
+    return float(v) if math.isfinite(float(v)) else None
+
+
+def _sample_field_at_world_xy(field_pack: ThicknessFieldPack, world_x: float, world_y: float) -> Optional[float]:
+    fp = field_pack
+    if not fp or not isinstance(fp.field, list) or not fp.gridW or not fp.gridH:
+        return None
+    b = fp.bounds or {}
+    try:
+        min_x = float(b.get('minX'))
+        max_x = float(b.get('maxX'))
+        min_y = float(b.get('minY'))
+        max_y = float(b.get('maxY'))
+    except Exception:
+        return None
+    if not (math.isfinite(min_x) and math.isfinite(max_x) and math.isfinite(min_y) and math.isfinite(max_y)):
+        return None
+    if not (math.isfinite(float(world_x)) and math.isfinite(float(world_y))):
+        return None
+    width = float(fp.width or 320)
+    height = float(fp.height or 220)
+    pad = float(b.get('pad') if b.get('pad') is not None else 14)
+    # 与前端 sampleFieldAtWorldXY 对齐：先映射到屏幕坐标再做双线性插值
+    sx = pad + ((float(world_x) - min_x) / ((max_x - min_x) or 1.0)) * (width - pad * 2.0)
+    sy = pad + (1.0 - (float(world_y) - min_y) / ((max_y - min_y) or 1.0)) * (height - pad * 2.0)
+
+    grid = fp.field
+    grid_h = len(grid)
+    grid_w = len(grid[0]) if grid_h and isinstance(grid[0], list) else 0
+    if grid_w < 2 or grid_h < 2:
+        return None
+
+    gx = max(0.0, min(grid_w - 1.0, (sx / width) * (grid_w - 1.0)))
+    gy = max(0.0, min(grid_h - 1.0, (sy / height) * (grid_h - 1.0)))
+    x0 = int(math.floor(gx))
+    y0 = int(math.floor(gy))
+    x1 = min(grid_w - 1, x0 + 1)
+    y1 = min(grid_h - 1, y0 + 1)
+    tx = gx - x0
+    ty = gy - y0
+    try:
+        v00 = float(grid[y0][x0])
+        v10 = float(grid[y0][x1])
+        v01 = float(grid[y1][x0])
+        v11 = float(grid[y1][x1])
+    except Exception:
+        return None
+    if not all(math.isfinite(v) for v in [v00, v10, v01, v11]):
+        return None
+    v0 = v00 * (1 - tx) + v10 * tx
+    v1 = v01 * (1 - tx) + v11 * tx
+    v = v0 * (1 - ty) + v1 * ty
+    return float(v) if math.isfinite(v) else None
+
+
+def _loops_to_polygon_union(loops: Any) -> Optional[BaseGeometry]:
+    arr = loops if isinstance(loops, list) else []
+    polys: List[Polygon] = []
+    for loop in arr:
+        pts = loop if isinstance(loop, list) else []
+        coords = []
+        for p in pts:
+            if not isinstance(p, dict):
+                continue
+            x = p.get('x')
+            y = p.get('y')
+            try:
+                fx = float(x)
+                fy = float(y)
+            except Exception:
+                continue
+            if not (math.isfinite(fx) and math.isfinite(fy)):
+                continue
+            coords.append((fx, fy))
+        if len(coords) < 3:
+            continue
+        if coords[0] != coords[-1]:
+            coords.append(coords[0])
+        try:
+            poly = Polygon(coords)
+            if not poly.is_valid:
+                poly = poly.buffer(0)
+            if poly and not poly.is_empty and poly.area > 0:
+                polys.append(orient(poly))
+        except Exception:
+            continue
+    if not polys:
+        return None
+    try:
+        out = unary_union(polys)
+        return out if out and not out.is_empty else None
+    except Exception:
+        return polys[0]
+
+
+def _candidate_loops_any(c: Dict[str, Any]) -> List[Any]:
+    r = c.get('render') if isinstance(c, dict) else None
+    if isinstance(r, dict):
+        for k in ['clippedFacesLoops', 'plannedWorkfaceLoopsWorld', 'facesLoops', 'plannedUnionLoopsWorld', 'unionLoops']:
+            v = r.get(k)
+            if isinstance(v, list) and v:
+                return v
+    v2 = c.get('plannedWorkfaceLoopsWorld') if isinstance(c, dict) else None
+    if isinstance(v2, list) and v2:
+        return v2
+    return []
+
+
+def _compute_disturbance_for_candidates(
+    candidates: List[Dict[str, Any]],
+    odi_pack: ThicknessFieldPack,
+    params: SmartWeightedDisturbanceParams,
+) -> Dict[str, Dict[str, Any]]:
+    # returns bySignature: { mean, p90, exceedRatio, score, points, sampleCount }
+    out: Dict[str, Dict[str, Any]] = {}
+    if not odi_pack or not odi_pack.field or not odi_pack.gridW or not odi_pack.gridH:
+        return out
+
+    step = max(1.0, float(params.sampleStepM or 25.0))
+    max_samples = max(100, int(params.maxSamples or 4500))
+    thr = float(params.exceedThreshold or 0.7)
+    w_mean = float(params.wMean or 0.50)
+    w_p90 = float(params.wP90 or 0.35)
+    w_exc = float(params.wExceed or 0.15)
+
+    raw_scores: List[float] = []
+    tmp_raw: Dict[str, float] = {}
+    tmp_stats: Dict[str, Dict[str, Any]] = {}
+
+    for c in candidates:
+        sig = str(c.get('signature') or '')
+        if not sig:
+            continue
+        loops = _candidate_loops_any(c)
+        geom = _loops_to_polygon_union(loops)
+        if geom is None or geom.is_empty:
+            continue
+        try:
+            minx, miny, maxx, maxy = geom.bounds
+        except Exception:
+            continue
+
+        # grid sampling inside polygon
+        pg = prep(geom)
+        xs: List[float] = []
+        ys: List[float] = []
+        # keep deterministic order
+        x = minx
+        while x <= maxx + 1e-9:
+            y = miny
+            while y <= maxy + 1e-9:
+                xs.append(x)
+                ys.append(y)
+                if len(xs) >= max_samples * 3:
+                    break
+                y += step
+            if len(xs) >= max_samples * 3:
+                break
+            x += step
+
+        vals: List[float] = []
+        for x0, y0 in zip(xs, ys):
+            try:
+                if not pg.contains(Point(x0, y0)):
+                    continue
+            except Exception:
+                continue
+            v = _sample_field_at_world_xy(odi_pack, float(x0), float(y0))
+            if v is None or not math.isfinite(float(v)):
+                continue
+            vals.append(float(v))
+            if len(vals) >= max_samples:
+                break
+
+        if not vals:
+            continue
+        vals_sorted = sorted(vals)
+        mean = float(sum(vals_sorted) / len(vals_sorted))
+        p90 = _quantile(vals_sorted, 0.90)
+        p90v = float(p90) if p90 is not None else mean
+        exc = float(sum(1 for v in vals_sorted if v >= thr) / len(vals_sorted))
+        score = w_mean * mean + w_p90 * p90v + w_exc * exc
+        if math.isfinite(score):
+            raw_scores.append(score)
+            tmp_raw[sig] = score
+            tmp_stats[sig] = {
+                'mean': mean,
+                'p90': p90v,
+                'exceedRatio': exc,
+                'sampleCount': len(vals_sorted),
+            }
+
+    if not raw_scores:
+        return out
+
+    lo = _quantile(raw_scores, 0.05)
+    hi = _quantile(raw_scores, 0.95)
+    best = 95.0
+    worst = 60.0
+    span = (float(hi) - float(lo)) if (lo is not None and hi is not None) else 0.0
+
+    for sig, score in tmp_raw.items():
+        if span > 1e-12 and lo is not None and hi is not None:
+            t = _clamp01((score - float(lo)) / span)
+            points = best - t * (best - worst)
+        else:
+            points = best
+        st = tmp_stats.get(sig) or {}
+        out[sig] = {
+            'mean': st.get('mean'),
+            'p90': st.get('p90'),
+            'exceedRatio': st.get('exceedRatio'),
+            'sampleCount': st.get('sampleCount'),
+            'score': score,
+            'points': max(0.0, min(100.0, float(points))),
+            'calib': {'lo': lo, 'hi': hi, 'best': best, 'worst': worst},
+        }
+    return out
+
+
+def _dominates(a: List[float], b: List[float]) -> bool:
+    # maximize all objectives
+    better_or_equal = True
+    strictly_better = False
+    for x, y in zip(a, b):
+        if x < y:
+            better_or_equal = False
+            break
+        if x > y:
+            strictly_better = True
+    return better_or_equal and strictly_better
+
+
+def _fast_non_dominated_sort(objs: List[List[float]]) -> List[List[int]]:
+    n = len(objs)
+    S: List[List[int]] = [[] for _ in range(n)]
+    n_dom = [0 for _ in range(n)]
+    fronts: List[List[int]] = [[]]
+    for p in range(n):
+        for q in range(n):
+            if p == q:
+                continue
+            if _dominates(objs[p], objs[q]):
+                S[p].append(q)
+            elif _dominates(objs[q], objs[p]):
+                n_dom[p] += 1
+        if n_dom[p] == 0:
+            fronts[0].append(p)
+
+    i = 0
+    while i < len(fronts) and fronts[i]:
+        next_front: List[int] = []
+        for p in fronts[i]:
+            for q in S[p]:
+                n_dom[q] -= 1
+                if n_dom[q] == 0:
+                    next_front.append(q)
+        i += 1
+        if next_front:
+            fronts.append(next_front)
+    return fronts
+
+
+def _crowding_distance(front: List[int], objs: List[List[float]]) -> Dict[int, float]:
+    if not front:
+        return {}
+    m = len(objs[0]) if objs else 0
+    dist = {i: 0.0 for i in front}
+    for k in range(m):
+        front_sorted = sorted(front, key=lambda idx: float(objs[idx][k]))
+        dist[front_sorted[0]] = float('inf')
+        dist[front_sorted[-1]] = float('inf')
+        vals = [float(objs[idx][k]) for idx in front_sorted]
+        mn = min(vals)
+        mx = max(vals)
+        span = (mx - mn) if (mx - mn) > 1e-12 else 1.0
+        for j in range(1, len(front_sorted) - 1):
+            prev_v = float(objs[front_sorted[j - 1]][k])
+            next_v = float(objs[front_sorted[j + 1]][k])
+            dist[front_sorted[j]] += (next_v - prev_v) / span
+    return dist
+
+
+def _select_topk_nsga(objs: List[List[float]], k: int) -> Tuple[List[int], List[int], Dict[int, float]]:
+    fronts = _fast_non_dominated_sort(objs)
+    selected: List[int] = []
+    rank = [-1 for _ in range(len(objs))]
+    crowd: Dict[int, float] = {}
+    for r, front in enumerate(fronts):
+        for idx in front:
+            rank[idx] = r + 1
+        cd = _crowding_distance(front, objs)
+        crowd.update(cd)
+        if len(selected) + len(front) <= k:
+            selected.extend(front)
+        else:
+            # fill the remaining by crowding distance desc
+            remain = k - len(selected)
+            front2 = sorted(front, key=lambda idx: float(cd.get(idx, 0.0)), reverse=True)
+            selected.extend(front2[: max(0, remain)])
+            break
+    return selected, rank, crowd
 
 
 class SmartEfficiencyComputeRequest(BaseModel):
@@ -740,6 +1199,445 @@ def smart_resource_compute(req: SmartResourceComputeRequest) -> Dict[str, Any]:
             'candidates': [],
             'attemptSummary': {'attemptedCombos': 0, 'feasibleCombos': 0, 'failTypes': {'BACKEND_EXCEPTION': 1}},
         }
+
+
+@router.post('/planning/smart-weighted/compute')
+def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
+    """Backend execution of weighted (multi-objective) candidate generation.
+
+    Strategy:
+    - Reuse existing node harness for smart-efficiency / smart-resource to generate diverse feasible candidates.
+    - Evaluate recoveryScore for all candidates via backend tonnage/scoring helper.
+    - If ODI field provided: compute disturbance distPoints (0..100, higher is better).
+    - Select TopK via non-dominated sorting + crowding distance (NSGA-II selection).
+    - Return a frontend-compatible weighted pack.
+
+    Note: Does NOT change the behavior of existing three modes; weighted is an additional endpoint.
+    """
+
+    t0 = time.time()
+    payload = req.model_dump(exclude_none=True)
+    cache_key = str(payload.get('cacheKey') or '')
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            out = dict(cached)
+            out.setdefault('stats', {})
+            if isinstance(out['stats'], dict):
+                out['stats'].setdefault('cacheHit', True)
+            return out
+
+    axis = payload.get('axis')
+    boundary = payload.get('boundaryLoopWorld')
+
+    w_in = payload.get('weights') or {}
+    w_eff_in = float(w_in.get('efficiency') or 0.0)
+    w_rec_in = float(w_in.get('recovery') or 0.0)
+    w_dis_in = float(w_in.get('disturbance') or 0.0)
+
+    odi_pack_raw = payload.get('odiFieldPack')
+    odi_pack = None
+    try:
+        odi_pack = ThicknessFieldPack.model_validate(odi_pack_raw) if odi_pack_raw is not None else None
+    except Exception:
+        odi_pack = None
+    has_odi = bool(odi_pack and odi_pack.field and odi_pack.gridW and odi_pack.gridH)
+
+    # Per-mode cache keys (for deterministic seeding aligned with existing modes)
+    eff_base_key = str(payload.get('effCacheKey') or '')
+    rec_base_key = str(payload.get('recCacheKey') or '')
+    dist_base_key = str(payload.get('distCacheKey') or '')
+
+    # Fallback: if not provided, use weighted cacheKey (still deterministic, but won't be "strictly equal" to mode cacheKey)
+    if not eff_base_key:
+        eff_base_key = str(cache_key or '')
+    if not rec_base_key:
+        rec_base_key = str(cache_key or '')
+    if not dist_base_key:
+        dist_base_key = str(cache_key or '')
+
+    # weights used: if no ODI, force wDist=0 and renormalize 2 objectives
+    if has_odi:
+        w_eff, w_rec, w_dis = _norm_weights_3(w_eff_in, w_rec_in, w_dis_in)
+    else:
+        w_eff, w_rec = _norm_weights_2(w_eff_in, w_rec_in)
+        w_dis = 0.0
+
+    # Strict single-objective equivalence (when user explicitly sets one weight to 1 and others to 0)
+    tol = 1e-12
+    single_mode: Optional[str] = None
+    try:
+        if (w_eff_in > 1 - 1e-9) and (abs(w_rec_in) <= tol) and (abs(w_dis_in) <= tol):
+            single_mode = 'efficiency'
+        elif (w_rec_in > 1 - 1e-9) and (abs(w_eff_in) <= tol) and (abs(w_dis_in) <= tol):
+            single_mode = 'recovery'
+        elif (w_dis_in > 1 - 1e-9) and (abs(w_eff_in) <= tol) and (abs(w_rec_in) <= tol):
+            single_mode = 'disturbance'
+    except Exception:
+        single_mode = None
+
+    # run efficiency + recovery via node harness (same as existing backend compute)
+    base_knobs = {
+        'boundaryLoopWorld': boundary,
+        'axis': axis,
+        'fast': bool(payload.get('fast') or False),
+        'searchProfile': payload.get('searchProfile'),
+        'boundaryPillarMin': payload.get('boundaryPillarMin'),
+        'boundaryPillarMax': payload.get('boundaryPillarMax'),
+        'coalPillarMin': payload.get('coalPillarMin'),
+        'coalPillarMax': payload.get('coalPillarMax'),
+        'coalPillarTarget': payload.get('coalPillarTarget'),
+        'faceWidthMin': payload.get('faceWidthMin'),
+        'faceWidthMax': payload.get('faceWidthMax'),
+        'faceAdvanceMax': payload.get('faceAdvanceMax'),
+    }
+
+    # include weights in cacheKey salt for diversity (worker rng depends on cacheKey)
+    salt = f"|wEff={w_eff:.6f}|wRec={w_rec:.6f}|wDis={w_dis:.6f}|hasOdi={1 if has_odi else 0}"
+    cache_eff = eff_base_key + '|weighted|effgen' + salt
+    cache_rec = rec_base_key + '|weighted|recgen' + salt
+    cache_dist = dist_base_key + '|weighted|distgen' + salt
+
+    # For strict single-objective: do NOT salt/merge. Use original per-mode cache key.
+    if single_mode == 'efficiency':
+        cache_eff = eff_base_key
+    elif single_mode == 'recovery':
+        cache_rec = rec_base_key
+    elif single_mode == 'disturbance':
+        cache_dist = dist_base_key
+
+    eff_payload = {
+        'mode': 'smart-efficiency',
+        'reqSeq': payload.get('reqSeq'),
+        'cacheKey': cache_eff,
+        **base_knobs,
+        'input': {'mode': 'efficiency'},
+    }
+    rec_payload = {
+        'mode': 'smart-resource',
+        'reqSeq': payload.get('reqSeq'),
+        'cacheKey': cache_rec,
+        **base_knobs,
+        'input': {'mode': 'recovery'},
+    }
+
+    eff_res: Optional[Dict[str, Any]] = None
+    rec_res: Optional[Dict[str, Any]] = None
+    dist_res: Optional[Dict[str, Any]] = None
+
+    if single_mode == 'efficiency':
+        eff_res = _run_node_smart_efficiency(eff_payload)
+    elif single_mode == 'recovery':
+        rec_res = _run_node_smart_resource(rec_payload)
+    elif single_mode == 'disturbance':
+        if not has_odi:
+            out = {
+                'ok': False,
+                'mode': 'smart-weighted',
+                'cacheKey': cache_key,
+                'message': '未检测到 ODI 场：无法执行 disturbance-only（wDist=1）',
+                'failedReason': 'NO_ODI_FIELD',
+                'best': {'signature': '', 'source': ''},
+                'table': {'rows': []},
+                'weightsInput': {'efficiency': w_eff_in, 'recovery': w_rec_in, 'disturbance': w_dis_in},
+                'weightsUsed': {'wEff': 0.0, 'wRec': 0.0, 'wDist': 1.0},
+                'hasOdiField': False,
+                'stats': {'backendElapsedMs': (time.time() - t0) * 1000, 'cacheHit': False},
+            }
+            if cache_key:
+                _cache_put(cache_key, out)
+            return out
+        dist_payload = {
+            'mode': 'smart-efficiency',
+            'reqSeq': payload.get('reqSeq'),
+            'cacheKey': cache_dist,
+            **base_knobs,
+            'input': {'mode': 'disturbance'},
+        }
+        dist_res = _run_node_smart_efficiency(dist_payload)
+    else:
+        eff_res = _run_node_smart_efficiency(eff_payload)
+        rec_res = _run_node_smart_resource(rec_payload)
+
+    # optional: add a diversity run using disturbance search (only if ODI present and wDist>0)
+    if single_mode is None and has_odi and w_dis > 1e-9:
+        dist_payload = {
+            'mode': 'smart-efficiency',
+            'reqSeq': payload.get('reqSeq'),
+            'cacheKey': cache_dist,
+            **base_knobs,
+            'input': {'mode': 'disturbance'},
+        }
+        try:
+            dist_res = _run_node_smart_efficiency(dist_payload)
+        except Exception:
+            dist_res = None
+
+    eff_cands = eff_res.get('candidates') if isinstance(eff_res, dict) else []
+    rec_cands = rec_res.get('candidates') if isinstance(rec_res, dict) else []
+    dist_cands = dist_res.get('candidates') if isinstance(dist_res, dict) else []
+    eff_cands = eff_cands if isinstance(eff_cands, list) else []
+    rec_cands = rec_cands if isinstance(rec_cands, list) else []
+    dist_cands = dist_cands if isinstance(dist_cands, list) else []
+
+    # build combined pool (hard constraint: qualified only)
+    pool: List[Dict[str, Any]] = []
+    def _push(source: str, c: Any) -> None:
+        if not isinstance(c, dict):
+            return
+        sig = str(c.get('signature') or '').strip()
+        if not sig:
+            return
+        q = c.get('qualified')
+        if q is False:
+            return
+        item = dict(c)
+        item['_source'] = source
+        pool.append(item)
+
+    for c in eff_cands:
+        _push('efficiency', c)
+    for c in rec_cands:
+        _push('recovery', c)
+    for c in dist_cands:
+        _push('disturbance', c)
+
+    if not pool:
+        out = {
+            'ok': False,
+            'mode': 'smart-weighted',
+            'cacheKey': cache_key,
+            'message': '暂无候选：效率/回收候选均为空或全部不合格。',
+            'failedReason': 'NO_CANDIDATES',
+            'best': {'signature': '', 'source': ''},
+            'table': {'rows': []},
+            'weightsUsed': {'wEff': w_eff, 'wRec': w_rec, 'wDist': w_dis},
+            'stats': {'backendElapsedMs': (time.time() - t0) * 1000, 'cacheHit': False},
+        }
+        if cache_key:
+            _cache_put(cache_key, out)
+        return out
+
+    # Recovery score for all candidates (prefer recoveryScore): use existing tonnage endpoint logic.
+    # Build minimal candidate inputs.
+    ton_req = {
+        'cacheKey': (cache_key or 'wgt|') + '|tonnage' + salt,
+        'candidates': [],
+        'thickness': payload.get('thickness') or None,
+        'topK': int(payload.get('topK') or 60),
+        'debug': False,
+    }
+    for c in pool:
+        sig = str(c.get('signature') or '')
+        rr = c.get('render') if isinstance(c.get('render'), dict) else None
+        ton_req['candidates'].append({
+            'signature': sig,
+            'qualified': True,
+            'coverageRatio': c.get('coverageRatio') or (c.get('metrics') or {}).get('coverageRatio'),
+            'coverageRatioEff': c.get('coverageRatioEff') or (c.get('metrics') or {}).get('coverageRatioEff'),
+            'N': c.get('N') or (c.get('metrics') or {}).get('faceCount'),
+            'lenCV': c.get('lenCV') or (c.get('metrics') or {}).get('lenCV'),
+            'axis': c.get('axis') or (c.get('metrics') or {}).get('axis'),
+            'thetaDeg': c.get('thetaDeg') or (c.get('metrics') or {}).get('thetaDeg'),
+            'ws': c.get('ws') or (c.get('genes') or {}).get('ws') or (c.get('metrics') or {}).get('ws'),
+            'render': rr,
+        })
+
+    ton_resp = smart_resource_tonnage(SmartResourceTonnageRequest.model_validate(ton_req))
+    rec_by_sig = ton_resp.recoveryScoreBySignature if isinstance(ton_resp, SmartResourceTonnageResponse) else {}
+    ton_by_sig = ton_resp.tonnageBySignature if isinstance(ton_resp, SmartResourceTonnageResponse) else {}
+
+    # disturbance distPoints
+    dist_params_raw = payload.get('disturbanceParams') or {}
+    try:
+        dist_params = SmartWeightedDisturbanceParams.model_validate(dist_params_raw)
+    except Exception:
+        dist_params = SmartWeightedDisturbanceParams()
+    dist_by_sig: Dict[str, Dict[str, Any]] = {}
+    if has_odi:
+        dist_by_sig = _compute_disturbance_for_candidates(pool, odi_pack, dist_params)
+
+    # build objective vectors
+    items: List[Dict[str, Any]] = []
+    for c in pool:
+        sig = str(c.get('signature') or '')
+        src = str(c.get('_source') or 'efficiency')
+        metrics = c.get('metrics') if isinstance(c.get('metrics'), dict) else {}
+        eff_score = c.get('efficiencyScore')
+        if eff_score is None:
+            eff_score = metrics.get('efficiencyScore')
+        try:
+            eff_score_f = float(eff_score) if eff_score is not None else 0.0
+        except Exception:
+            eff_score_f = 0.0
+
+        rec_score = rec_by_sig.get(sig)
+        if rec_score is None:
+            # fallback to worker-provided recoveryScore if present
+            rs2 = c.get('recoveryScore')
+            if rs2 is None and isinstance(metrics, dict):
+                rs2 = metrics.get('recoveryScore')
+            try:
+                rec_score = float(rs2) if rs2 is not None else None
+            except Exception:
+                rec_score = None
+        try:
+            rec_score_f = float(rec_score) if rec_score is not None else 0.0
+        except Exception:
+            rec_score_f = 0.0
+
+        ton_total = ton_by_sig.get(sig)
+        if ton_total is None:
+            tt2 = c.get('tonnageTotal')
+            if tt2 is None and isinstance(metrics, dict):
+                tt2 = metrics.get('tonnageTotal')
+            try:
+                ton_total = float(tt2) if tt2 is not None else None
+            except Exception:
+                ton_total = None
+
+        dd = dist_by_sig.get(sig) or {}
+        dist_points = dd.get('points') if has_odi else None
+        dist_score = dd.get('score') if has_odi else None
+
+        items.append({
+            'signature': sig,
+            'source': src,
+            'qualified': True,
+            'effScore': eff_score_f,
+            'recScore': rec_score_f,
+            'tonnageTotal': ton_total,
+            'distPoints': dist_points,
+            'distScore': dist_score,
+            'distMean': dd.get('mean') if has_odi else None,
+            'distP90': dd.get('p90') if has_odi else None,
+            'distExceedPct': (float(dd.get('exceedRatio')) * 100.0) if (has_odi and dd.get('exceedRatio') is not None) else None,
+            # for debug
+            '_distCalib': dd.get('calib') if has_odi else None,
+            # geometry/display metrics
+            'N': c.get('N') or metrics.get('faceCount'),
+            'B': c.get('B') or metrics.get('B'),
+            'wb': c.get('wb') or (c.get('genes') or {}).get('wb') or metrics.get('wb'),
+            'ws': c.get('ws') or (c.get('genes') or {}).get('ws') or metrics.get('ws'),
+            'coveragePct': (float(c.get('coverageRatio') or metrics.get('coverageRatio') or 0.0) * 100.0) if (c.get('coverageRatio') is not None or (isinstance(metrics, dict) and metrics.get('coverageRatio') is not None)) else None,
+        })
+
+    # Non-dominated selection (TopK)
+    k = max(10, int(payload.get('topK') or 60))
+    obj_vecs: List[List[float]] = []
+    for it in items:
+        if has_odi:
+            dp = it.get('distPoints')
+            obj_vecs.append([float(it.get('effScore') or 0.0), float(it.get('recScore') or 0.0), float(dp or 0.0)])
+        else:
+            obj_vecs.append([float(it.get('effScore') or 0.0), float(it.get('recScore') or 0.0)])
+
+    selected_idx, pareto_rank, crowd = _select_topk_nsga(obj_vecs, k)
+    selected_items = [items[i] for i in selected_idx]
+
+    # Normalize for combined score (min-max on selected set for stability)
+    eff_mn, eff_mx = _minmax([it.get('effScore') for it in selected_items])
+    rec_mn, rec_mx = _minmax([it.get('recScore') for it in selected_items])
+    # distPoints already 0..100
+    for i, it in enumerate(selected_items):
+        it['paretoRank'] = pareto_rank[selected_idx[i]] if selected_idx[i] < len(pareto_rank) else None
+        it['crowding'] = crowd.get(selected_idx[i], 0.0)
+        it['effNorm'] = _norm_minmax(it.get('effScore'), eff_mn, eff_mx)
+        it['recNorm'] = _norm_minmax(it.get('recScore'), rec_mn, rec_mx)
+        it['distNorm'] = _clamp01((float(it.get('distPoints') or 0.0)) / 100.0) if has_odi else 0.0
+        it['totalScore'] = w_eff * it['effNorm'] + w_rec * it['recNorm'] + w_dis * it['distNorm']
+        it['combinedScore'] = it['totalScore']
+
+    # Final ordering: combined score desc, then pareto rank asc, then crowding desc, then signature asc
+    selected_items.sort(
+        key=lambda it: (
+            -float(it.get('totalScore') or 0.0),
+            int(it.get('paretoRank') or 10**9),
+            -float(it.get('crowding') or 0.0),
+            str(it.get('signature') or ''),
+        )
+    )
+    rows = []
+    for rnk, it in enumerate(selected_items, start=1):
+        rows.append({
+            'rank': rnk,
+            'signature': it.get('signature'),
+            'source': it.get('source'),
+            'qualified': True,
+            'N': it.get('N'),
+            'B': it.get('B'),
+            'wb': it.get('wb'),
+            'ws': it.get('ws'),
+            'coveragePct': it.get('coveragePct'),
+            'tonnageTotal': it.get('tonnageTotal'),
+            'effScore': it.get('effScore'),
+            'recScore': it.get('recScore'),
+            'effNorm': it.get('effNorm'),
+            'recNorm': it.get('recNorm'),
+            'distNorm': it.get('distNorm'),
+            'distPoints': it.get('distPoints'),
+            'distScore': it.get('distScore'),
+            'distMean': it.get('distMean'),
+            'distP90': it.get('distP90'),
+            'distExceedPct': it.get('distExceedPct'),
+            'totalScore': it.get('totalScore'),
+            'combinedScore': it.get('combinedScore'),
+            # debug
+            'paretoRank': it.get('paretoRank'),
+            'crowding': it.get('crowding'),
+        })
+
+    best = rows[0] if rows else None
+    out = {
+        'ok': True,
+        'mode': 'smart-weighted',
+        'cacheKey': cache_key,
+        'best': {'signature': str(best.get('signature') or ''), 'source': str(best.get('source') or '')} if best else {'signature': '', 'source': ''},
+        'table': {'rows': rows},
+        'weightsInput': {'efficiency': w_eff_in, 'recovery': w_rec_in, 'disturbance': w_dis_in},
+        'weightsUsed': {'wEff': w_eff, 'wRec': w_rec, 'wDist': w_dis},
+        'hasOdiField': has_odi,
+        'derived': {
+            'hasDist': has_odi,
+            'ranges': {
+                'eff': {'min': eff_mn, 'max': eff_mx},
+                'rec': {'min': rec_mn, 'max': rec_mx},
+            },
+            'distParams': dist_params.model_dump(exclude_none=True),
+            'selection': {
+                'method': 'nsga2-select',
+                'topK': k,
+            },
+        },
+        'sources': {
+            'efficiencyCandidatesCount': len(eff_cands),
+            'recoveryCandidatesCount': len(rec_cands),
+            'disturbanceCandidatesCount': len(dist_cands) if dist_res is not None else 0,
+        },
+        'debug': {
+            'salt': salt,
+            'cacheEff': cache_eff,
+            'cacheRec': cache_rec,
+            'cacheDist': cache_dist,
+            'tonnage': {
+                'hasThickness': bool(getattr(ton_resp, 'hasThickness', False)),
+                'fallbackMode': str(getattr(ton_resp, 'fallbackMode', '')),
+                'elapsedMs': float(getattr(ton_resp, 'elapsedMs', 0.0)),
+            },
+        },
+        # embed raw results so frontend weighted 模式可联动显示（不影响前三个模式）
+        'effResult': eff_res,
+        'recResult': rec_res,
+        'distResult': dist_res,
+        'stats': {
+            'backendElapsedMs': (time.time() - t0) * 1000,
+            'cacheHit': False,
+        },
+    }
+
+    if cache_key:
+        _cache_put(cache_key, out)
+    return out
 
 
 # -----------------------------

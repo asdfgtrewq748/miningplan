@@ -158,6 +158,18 @@ export async function smartResourceCompute(payload) {
   return apiPostWithTimeout('/planning/smart-resource/compute', payload ?? {}, 120000);
 }
 
+// ==================== 规划优化（Smart Weighted）====================
+
+/**
+ * smart-weighted：后端执行（三目标候选池 + Pareto/TopK + 权重综合得分）
+ * - 输入：采区边界 + 参数 + 权重 +（可选）ODI 场
+ * - 输出：weighted pack（table.rows / best / debug ...）
+ */
+export async function smartWeightedCompute(payload) {
+  // weighted 可能更重：放宽超时
+  return apiPostWithTimeout('/planning/smart-weighted/compute', payload ?? {}, 180000);
+}
+
 /**
  * POST请求封装（FormData，用于文件上传）
  */

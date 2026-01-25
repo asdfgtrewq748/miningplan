@@ -42,6 +42,8 @@ export default function MultiObjectivePlanPanel({
   onChange,
   weights,
   onWeightsChange,
+  weightedBusy = false,
+  weightedProgress = null,
   dirtyByMode,
   dirtyHint = '参数已更新，请点击重新计算',
   defaultCollapsed = false,
@@ -286,11 +288,27 @@ export default function MultiObjectivePlanPanel({
               ref={weightPanelRef}
               className="mt-4 p-6 bg-orange-50/40 rounded-[2rem] border border-orange-100 shadow-inner"
             >
-              <div className="flex items-center gap-2 mb-8">
-                <Sliders size={16} className="text-orange-600" />
-                <span className="text-[13px] font-black text-orange-800 uppercase tracking-widest">
-                  核心权重指标动态调节
-                </span>
+              <div className="flex items-center justify-between gap-3 mb-8">
+                <div className="flex items-center gap-2">
+                  <Sliders size={16} className="text-orange-600" />
+                  <span className="text-[13px] font-black text-orange-800 uppercase tracking-widest">
+                    核心权重指标动态调节
+                  </span>
+                </div>
+
+                {Boolean(weightedBusy) && (
+                  <div className="text-[11px] text-orange-700 font-mono whitespace-nowrap">
+                    {(() => {
+                      const p = weightedProgress;
+                      const pct = Number(p?.percent);
+                      const phase = String(p?.phase ?? '').trim();
+                      const pctTxt = Number.isFinite(pct) ? `${Math.max(0, Math.min(99, Math.round(pct)))}%` : '';
+                      if (!pctTxt && !phase) return '计算中…';
+                      if (pctTxt && phase) return `计算中…（${pctTxt}，${phase}）`;
+                      return `计算中…（${pctTxt || phase}）`;
+                    })()}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-3 gap-8">
