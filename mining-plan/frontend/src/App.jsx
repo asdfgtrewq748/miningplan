@@ -102,7 +102,7 @@ const App = () => {
   const workerError = (...args) => { if (DEBUG_WORKER_LOG) console.error(...args); };
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
-  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning'
+  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning' | 'cocontrol'
   const [miningHeight, setMiningHeight] = useState(4.5);
   const [stepLength, setStepLength] = useState(25);
   const [richFactor, setRichFactor] = useState(1.1);
@@ -2841,9 +2841,39 @@ const App = () => {
 
   const applyEfficiencyCandidateBySignature = (sig, result) => {
     const r = result ?? planningEfficiencyResult;
-    if (!r?.candidates?.length) return;
-    const picked = r.candidates.find((c) => String(c?.signature) === String(sig)) ?? r.candidates[0];
-    if (!picked) return;
+    const sig0 = String(sig ?? '').trim();
+    if (!sig0) return;
+
+    // 兜底：某些派生表/旧快照可能存在 signature 与 candidates 不一致。
+    // 这种情况下至少保证 UI 选中态可切换（radio/高亮），并避免错误回退到 Top1。
+    if (!r?.candidates?.length) {
+      setPlanningEfficiencySelectedSig(sig0);
+      return;
+    }
+
+    const findCandBySig = (s) => r.candidates.find((c) => String(c?.signature ?? '').trim() === String(s ?? '').trim()) ?? null;
+
+    let picked = findCandBySig(sig0);
+    if (!picked) {
+      const resolveSigFromRows = (rows0) => {
+        const rows = Array.isArray(rows0) ? rows0 : [];
+        for (const row of rows) {
+          const k = String(row?.key ?? '').trim();
+          if (k && k === sig0) {
+            const s = String(row?.signature ?? '').trim();
+            if (s) return s;
+          }
+        }
+        return '';
+      };
+      const resolvedSig = resolveSigFromRows(r?.table?.rows) || resolveSigFromRows(r?.disturbance?.table?.rows);
+      picked = resolvedSig ? findCandBySig(resolvedSig) : null;
+    }
+
+    if (!picked) {
+      setPlanningEfficiencySelectedSig(sig0);
+      return;
+    }
 
     const isActive = (mainViewMode === 'planning' && (planningOptMode === 'efficiency' || planningOptMode === 'disturbance' || planningOptMode === 'weighted'));
     const useClippedForDisplay = (mainViewMode === 'planning' && planningOptMode === 'weighted');
@@ -2864,7 +2894,7 @@ const App = () => {
       }
     }
 
-    setPlanningEfficiencySelectedSig(String(picked.signature ?? ''));
+    setPlanningEfficiencySelectedSig(String(picked.signature ?? '').trim());
     const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
     if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
@@ -6288,7 +6318,7 @@ const App = () => {
   };
 
   const handleSelectEfficiencyCandidate = (signature) => {
-    const sig = String(signature ?? '');
+    const sig = String(signature ?? '').trim();
     if (!sig) return;
 
     // 选择真实候选时退出“预览模式”（4A）
@@ -6373,6 +6403,12 @@ const App = () => {
   const planningOptPanelAnchorRef = useRef(null);
   const planningEfficiencySectionRef = useRef(null);
   const planningRecoverySectionRef = useRef(null);
+  const cocontrolSectionRef = useRef(null);
+
+  const openCocontrolPanel = () => {
+    setActiveAccordion((prev) => (prev.includes('cocontrol') ? prev : [...prev, 'cocontrol']));
+    setTimeout(() => cocontrolSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
+  };
 
   const handleToggleEfficiencyCandidates = () => {
     const rows0 = planningEfficiencyResult?.table?.rows ?? [];
@@ -6581,6 +6617,7 @@ const App = () => {
     setMainViewMode(mode);
     if (mode === 'planning') openRightPanelOnly('planning');
     if (mode === 'odi') openRightPanelOnly('summary');
+    if (mode === 'cocontrol') openRightPanelOnly('cocontrol');
   };
 
   // 智能规划：进入“采区规划图”后自动把“多目标规划优化方案”滚动到可视区
@@ -6648,8 +6685,20 @@ const App = () => {
   const [upwardSelectedFaceNo, setUpwardSelectedFaceNo] = useState(1);
   const [upwardRoofCavingAngleByFace, setUpwardRoofCavingAngleByFace] = useState([]);
   const [paramExtractionResult, setParamExtractionResult] = useState(null);
+  // 协同调控：需要同时保留 geo-only 与 full 两套提取结果（当前 paramExtractionResult 会被覆盖）
+  const [paramExtractionGeoResult, setParamExtractionGeoResult] = useState(null);
+  const [paramExtractionFullResult, setParamExtractionFullResult] = useState(null);
   // ODI 计算结果（分级响应 + 中间主图）
   const [odiResult, setOdiResult] = useState(null);
+
+  // 协同调控：统一标尺（P5/P95 联合分位数）与 ODI* 输出开关
+  const [coControlEnabled, setCoControlEnabled] = useState(false);
+  const [coScaleConfig, setCoScaleConfig] = useState({ qLo: 0.05, qHi: 0.95, includeGeoOnly: true });
+  const [coStageN, setCoStageN] = useState(5);
+  const [coStageK, setCoStageK] = useState(1);
+  const [coScalePack, setCoScalePack] = useState(null); // { qLo,qHi,qLowValue,qHighValue,includeGeoOnly,counts,computedAt,scaleKey,keptFactorKeys }
+  const [coOdiUnionResult, setCoOdiUnionResult] = useState(null); // { computedAt, points, geoPoints, fullPoints }
+  const [coScaleDirty, setCoScaleDirty] = useState(true);
   // 主图：图层叠加 & 交互分析
   const [showLayerDrillholes, setShowLayerDrillholes] = useState(true);
   const [showLayerEvalPoints, setShowLayerEvalPoints] = useState(true);
@@ -6743,10 +6792,12 @@ const App = () => {
   const [showMainMapLabelsMenu, setShowMainMapLabelsMenu] = useState(false);
 
   // 工程快照（仅输入）：保存/导入
-  const PROJECT_SNAPSHOT_SCHEMA = 1;
+  const PROJECT_SNAPSHOT_SCHEMA = 3;
   const [showProjectSaveModal, setShowProjectSaveModal] = useState(false);
   const [projectSaveScope, setProjectSaveScope] = useState('all'); // 'current' | 'all'
   const [projectSaveName, setProjectSaveName] = useState('');
+  const [projectSaveIncludeWorkfacePlan, setProjectSaveIncludeWorkfacePlan] = useState(false);
+  const [projectSaveIncludePlanningResults, setProjectSaveIncludePlanningResults] = useState(true);
 
   const [showProjectImportModal, setShowProjectImportModal] = useState(false);
   const [projectImportScope, setProjectImportScope] = useState('all'); // 'current' | 'all'
@@ -9032,8 +9083,18 @@ const App = () => {
       return clamp(n, 0, 1);
     };
 
-    const pts = (odiResult?.points ?? [])
-      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.odiNorm));
+    const useUnified = Boolean(coControlEnabled && coScalePack && coOdiUnionResult);
+    const basePts = useUnified
+      ? (coOdiUnionResult?.fullPoints?.length ? coOdiUnionResult.fullPoints : (coOdiUnionResult?.points ?? []))
+      : (odiResult?.points ?? []);
+
+    const pts = basePts
+      .map((p) => {
+        if (!useUnified) return p;
+        const odiStar = applyUnifiedScaleToOdiRaw(p?.odi, coScalePack);
+        return { ...p, odiStar };
+      })
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(useUnified ? p.odiStar : p.odiNorm));
     if (pts.length < 3) return null;
 
     // ODI 的插值域：与主图边界一致（就地计算，避免引用后置 const 引发 TDZ 黑屏）
@@ -9058,7 +9119,7 @@ const App = () => {
     })();
 
     const samples = pts
-      .map((p) => ({ id: String(p.id ?? ''), x: p.x, y: p.y, value: clamp01(p.odiNorm) }))
+      .map((p) => ({ id: String(p.id ?? ''), x: p.x, y: p.y, value: clamp01(useUnified ? p.odiStar : p.odiNorm) }))
       .filter((s) => Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.value));
     if (samples.length < 3) return null;
 
@@ -9078,7 +9139,7 @@ const App = () => {
     if (!pack?.field) return pack;
     // ODI 归一化场固定 0~1，避免色带/分级受 min/max 波动影响
     return { ...pack, min: 0, max: 1 };
-  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses]);
+  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult]);
 
   // disturbance 模式：只要已有 efficiency 结果，就应确保派生 disturbance pack。
   // 兜底场景：compute 回包时用户切走了模式/视图，导致 handleComputeResult 内 wantDisturbance=false。
@@ -9849,7 +9910,7 @@ const App = () => {
     return `${yyyy}${MM}${dd}_${hh}${mm}`;
   };
 
-  const buildProjectInputSnapshot = (scope) => {
+  const buildProjectInputSnapshot = (scope, options = {}) => {
     const currentScenario = snapshotCurrentScenarioParams();
     const scenarioParamsMerged = cloneJson(scenarioParamsById ?? {});
     scenarioParamsMerged[activeTab] = cloneJson(currentScenario);
@@ -9857,6 +9918,46 @@ const App = () => {
     const pickedScenarioParams = (String(scope) === 'current')
       ? { [activeTab]: cloneJson(scenarioParamsMerged[activeTab] ?? scenarioDefaultsById?.[activeTab]) }
       : scenarioParamsMerged;
+
+    const includeWorkfacePlan = Boolean(options?.includeWorkfacePlan);
+    const includePlanningResults = Boolean(options?.includePlanningResults);
+    const workfacePlan = includeWorkfacePlan
+      ? {
+          savedAt: new Date().toISOString(),
+          planningAdvanceAxis,
+          plannedWorkfaceLoopsWorld: cloneJson(plannedWorkfaceLoopsWorld),
+          plannedWorkfaceUnionLoopsWorld: cloneJson(plannedWorkfaceUnionLoopsWorld),
+          showPlanningBoundaryOverlay: Boolean(showPlanningBoundaryOverlay),
+          hasInitializedFaceWidthRange: Boolean(hasInitializedFaceWidthRange),
+        }
+      : undefined;
+
+    const planningResults = includePlanningResults
+      ? {
+          savedAt: new Date().toISOString(),
+          planningOptMode: String(planningOptMode ?? 'efficiency'),
+          planningOptWeights: cloneJson(planningOptWeights),
+          planningComputeEnabledByMode: cloneJson(planningComputeEnabledByMode),
+          planningDirtyByMode: cloneJson(planningDirtyByMode),
+
+          efficiency: {
+            result: planningEfficiencyResult ? cloneJson(planningEfficiencyResult) : null,
+            cacheKey: String(planningEfficiencyCacheKey ?? ''),
+            selectedSig: String(planningEfficiencySelectedSig ?? ''),
+            showAllCandidates: Boolean(planningEfficiencyShowAllCandidates),
+          },
+          recovery: {
+            result: planningRecoveryResult ? cloneJson(planningRecoveryResult) : null,
+            selectedSig: String(planningRecoverySelectedSig ?? ''),
+            showAllCandidates: Boolean(planningRecoveryShowAllCandidates),
+          },
+          weighted: {
+            result: planningWeightedResult ? cloneJson(planningWeightedResult) : null,
+            selected: cloneJson(planningWeightedSelected),
+            showAllCandidates: Boolean(planningWeightedShowAllCandidates),
+          },
+        }
+      : undefined;
 
     return {
       kind: 'mining-plan-project-input-snapshot',
@@ -9866,13 +9967,18 @@ const App = () => {
       planningParams: cloneJson(planningParams),
       planningDisturbanceParams: cloneJson(planningDisturbanceParams),
       planningAdvanceAxis,
+      workfacePlan,
+      planningResults,
       scenarioParamsById: cloneJson(pickedScenarioParams),
     };
   };
 
   const handleProjectSaveConfirm = () => {
     try {
-      const snap = buildProjectInputSnapshot(projectSaveScope);
+      const snap = buildProjectInputSnapshot(projectSaveScope, {
+        includeWorkfacePlan: projectSaveIncludeWorkfacePlan,
+        includePlanningResults: projectSaveIncludePlanningResults,
+      });
       const rawName = String(projectSaveName || '').trim();
       const baseName = rawName || `工程快照_${formatNowStamp()}`;
       const filename = `${baseName}.miningplan.json`;
@@ -9938,6 +10044,17 @@ const App = () => {
         : cloneJson(planningDisturbanceParams);
       const nextAdvanceAxis = String(parsed?.planningAdvanceAxis ?? planningAdvanceAxis) === 'y' ? 'y' : 'x';
 
+      const importedPlan = (parsed?.workfacePlan && typeof parsed.workfacePlan === 'object') ? parsed.workfacePlan : null;
+      const importedLoops = importedPlan?.plannedWorkfaceLoopsWorld;
+      const importedUnionLoops = importedPlan?.plannedWorkfaceUnionLoopsWorld;
+      const hasPlan = Boolean(Array.isArray(importedLoops) && importedLoops.length);
+      const nextPlannedLoops = hasPlan ? cloneJson(importedLoops) : [];
+      const nextPlannedUnionLoops = (Array.isArray(importedUnionLoops) && importedUnionLoops.length) ? cloneJson(importedUnionLoops) : [];
+      const nextShowPlanningOverlay = Boolean(importedPlan?.showPlanningBoundaryOverlay ?? hasPlan);
+      const nextHasInitFaceWidthRange = Boolean(importedPlan?.hasInitializedFaceWidthRange ?? false);
+
+      const importedPlanningResults = (parsed?.planningResults && typeof parsed.planningResults === 'object') ? parsed.planningResults : null;
+
       const current = getAppSnapshot();
       const nextSnap = {
         ...current,
@@ -9947,17 +10064,75 @@ const App = () => {
         planningAdvanceAxis: nextAdvanceAxis,
         scenarioParamsById: cloneJson(nextScenarioParamsById),
 
-        // 明确：不导入智能规划产物，导入后需要用户重新点按钮计算。
+        // 默认仍按“仅输入快照”导入；若文件包含 workfacePlan，则一并恢复工作面布置方案。
         planningReverseSolutions: [],
-        plannedWorkfaceLoopsWorld: [],
-        plannedWorkfaceUnionLoopsWorld: [],
-        showPlanningBoundaryOverlay: false,
-        hasInitializedFaceWidthRange: false,
+        plannedWorkfaceLoopsWorld: nextPlannedLoops,
+        plannedWorkfaceUnionLoopsWorld: nextPlannedUnionLoops,
+        showPlanningBoundaryOverlay: nextShowPlanningOverlay,
+        hasInitializedFaceWidthRange: nextHasInitFaceWidthRange,
         planningPreStartSnapshot: null,
       };
 
       pushHistoryFromCurrentTo(nextSnap);
       applyAppSnapshot(nextSnap);
+
+      // 若工程文件包含“智能规划候选结果”，则一并恢复（避免导入后必须重新计算）。
+      try {
+        if (importedPlanningResults) {
+          setPlanningOptMode(String(importedPlanningResults?.planningOptMode ?? planningOptMode ?? 'efficiency'));
+          if (importedPlanningResults?.planningOptWeights) setPlanningOptWeights(cloneJson(importedPlanningResults.planningOptWeights));
+
+          // 复位 busy/progress（导入的是结果快照，不应显示“计算中”）
+          setPlanningEfficiencyBusy(false);
+          setPlanningEfficiencyProgress(null);
+          setPlanningRecoveryBusy(false);
+          setPlanningRecoveryProgress(null);
+          setPlanningWeightedBusy(false);
+          setPlanningWeightedProgress(null);
+
+          if (importedPlanningResults?.planningComputeEnabledByMode) {
+            setPlanningComputeEnabledByMode(cloneJson(importedPlanningResults.planningComputeEnabledByMode));
+          } else {
+            // 兜底：只要有结果，就视为“已启动过计算”
+            const hasEff = Boolean(importedPlanningResults?.efficiency?.result?.ok);
+            const hasRec = Boolean(importedPlanningResults?.recovery?.result?.ok);
+            const hasDist = Boolean(importedPlanningResults?.efficiency?.result?.disturbance?.ok);
+            setPlanningComputeEnabledByMode({ efficiency: hasEff, recovery: hasRec, disturbance: hasDist });
+          }
+
+          if (importedPlanningResults?.planningDirtyByMode) {
+            setPlanningDirtyByMode(cloneJson(importedPlanningResults.planningDirtyByMode));
+          } else {
+            setPlanningDirtyByMode({ efficiency: false, recovery: false, disturbance: false });
+          }
+
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.efficiency ?? {}, 'result')) {
+            setPlanningEfficiencyResult(importedPlanningResults.efficiency.result ? cloneJson(importedPlanningResults.efficiency.result) : null);
+          }
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.recovery ?? {}, 'result')) {
+            setPlanningRecoveryResult(importedPlanningResults.recovery.result ? cloneJson(importedPlanningResults.recovery.result) : null);
+          }
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.weighted ?? {}, 'result')) {
+            setPlanningWeightedResult(importedPlanningResults.weighted.result ? cloneJson(importedPlanningResults.weighted.result) : null);
+          }
+
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.efficiency ?? {}, 'cacheKey')) {
+            setPlanningEfficiencyCacheKey(String(importedPlanningResults?.efficiency?.cacheKey ?? ''));
+            planningEfficiencyCacheKeyRef.current = String(importedPlanningResults?.efficiency?.cacheKey ?? '');
+          }
+
+          setPlanningEfficiencySelectedSig(String(importedPlanningResults?.efficiency?.selectedSig ?? ''));
+          setPlanningRecoverySelectedSig(String(importedPlanningResults?.recovery?.selectedSig ?? ''));
+          if (importedPlanningResults?.weighted?.selected) setPlanningWeightedSelected(cloneJson(importedPlanningResults.weighted.selected));
+
+          setPlanningEfficiencyShowAllCandidates(Boolean(importedPlanningResults?.efficiency?.showAllCandidates));
+          setPlanningRecoveryShowAllCandidates(Boolean(importedPlanningResults?.recovery?.showAllCandidates));
+          setPlanningWeightedShowAllCandidates(Boolean(importedPlanningResults?.weighted?.showAllCandidates));
+        }
+      } catch {
+        // ignore
+      }
+
       setMeasureEnabled(false);
       setMeasurePoints([]);
 
@@ -11119,8 +11294,7 @@ const App = () => {
       };
     });
 
-    setLastParamExtractionMode('geo');
-    setParamExtractionResult({
+    const next = {
       doneAt: stamp,
       points: extracted,
       geology: {
@@ -11135,7 +11309,15 @@ const App = () => {
         generatedEvalCount: extracted.filter((p) => p.cat !== 'geo').length,
         evalPointCount: extracted.length,
       },
-    });
+    };
+
+    setLastParamExtractionMode('geo');
+    setParamExtractionResult(next);
+    setParamExtractionGeoResult(next);
+    // 输入变化：统一标尺与 ODI* 结果作废
+    setCoScalePack(null);
+    setCoOdiUnionResult(null);
+    setCoScaleDirty(true);
     setOdiResult(null);
   };
 
@@ -11399,7 +11581,7 @@ const App = () => {
 
     const allPoints = [...geologyEvalPoints, ...miningAtEvalPoints];
 
-    setParamExtractionResult({
+    const next = {
       doneAt: stamp,
       points: allPoints,
       geology: {
@@ -11414,7 +11596,13 @@ const App = () => {
         generatedEvalCount: miningAtEvalPoints.length,
         evalPointCount: allPoints.length,
       },
-    });
+    };
+    setParamExtractionResult(next);
+    setParamExtractionFullResult(next);
+    // 输入变化：统一标尺与 ODI* 结果作废
+    setCoScalePack(null);
+    setCoOdiUnionResult(null);
+    setCoScaleDirty(true);
     setLastParamExtractionMode('full');
     setOdiResult(null);
   };
@@ -11579,6 +11767,147 @@ const App = () => {
       points: pointsNorm,
     };
   };
+
+  const quantileSorted = (sorted, q) => {
+    const xs = (sorted ?? []).filter((v) => Number.isFinite(v));
+    const n = xs.length;
+    if (!n) return null;
+    const qq = clamp(Number(q), 0, 1);
+    if (n === 1) return xs[0];
+    const idx = (n - 1) * qq;
+    const lo = Math.floor(idx);
+    const hi = Math.min(n - 1, lo + 1);
+    const t = idx - lo;
+    const a = xs[lo];
+    const b = xs[hi];
+    const v = a + (b - a) * t;
+    return Number.isFinite(v) ? v : null;
+  };
+
+  const quantile = (values, q) => {
+    const xs = (values ?? []).filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
+    return quantileSorted(xs, q);
+  };
+
+  function applyUnifiedScaleToOdiRaw(odiRaw, scalePack) {
+    const v = Number(odiRaw);
+    if (!Number.isFinite(v)) return null;
+    const qLoV = Number(scalePack?.qLowValue);
+    const qHiV = Number(scalePack?.qHighValue);
+    if (!Number.isFinite(qLoV) || !Number.isFinite(qHiV)) return null;
+    if (qHiV <= qLoV) return 0.5;
+    const clipped = clamp(v, qLoV, qHiV);
+    const mapped = (clipped - qLoV) / (qHiV - qLoV);
+    return clamp(mapped, 0, 1);
+  }
+
+  const buildCoScaleKey = () => {
+    const qLo = Number(coScaleConfig?.qLo);
+    const qHi = Number(coScaleConfig?.qHi);
+    const incGeo = Boolean(coScaleConfig?.includeGeoOnly);
+    const geoAt = String(paramExtractionGeoResult?.doneAt ?? '');
+    const fullAt = String(paramExtractionFullResult?.doneAt ?? '');
+    const w = scenarioWeights ?? {};
+    const ws = `wd=${Number(w.wd)};wo=${Number(w.wo)};wf=${Number(w.wf)}`;
+    return [
+      `tab=${String(activeTab ?? '')}`,
+      `coal=${String(selectedCoal ?? '')}`,
+      `geoAt=${geoAt}`,
+      `fullAt=${fullAt}`,
+      `q=${Number.isFinite(qLo) ? qLo : 'NA'}-${Number.isFinite(qHi) ? qHi : 'NA'}`,
+      `incGeo=${incGeo ? 1 : 0}`,
+      ws,
+    ].join('|');
+  };
+
+  const handleComputeUnifiedOdiScale = () => {
+    const geoPts0 = paramExtractionGeoResult?.points ?? [];
+    const fullPts0 = paramExtractionFullResult?.points ?? [];
+
+    if (!geoPts0.length) {
+      window.alert('协同调控：请先完成“地质插值提取”，以纳入地质-only 点。');
+      return;
+    }
+    if (!fullPts0.length) {
+      window.alert('协同调控：请先完成“全参插值提取”，以纳入方案点并生成最终 ODI 图。');
+      return;
+    }
+
+    const qLo = clamp(Number(coScaleConfig?.qLo), 0, 1);
+    const qHi = clamp(Number(coScaleConfig?.qHi), 0, 1);
+    if (!Number.isFinite(qLo) || !Number.isFinite(qHi) || qHi <= qLo) {
+      window.alert('协同调控：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
+      return;
+    }
+
+    const includeGeoOnly = Boolean(coScaleConfig?.includeGeoOnly);
+    const unionPts = [
+      ...(includeGeoOnly ? geoPts0.map((p) => ({ ...p, __coSource: 'geo' })) : []),
+      ...fullPts0.map((p) => ({ ...p, __coSource: 'full' })),
+    ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    const computed = computeOdi(unionPts, scenarioWeights);
+    if (!computed || computed?.error) {
+      window.alert(computed?.error || '协同调控：ODI 计算失败。');
+      return;
+    }
+
+    const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
+    if (raw.length < 3) {
+      window.alert('协同调控：可用于计算标尺的 ODI_raw 样本不足。');
+      return;
+    }
+
+    const qLowValue = quantile(raw, qLo);
+    const qHighValue = quantile(raw, qHi);
+    if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue)) {
+      window.alert('协同调控：分位数计算失败。');
+      return;
+    }
+
+    const stamp = new Date().toISOString();
+    const scaleKey = buildCoScaleKey();
+    const pack = {
+      computedAt: stamp,
+      scaleKey,
+      qLo,
+      qHi,
+      qLowValue,
+      qHighValue,
+      includeGeoOnly,
+      counts: {
+        geo: includeGeoOnly ? geoPts0.length : 0,
+        full: fullPts0.length,
+        union: unionPts.length,
+        validOdiRaw: raw.length,
+      },
+      keptFactorKeys: computed.keptFactorKeys ?? [],
+    };
+
+    const ptsAll = computed.points ?? [];
+    const geoPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'geo');
+    const fullPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'full');
+    setCoScalePack(pack);
+    setCoOdiUnionResult({ computedAt: stamp, points: ptsAll, geoPoints, fullPoints });
+    setCoScaleDirty(false);
+  };
+
+  useEffect(() => {
+    // 只要标尺相关输入发生变化，就标记为 dirty（不强制立刻清空，避免用户需要手动对比）
+    setCoScaleDirty(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeTab,
+    selectedCoal,
+    scenarioWeights?.wd,
+    scenarioWeights?.wo,
+    scenarioWeights?.wf,
+    paramExtractionGeoResult?.doneAt,
+    paramExtractionFullResult?.doneAt,
+    coScaleConfig?.qLo,
+    coScaleConfig?.qHi,
+    coScaleConfig?.includeGeoOnly,
+  ]);
 
   const normalizeCoords = (points, boundsPoints = points) => {
     // 主图绘图区：尽量铺满 viewBox（800×500），横向更宽；并略向上移动
@@ -13543,13 +13872,29 @@ const App = () => {
       const tipW = tipRect?.width || 0;
       const tipH = tipRect?.height || 0;
 
-      const pad = 10;
-      const ox = 14;
-      const oy = 14;
-      let px = (x - rect.left) + ox;
-      let py = (y - rect.top) + oy;
+      // 需求：tooltip 离鼠标近一点，并优先放鼠标左边。
+      // 策略：先尝试“左侧 + 小间距”，若左侧空间不足则回退到右侧；
+      // y 方向默认在鼠标下方，若底部空间不足则翻转到上方。
+      const pad = 6;
+      const gap = 4;
+      const yNudgeUp = 20;
+      const rx = (x - rect.left);
+      const ry = (y - rect.top);
+
       const maxX = Math.max(pad, rect.width - pad - tipW);
       const maxY = Math.max(pad, rect.height - pad - tipH);
+
+      const pxLeft = rx - gap - tipW;
+      const pxRight = rx + gap;
+      let px = (pxLeft >= pad) ? pxLeft : pxRight;
+
+      const pyDown = ry + gap;
+      const pyUp = ry - gap - tipH;
+      let py = (pyDown <= maxY) ? pyDown : pyUp;
+
+      // 再往上放近一点（整体上移一小段距离）
+      py -= yNudgeUp;
+
       px = Math.max(pad, Math.min(maxX, px));
       py = Math.max(pad, Math.min(maxY, py));
       el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
@@ -14346,13 +14691,21 @@ const App = () => {
             >
               智能规划
             </button>
+            <button
+              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'cocontrol' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => switchMainViewModeWithRightPanel('cocontrol')}
+              title="协同调控：统一标尺 ODI* + 参数门禁/检查"
+              type="button"
+            >
+              协同调控
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               className="p-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
               onClick={() => setShowProjectSaveModal(true)}
-              title="保存工程（仅输入快照，导入后需重新计算）"
+              title="保存工程（可选包含：工作面布置方案/四模式候选结果）"
               type="button"
             >
               <Save size={16} />
@@ -14540,7 +14893,9 @@ const App = () => {
             <div className="p-4 border-b border-slate-50 flex items-center justify-between bg-white/80 backdrop-blur-sm shrink-0 cursor-pointer hover:bg-slate-50" onClick={() => setShowMainMap(!showMainMap)}>
                <div className="flex items-center gap-4">
                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm">
-                    {mainViewMode === 'planning' ? '采区规划图' : '覆岩扰动 (ODI) 分布图'}
+                    {mainViewMode === 'planning'
+                      ? '采区规划图'
+                      : (mainViewMode === 'cocontrol' ? '协同调控（ODI* 统一标尺）' : '覆岩扰动 (ODI) 分布图')}
                  </h3>
                  {showMainMap && null}
                </div>
@@ -15547,7 +15902,7 @@ const App = () => {
                             return rows.map((r) => {
                               const sig = String(r?.signature ?? '');
                               const active = sig && sig === planningEfficiencySelectedSig;
-                              const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
+                              const fmtIntM = (v) => (Number.isFinite(Number(v)) ? String(Math.round(Number(v))) : '--');
                               const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
                               const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
                               const fmtWanT = (v) => (Number.isFinite(Number(v)) ? (Number(v) / 10000).toFixed(2) : '--');
@@ -15575,9 +15930,9 @@ const App = () => {
                                     />
                                   </td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-bold">{r?.N ?? '--'}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.B)}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtIntM(r?.B)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtIntM(r?.wb)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtIntM(r?.ws)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.innerArea)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
@@ -15730,7 +16085,7 @@ const App = () => {
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-bold">{Number.isFinite(Number(r?.N)) ? r.N : '--'}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtRange0(r?.Bmin, r?.Bmax, r?.B)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.wb)}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtRange0(r?.wsMin, r?.wsMax, r?.ws)}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt2(r?.coveragePct)}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWanT(r?.tonnageTotal)}</td>
@@ -16005,27 +16360,27 @@ const App = () => {
                               const fmtWsRange = (range, fallbackWs) => {
                                 const fb = (fallbackWs == null || (typeof fallbackWs === 'string' && fallbackWs.trim() === '')) ? NaN : Number(fallbackWs);
                                 if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
-                                  const a = Number(range.min).toFixed(1);
-                                  const b = Number(range.max).toFixed(1);
+                                  const a = String(Math.round(Number(range.min)));
+                                  const b = String(Math.round(Number(range.max)));
                                   return (a === b) ? a : `${a}~${b}`;
                                 }
-                                if (Number.isFinite(fb)) return fb.toFixed(1);
+                                if (Number.isFinite(fb)) return String(Math.round(fb));
                                 return '--';
                               };
                               const fmtBRange = (range, fallbackB) => {
                                 const fb = (fallbackB == null || (typeof fallbackB === 'string' && fallbackB.trim() === '')) ? NaN : Number(fallbackB);
                                 if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
-                                  const a = Number(range.min).toFixed(1);
-                                  const b = Number(range.max).toFixed(1);
+                                  const a = String(Math.round(Number(range.min)));
+                                  const b = String(Math.round(Number(range.max)));
                                   return (a === b) ? a : `${a}~${b}`;
                                 }
-                                if (Number.isFinite(fb)) return fb.toFixed(1);
+                                if (Number.isFinite(fb)) return String(Math.round(fb));
                                 return '--';
                               };
                               const fmtAdvanceRange = (range) => {
                                 if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
-                                  const a = Number(range.min).toFixed(1);
-                                  const b = Number(range.max).toFixed(1);
+                                  const a = String(Math.round(Number(range.min)));
+                                  const b = String(Math.round(Number(range.max)));
                                   return (a === b) ? a : `${a}~${b}`;
                                 }
                                 return '--';
@@ -16038,7 +16393,7 @@ const App = () => {
                               };
                               const fmt1 = (v) => {
                                 const n = toFiniteCell(v);
-                                return n != null ? n.toFixed(1) : '--';
+                                return n != null ? String(Math.round(n)) : '--';
                               };
                               const fmt2 = (v) => {
                                 const n = toFiniteCell(v);
@@ -16094,14 +16449,14 @@ const App = () => {
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-bold">{srcLabel}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{Number.isFinite(Number(r?.N)) ? r.N : '--'}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={bRange ? `面宽范围：最小=${Number(bRange.min).toFixed(2)}，最大=${Number(bRange.max).toFixed(2)}` : ''}>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={bRange ? `面宽范围：最小=${Number(bRange.min).toFixed(0)}，最大=${Number(bRange.max).toFixed(0)}` : ''}>
                                       {fmtBRange(bRange, r?.B)}
                                     </td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={advRange ? `推进长度范围：最小=${Number(advRange.min).toFixed(2)}，最大=${Number(advRange.max).toFixed(2)}` : ''}>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={advRange ? `推进长度范围：最小=${Number(advRange.min).toFixed(0)}，最大=${Number(advRange.max).toFixed(0)}` : ''}>
                                       {fmtAdvanceRange(advRange)}
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={wsRange ? `区段煤柱范围：最小=${Number(wsRange.min).toFixed(2)}，最大=${Number(wsRange.max).toFixed(2)}` : ''}>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={wsRange ? `区段煤柱范围：最小=${Number(wsRange.min).toFixed(0)}，最大=${Number(wsRange.max).toFixed(0)}` : ''}>
                                       {fmtWsRange(wsRange, r?.ws)}
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt2(r?.coveragePct)}</td>
@@ -16330,7 +16685,7 @@ const App = () => {
                               return rows.map((r, idx) => {
                               const sig = String(r?.signature ?? '');
                               const active = sig && sig === planningRecoverySelectedSig;
-                              const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
+                              const fmtIntM = (v) => (Number.isFinite(Number(v)) ? String(Math.round(Number(v))) : '--');
                               const fmt0 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '--');
                               const fmtWan = (v) => (Number.isFinite(Number(v)) ? (Number(v) / 10000).toFixed(2) : '--');
                               const fmtPct = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
@@ -16363,10 +16718,10 @@ const App = () => {
                                       const b0 = Number(r?.BMin);
                                       const b1 = Number(r?.BMax);
                                       if (Number.isFinite(b0) && Number.isFinite(b1)) {
-                                        if (Math.abs(b0 - b1) <= 1e-6) return fmt1(b0);
-                                        return `${fmt1(b0)}~${fmt1(b1)}`;
+                                        if (Math.abs(b0 - b1) <= 1e-6) return fmtIntM(b0);
+                                        return `${fmtIntM(b0)}~${fmtIntM(b1)}`;
                                       }
-                                      return fmt1(r?.B);
+                                      return fmtIntM(r?.B);
                                     })()}
                                   </td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">
@@ -16374,8 +16729,8 @@ const App = () => {
                                       const l0 = Number(r?.minL);
                                       const l1 = Number(r?.maxL);
                                       if (Number.isFinite(l0) && Number.isFinite(l1)) {
-                                        if (Math.abs(l0 - l1) <= 1e-6) return fmt1(l0);
-                                        return `${fmt1(l0)}~${fmt1(l1)}`;
+                                        if (Math.abs(l0 - l1) <= 1e-6) return fmtIntM(l0);
+                                        return `${fmtIntM(l0)}~${fmtIntM(l1)}`;
                                       }
                                       return '--';
                                     })()}
@@ -16397,8 +16752,8 @@ const App = () => {
                                       return idx ? `${Math.round(k)}（${idx}）` : String(Math.round(k));
                                     })()}
                                   </td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
-                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtIntM(r?.wb)}</td>
+                                  <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtIntM(r?.ws)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtPct(r?.coveragePct)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt0(r?.coveredArea)}</td>
                                   <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWan(r?.tonnageTotal)}</td>
@@ -17878,7 +18233,194 @@ const App = () => {
           </div>
         </div>
 
-        {/* 3) 采掘接续计划（Succession Plan） */}
+        {/* 3) 协同调控（Coordinated Control） */}
+        {(mainViewMode === 'planning' || mainViewMode === 'cocontrol') && (
+        <div ref={cocontrolSectionRef} className="border-b border-slate-100">
+          <button
+            className="w-full p-5 flex items-center justify-between gap-4 hover:bg-white/60 transition-colors"
+            onClick={() => setActiveAccordion((prev) => (prev.includes('cocontrol') ? prev.filter((k) => k !== 'cocontrol') : [...prev, 'cocontrol']))}
+            type="button"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <Settings size={18} className="text-emerald-600" />
+              <div className="min-w-0 text-left">
+                <div className="text-sm font-bold text-slate-700 truncate">协同调控</div>
+                <div className="text-[10px] text-slate-400 truncate">统一标尺 ODI*（联合分位数）</div>
+              </div>
+            </div>
+            <ChevronDown
+              size={18}
+              className={`text-slate-400 transition-transform duration-300 ${activeAccordion.includes('cocontrol') ? 'rotate-180' : ''}`}
+            />
+          </button>
+
+          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('cocontrol') ? 'max-h-[calc(100vh-120px)]' : 'max-h-0'}`}>
+            <div className="p-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
+              <div className="space-y-5">
+                {/* 摘要 */}
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-black text-slate-700">统一标尺 ODI*</div>
+                    <label className="flex items-center gap-2 text-xs text-slate-600 select-none">
+                      <input
+                        type="checkbox"
+                        checked={coControlEnabled}
+                        onChange={(e) => setCoControlEnabled(Boolean(e.target.checked))}
+                      />
+                      启用
+                    </label>
+                  </div>
+                  {(() => {
+                    const geoReady = Boolean(paramExtractionGeoResult?.points?.length);
+                    const fullReady = Boolean(paramExtractionFullResult?.points?.length);
+                    const scaleReady = Boolean(coScalePack && coOdiUnionResult && !coScaleDirty);
+                    const canUseUnified = Boolean(coControlEnabled && scaleReady);
+                    return (
+                      <div className="mt-2 text-[10px] text-slate-500 leading-relaxed">
+                        标尺口径：联合样本（含地质-only）+ 分位数截断（P5/P95）映射到 0~1。
+                        {!geoReady && (
+                          <div className="mt-1 text-[10px] text-amber-700">门禁：请先完成“地质插值提取”（生成 S_geo）。</div>
+                        )}
+                        {!fullReady && (
+                          <div className="mt-1 text-[10px] text-amber-700">门禁：请先完成“全参插值提取”（生成 S_full）。</div>
+                        )}
+                        {coControlEnabled && !scaleReady && geoReady && fullReady && (
+                          <div className="mt-1 text-[10px] text-amber-700">已启用但标尺未就绪：请先点击“计算/更新统一标尺”。</div>
+                        )}
+                        {canUseUnified && (
+                          <div className="mt-1 text-[10px] text-emerald-700">当前主图与扰动采样：使用 ODI*（统一标尺）。</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* A) 标尺与样本集 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Grid size={14} className="text-emerald-600" />
+                      <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">标尺与样本集</span>
+                    </div>
+                    <div className={`text-[10px] font-mono ${coScaleDirty ? 'text-amber-600' : 'text-emerald-700'}`}>
+                      {coScaleDirty ? '输入已变更' : '已就绪'}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">分位数下界 qLo</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="0.5"
+                        value={coScaleConfig.qLo}
+                        onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), qLo: Number(e.target.value) }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">分位数上界 qHi</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.5"
+                        max="1"
+                        value={coScaleConfig.qHi}
+                        onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), qHi: Number(e.target.value) }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <label className="flex items-center gap-2 text-xs text-slate-600 select-none">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(coScaleConfig.includeGeoOnly)}
+                      onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), includeGeoOnly: Boolean(e.target.checked) }))}
+                    />
+                    纳入地质-only 点（稳定标尺）
+                  </label>
+
+                  {(() => {
+                    const canComputeScale = Boolean(paramExtractionGeoResult?.points?.length && paramExtractionFullResult?.points?.length);
+                    return (
+                      <button
+                        className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${canComputeScale ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                        onClick={handleComputeUnifiedOdiScale}
+                        disabled={!canComputeScale}
+                        type="button"
+                        title={canComputeScale ? '基于 geo-only + full 联合样本计算 qLo/qHi，并生成 ODI* 供主图/扰动采样使用' : '请先完成：地质插值提取 + 全参插值提取'}
+                      >
+                        计算/更新统一标尺
+                      </button>
+                    );
+                  })()}
+
+                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
+                    <div className="text-[11px] text-slate-500 font-bold mb-2">标尺统计（只读）</div>
+                    <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-600">
+                      <div className="flex items-center justify-between"><span>qLo/qHi</span><span className="font-mono">{Number(coScaleConfig.qLo).toFixed(2)}/{Number(coScaleConfig.qHi).toFixed(2)}</span></div>
+                      <div className="flex items-center justify-between"><span>q 值</span><span className="font-mono">{coScalePack ? `${coScalePack.qLowValue.toFixed(3)}~${coScalePack.qHighValue.toFixed(3)}` : '--'}</span></div>
+                      <div className="flex items-center justify-between"><span>|S_geo|</span><span className="font-mono">{coScalePack?.counts?.geo ?? 0}</span></div>
+                      <div className="flex items-center justify-between"><span>|S_full|</span><span className="font-mono">{coScalePack?.counts?.full ?? 0}</span></div>
+                      <div className="flex items-center justify-between"><span>|S_union|</span><span className="font-mono">{coScalePack?.counts?.union ?? 0}</span></div>
+                      <div className="flex items-center justify-between"><span>计算时间</span><span className="font-mono">{coScalePack?.computedAt ? String(coScalePack.computedAt).slice(11, 19) : '--'}</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* B) 推进阶段（预留：当前不引入推进速度，仅提供离散段数与段位） */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Layers size={14} className="text-emerald-600" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">推进阶段（预留）</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">段数 N</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={coStageN}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(20, Math.round(Number(e.target.value) || 1)));
+                          setCoStageN(v);
+                          setCoStageK((k) => Math.max(1, Math.min(v, Number(k) || 1)));
+                        }}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">当前段 k</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max={coStageN}
+                        value={coStageK}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(coStageN, Math.round(Number(e.target.value) || 1)));
+                          setCoStageK(v);
+                        }}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="text-[10px] text-slate-500 leading-relaxed">
+                    当前版本：阶段仅作为 UI/口径占位；不影响 ODI* 的计算（后续会按工作面序号/段位生成分段快照）。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        )}
+
+        {/* 4) 采掘接续计划（Succession Plan） */}
         <div className="border-b border-slate-100">
           <button
             className="w-full p-5 flex items-center justify-between gap-4 hover:bg-white/60 transition-colors"
@@ -17979,7 +18521,7 @@ const App = () => {
           </div>
         </div>
 
-        {/* 4) 工程经济分析（Economic Analysis） */}
+        {/* 5) 工程经济分析（Economic Analysis） */}
         <div className="border-b border-slate-100">
           <button
             className="w-full p-5 flex items-center justify-between gap-4 hover:bg-white/60 transition-colors"
@@ -18068,7 +18610,7 @@ const App = () => {
                   placeholder={`工程快照_${formatNowStamp()}`}
                   className="w-full px-4 py-3 bg-slate-100/50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                 />
-                <div className="mt-1 text-[11px] text-slate-400">导出为 .miningplan.json（仅输入快照，不含计算产物）</div>
+                <div className="mt-1 text-[11px] text-slate-400">导出为 .miningplan.json（默认仅输入快照；可选包含“工作面布置方案”）</div>
               </div>
 
               <div>
@@ -18103,6 +18645,35 @@ const App = () => {
                 </div>
               </div>
 
+              <div>
+                <label className="block text-sm font-medium text-slate-500 mb-2">附加内容</label>
+                <label className={`flex items-center gap-3 p-4 border-2 rounded-2xl cursor-pointer transition-all ${projectSaveIncludeWorkfacePlan ? 'border-emerald-400 bg-emerald-50/50' : 'border-slate-100 bg-slate-50 hover:border-slate-200'}`}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={projectSaveIncludeWorkfacePlan}
+                    onChange={(e) => setProjectSaveIncludeWorkfacePlan(Boolean(e.target.checked))}
+                  />
+                  <div className="flex flex-col">
+                    <span className={`font-medium text-sm ${projectSaveIncludeWorkfacePlan ? 'text-emerald-700' : 'text-slate-700'}`}>包含工作面布置方案</span>
+                    <span className={`${projectSaveIncludeWorkfacePlan ? 'text-emerald-600/70' : 'text-slate-500/70'} text-xs`}>保存当前规划生成的工作面多边形（导入后可直接显示）</span>
+                  </div>
+                </label>
+
+                <label className={`mt-3 flex items-center gap-3 p-4 border-2 rounded-2xl cursor-pointer transition-all ${projectSaveIncludePlanningResults ? 'border-indigo-400 bg-indigo-50/50' : 'border-slate-100 bg-slate-50 hover:border-slate-200'}`}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4"
+                    checked={projectSaveIncludePlanningResults}
+                    onChange={(e) => setProjectSaveIncludePlanningResults(Boolean(e.target.checked))}
+                  />
+                  <div className="flex flex-col">
+                    <span className={`font-medium text-sm ${projectSaveIncludePlanningResults ? 'text-indigo-700' : 'text-slate-700'}`}>包含四模式候选结果</span>
+                    <span className={`${projectSaveIncludePlanningResults ? 'text-indigo-600/70' : 'text-slate-500/70'} text-xs`}>保存工程效率/资源回收/最小扰动/权重加权的候选表与选中态（导入后无需重算即可查看）</span>
+                  </div>
+                </label>
+              </div>
+
               <div className="pt-2">
                 <button
                   className="w-full py-4 bg-blue-600 text-white rounded-2xl font-semibold hover:bg-blue-700 active:scale-[0.98] transition-all shadow-lg shadow-blue-200"
@@ -18130,7 +18701,7 @@ const App = () => {
               <div className="flex justify-between items-center mb-6">
                 <div>
                   <h2 className="text-xl font-semibold text-slate-800">导入工程</h2>
-                  <p className="text-sm text-slate-500">导入仅输入快照，不会自动触发智能规划计算</p>
+                  <p className="text-sm text-slate-500">导入工程快照：默认恢复输入；若文件包含工作面布置/候选结果，将一并恢复</p>
                 </div>
                 <button
                   onClick={closeProjectImportModal}
