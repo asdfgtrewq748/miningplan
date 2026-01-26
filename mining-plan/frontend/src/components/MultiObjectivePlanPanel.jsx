@@ -7,7 +7,6 @@ import {
   TrendingUp,
   Layers,
   Sliders,
-  Info,
 } from 'lucide-react';
 
 const clamp01 = (v) => {
@@ -53,6 +52,16 @@ export default function MultiObjectivePlanPanel({
   const rootRef = useRef(null);
   const weightPanelRef = useRef(null);
 
+  const rawWeights = useMemo(
+    () => ({
+      efficiency: clamp01(weights?.efficiency),
+      disturbance: clamp01(weights?.disturbance),
+      recovery: clamp01(weights?.recovery),
+    }),
+    [weights]
+  );
+
+  // For summary display (always sums to 100%)
   const normalizedWeights = useMemo(() => normalize3(weights), [weights]);
 
   const modes = useMemo(
@@ -110,7 +119,10 @@ export default function MultiObjectivePlanPanel({
   const setMode = (id) => {
     if (typeof onChange === 'function') onChange(id);
     if (id === 'weighted' && typeof onWeightsChange === 'function') {
-      onWeightsChange(normalize3(weights));
+      const s = (rawWeights.efficiency + rawWeights.disturbance + rawWeights.recovery);
+      if (!(s > 1e-12)) {
+        onWeightsChange({ efficiency: 1 / 3, disturbance: 1 / 3, recovery: 1 / 3 });
+      }
     }
 
     // 选择“权重自定义”后，尽量把滑块面板滚动到可视区
@@ -127,31 +139,41 @@ export default function MultiObjectivePlanPanel({
 
   const updateWeight = (key, nextValue) => {
     if (typeof onWeightsChange !== 'function') return;
-    const cur = normalize3(weights);
     const v = clamp01(nextValue);
 
-    // 保持三者和为 1：改动一个，其余两个按比例缩放
-    const keysOther = ['efficiency', 'disturbance', 'recovery'].filter((k) => k !== key);
-    const sumOther = keysOther.reduce((s, k) => s + (cur[k] ?? 0), 0);
-    const remaining = Math.max(0, 1 - v);
-
-    const next = { ...cur, [key]: v };
-    if (sumOther <= 1e-12) {
-      const half = remaining / 2;
-      next[keysOther[0]] = half;
-      next[keysOther[1]] = half;
-    } else {
-      next[keysOther[0]] = (cur[keysOther[0]] / sumOther) * remaining;
-      next[keysOther[1]] = (cur[keysOther[1]] / sumOther) * remaining;
-    }
-
-    onWeightsChange(normalize3(next));
+    // 优化体验：三项权重独立调节（不再联动修改另外两项）。
+    // 后端会在计算时自动归一化；若需要 100% 总和可手动点击“归一化到100%”。
+    const cur = {
+      efficiency: clamp01(weights?.efficiency),
+      disturbance: clamp01(weights?.disturbance),
+      recovery: clamp01(weights?.recovery),
+    };
+    onWeightsChange({ ...cur, [key]: v });
   };
 
   const updateWeightPct = (key, nextPct) => {
     const pct = Number(nextPct);
     if (!Number.isFinite(pct)) return;
     updateWeight(key, pct / 100);
+  };
+
+  const weightSumPct = useMemo(() => {
+    const s = (rawWeights.efficiency + rawWeights.disturbance + rawWeights.recovery);
+    return Math.round(s * 100);
+  }, [rawWeights]);
+
+  const normalizeWeightsTo100 = () => {
+    if (typeof onWeightsChange !== 'function') return;
+    const s = (rawWeights.efficiency + rawWeights.disturbance + rawWeights.recovery);
+    if (!(s > 1e-12)) {
+      onWeightsChange({ efficiency: 1 / 3, disturbance: 1 / 3, recovery: 1 / 3 });
+      return;
+    }
+    onWeightsChange({
+      efficiency: rawWeights.efficiency / s,
+      disturbance: rawWeights.disturbance / s,
+      recovery: rawWeights.recovery / s,
+    });
   };
 
   const toggleCollapsed = () => {
@@ -318,7 +340,7 @@ export default function MultiObjectivePlanPanel({
                       几何效率权重
                     </span>
                     <span className="text-sm font-black text-orange-600 font-mono tracking-tighter">
-                      {fmtPctInt(Math.round(normalizedWeights.efficiency * 100))}
+                      {fmtPctInt(Math.round(rawWeights.efficiency * 100))}
                     </span>
                   </div>
                   <input
@@ -326,28 +348,8 @@ export default function MultiObjectivePlanPanel({
                     min={0}
                     max={100}
                     step={1}
-                    value={Math.round(normalizedWeights.efficiency * 100)}
+                    value={Math.round(rawWeights.efficiency * 100)}
                     onChange={(e) => updateWeightPct('efficiency', e.target.value)}
-                    className="w-full h-1.5 bg-orange-100 rounded-full appearance-none cursor-pointer accent-orange-600 hover:accent-orange-700 transition-all"
-                  />
-                </div>
-
-                <div className="flex flex-col gap-4 group">
-                  <div className="flex justify-between items-baseline px-1">
-                    <span className="text-[12px] font-bold text-slate-400 uppercase tracking-tight group-hover:text-orange-600 transition-colors">
-                      安全扰动权重
-                    </span>
-                    <span className="text-sm font-black text-orange-600 font-mono tracking-tighter">
-                      {fmtPctInt(Math.round(normalizedWeights.disturbance * 100))}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={Math.round(normalizedWeights.disturbance * 100)}
-                    onChange={(e) => updateWeightPct('disturbance', e.target.value)}
                     className="w-full h-1.5 bg-orange-100 rounded-full appearance-none cursor-pointer accent-orange-600 hover:accent-orange-700 transition-all"
                   />
                 </div>
@@ -358,7 +360,7 @@ export default function MultiObjectivePlanPanel({
                       资源回收权重
                     </span>
                     <span className="text-sm font-black text-orange-600 font-mono tracking-tighter">
-                      {fmtPctInt(Math.round(normalizedWeights.recovery * 100))}
+                      {fmtPctInt(Math.round(rawWeights.recovery * 100))}
                     </span>
                   </div>
                   <input
@@ -366,21 +368,45 @@ export default function MultiObjectivePlanPanel({
                     min={0}
                     max={100}
                     step={1}
-                    value={Math.round(normalizedWeights.recovery * 100)}
+                    value={Math.round(rawWeights.recovery * 100)}
                     onChange={(e) => updateWeightPct('recovery', e.target.value)}
+                    className="w-full h-1.5 bg-orange-100 rounded-full appearance-none cursor-pointer accent-orange-600 hover:accent-orange-700 transition-all"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-4 group">
+                  <div className="flex justify-between items-baseline px-1">
+                    <span className="text-[12px] font-bold text-slate-400 uppercase tracking-tight group-hover:text-orange-600 transition-colors">
+                      安全扰动权重
+                    </span>
+                    <span className="text-sm font-black text-orange-600 font-mono tracking-tighter">
+                      {fmtPctInt(Math.round(rawWeights.disturbance * 100))}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={Math.round(rawWeights.disturbance * 100)}
+                    onChange={(e) => updateWeightPct('disturbance', e.target.value)}
                     className="w-full h-1.5 bg-orange-100 rounded-full appearance-none cursor-pointer accent-orange-600 hover:accent-orange-700 transition-all"
                   />
                 </div>
               </div>
 
-              <div className="mt-8 p-4 bg-white/60 rounded-2xl border border-orange-100 flex items-start gap-3 shadow-sm">
-                <Info size={16} className="text-orange-400 shrink-0 mt-0.5" />
-                <div className="flex flex-col gap-0.5">
-                  <p className="text-[12px] text-orange-900 font-bold uppercase">反演策略说明</p>
-                  <p className="text-[12px] text-orange-800/60 font-medium leading-relaxed italic">
-                    权重分配将影响寻优算法的适应度函数。建议总和保持为 100% 以获得最稳定的布局结果。
-                  </p>
+              <div className="mt-6 flex items-center justify-between gap-3">
+                <div className="text-[11px] text-orange-800/70 font-mono">
+                  权重总和：{weightSumPct}%
                 </div>
+                <button
+                  type="button"
+                  className="px-3 py-1.5 rounded-xl text-[11px] font-bold border border-orange-200 bg-white/70 text-orange-700 hover:bg-white transition-colors"
+                  onClick={normalizeWeightsTo100}
+                  title="将三项权重按比例归一化到总和 100%（仅调整数值，不触发计算）"
+                >
+                  归一化到 100%
+                </button>
               </div>
             </div>
           )}

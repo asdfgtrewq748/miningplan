@@ -49,7 +49,7 @@ import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
 import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
 import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
-import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedCompute } from './api.js';
+import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedComputeCancelable } from './api.js';
 
 const DEFAULT_PLANNING_PARAMS = {
   mineCapacity: '',
@@ -159,6 +159,7 @@ const App = () => {
   const planningWeightedReqSeqRef = useRef(0);
   const planningWeightedHandledApplySeqRef = useRef(0);
   const planningWeightedInFlightKeyRef = useRef('');
+  const planningWeightedAbortRef = useRef(null);
   const planningOptWeightsRef = useRef(planningOptWeights);
   useEffect(() => {
     planningOptWeightsRef.current = planningOptWeights;
@@ -1410,8 +1411,8 @@ const App = () => {
     };
   };
 
-  const buildEfficiencyCacheKey = () => {
-    const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+  const buildEfficiencyCacheKey = (axisOverride = null) => {
+    const axis = (String(axisOverride ?? planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
 
     const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
@@ -1455,8 +1456,8 @@ const App = () => {
     ].join('|');
   };
 
-  const buildDisturbanceCacheKey = () => {
-    const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+  const buildDisturbanceCacheKey = (axisOverride = null) => {
+    const axis = (String(axisOverride ?? planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
 
     const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
@@ -1500,9 +1501,9 @@ const App = () => {
     return hashStringFNV1a32(parts.join(';'));
   };
 
-  const buildRecoveryCacheKey = () => {
+  const buildRecoveryCacheKey = (axisOverride = null) => {
     // 资源回收：缓存必须与实际请求轴向一致，否则会命中旧缓存导致“看起来没变化”
-    const axis = (String(planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
+    const axis = (String(axisOverride ?? planningParams?.roadwayOrientation ?? 'x') === 'y') ? 'y' : 'x';
     const bHash = hashBoundaryLoopWorld(boundaryLoopWorld);
 
     const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
@@ -2845,6 +2846,7 @@ const App = () => {
     if (!picked) return;
 
     const isActive = (mainViewMode === 'planning' && (planningOptMode === 'efficiency' || planningOptMode === 'disturbance' || planningOptMode === 'weighted'));
+    const useClippedForDisplay = (mainViewMode === 'planning' && planningOptMode === 'weighted');
 
     // 方案C：回填“采区参数编辑器”的工作面个数滑块（仅用于显示/切换，不参与 cacheKey）
     if (isActive) {
@@ -2866,17 +2868,42 @@ const App = () => {
     const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
     if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
-    // 工程效率最优：蓝色图层必须使用“设计矩形”（规则矩形），裁切多边形仅解释不参与评分。
-    let loops = [];
-    if (Array.isArray(picked?.render?.rectLoops)) {
-      loops = picked.render.rectLoops
+    const fromRectLoops = (rectLoops) => (Array.isArray(rectLoops)
+      ? rectLoops
         .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
-        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
-    } else if (Array.isArray(picked?.render?.facesLoops)) {
-      loops = picked.render.facesLoops;
-    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld)) {
-      loops = picked.render.plannedWorkfaceLoopsWorld;
-    }
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3)
+      : []);
+
+    const pickLoopsForDisplay = () => {
+      const rr = (picked?.render && typeof picked.render === 'object') ? picked.render : {};
+
+      // weighted 口径：优先“裁剪到粉色 Ω 内”的 loops，避免蓝色越界。
+      if (useClippedForDisplay) {
+        if (Array.isArray(rr?.clippedFacesLoops) && rr.clippedFacesLoops.length) return rr.clippedFacesLoops;
+        if (Array.isArray(rr?.plannedWorkfaceLoopsWorld) && rr.plannedWorkfaceLoopsWorld.length) return rr.plannedWorkfaceLoopsWorld;
+        if (Array.isArray(rr?.facesLoops) && rr.facesLoops.length) return rr.facesLoops;
+        if (Array.isArray(rr?.rectLoops) && rr.rectLoops.length) return fromRectLoops(rr.rectLoops);
+
+        if (Array.isArray(picked?.clippedFacesLoops) && picked.clippedFacesLoops.length) return picked.clippedFacesLoops;
+        if (Array.isArray(picked?.plannedWorkfaceLoopsWorld) && picked.plannedWorkfaceLoopsWorld.length) return picked.plannedWorkfaceLoopsWorld;
+        if (Array.isArray(picked?.facesLoops) && picked.facesLoops.length) return picked.facesLoops;
+        if (Array.isArray(picked?.rectLoops) && picked.rectLoops.length) return fromRectLoops(picked.rectLoops);
+        return [];
+      }
+
+      // efficiency/disturbance 口径：蓝色图层优先使用“设计矩形”（规则矩形）。
+      if (Array.isArray(rr?.rectLoops) && rr.rectLoops.length) return fromRectLoops(rr.rectLoops);
+      if (Array.isArray(rr?.facesLoops) && rr.facesLoops.length) return rr.facesLoops;
+      if (Array.isArray(rr?.plannedWorkfaceLoopsWorld) && rr.plannedWorkfaceLoopsWorld.length) return rr.plannedWorkfaceLoopsWorld;
+
+      if (Array.isArray(picked?.rectLoops) && picked.rectLoops.length) return fromRectLoops(picked.rectLoops);
+      if (Array.isArray(picked?.facesLoops) && picked.facesLoops.length) return picked.facesLoops;
+      if (Array.isArray(picked?.plannedWorkfaceLoopsWorld) && picked.plannedWorkfaceLoopsWorld.length) return picked.plannedWorkfaceLoopsWorld;
+      if (Array.isArray(picked?.clippedFacesLoops) && picked.clippedFacesLoops.length) return picked.clippedFacesLoops;
+      return [];
+    };
+
+    const loops = pickLoopsForDisplay();
     setPlanningDisplayForMode('efficiency', {
       loops,
       unionLoops: [],
@@ -3631,21 +3658,38 @@ const App = () => {
     if (!picked) return;
 
     const isActive = (mainViewMode === 'planning' && (planningOptMode === 'efficiency' || planningOptMode === 'disturbance' || planningOptMode === 'weighted'));
+    const useClippedForDisplay = (mainViewMode === 'planning' && planningOptMode === 'weighted');
 
     // 预览不改变“真实候选选中态”（4A），只更新绘图层
     const innerOmegaWb = Number.isFinite(Number(picked.wb)) ? Number(picked.wb) : null;
     if (isActive) setPlanningInnerOmegaOverrideWb(innerOmegaWb);
 
-    let loops = [];
-    if (Array.isArray(picked?.render?.rectLoops)) {
-      loops = picked.render.rectLoops
+    const fromRectLoops = (rectLoops) => (Array.isArray(rectLoops)
+      ? rectLoops
         .map((loop, idx) => ({ faceIndex: idx + 1, loop }))
-        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3);
-    } else if (Array.isArray(picked?.render?.facesLoops)) {
-      loops = picked.render.facesLoops;
-    } else if (Array.isArray(picked?.render?.plannedWorkfaceLoopsWorld)) {
-      loops = picked.render.plannedWorkfaceLoopsWorld;
-    }
+        .filter((x) => Array.isArray(x?.loop) && x.loop.length >= 3)
+      : []);
+
+    const rr = (picked?.render && typeof picked.render === 'object') ? picked.render : {};
+    const loops = (() => {
+      if (useClippedForDisplay) {
+        if (Array.isArray(rr?.clippedFacesLoops) && rr.clippedFacesLoops.length) return rr.clippedFacesLoops;
+        if (Array.isArray(rr?.plannedWorkfaceLoopsWorld) && rr.plannedWorkfaceLoopsWorld.length) return rr.plannedWorkfaceLoopsWorld;
+        if (Array.isArray(rr?.facesLoops) && rr.facesLoops.length) return rr.facesLoops;
+        if (Array.isArray(rr?.rectLoops) && rr.rectLoops.length) return fromRectLoops(rr.rectLoops);
+
+        if (Array.isArray(picked?.clippedFacesLoops) && picked.clippedFacesLoops.length) return picked.clippedFacesLoops;
+        if (Array.isArray(picked?.plannedWorkfaceLoopsWorld) && picked.plannedWorkfaceLoopsWorld.length) return picked.plannedWorkfaceLoopsWorld;
+        if (Array.isArray(picked?.facesLoops) && picked.facesLoops.length) return picked.facesLoops;
+        if (Array.isArray(picked?.rectLoops) && picked.rectLoops.length) return fromRectLoops(picked.rectLoops);
+        return [];
+      }
+
+      if (Array.isArray(rr?.rectLoops) && rr.rectLoops.length) return fromRectLoops(rr.rectLoops);
+      if (Array.isArray(rr?.facesLoops) && rr.facesLoops.length) return rr.facesLoops;
+      if (Array.isArray(rr?.plannedWorkfaceLoopsWorld) && rr.plannedWorkfaceLoopsWorld.length) return rr.plannedWorkfaceLoopsWorld;
+      return [];
+    })();
 
     if (Array.isArray(loops) && loops.length > 0) {
       // preview 也写入 efficiency 的展示缓存，但只在 active 时应用到主图
@@ -9124,15 +9168,25 @@ const App = () => {
 
     const reqSeqNow = (planningWeightedReqSeqRef.current += 1);
 
-    const effKey = String(buildEfficiencyCacheKey());
-    const recKey = String(buildRecoveryCacheKey());
-    const distKey = String(buildDisturbanceCacheKey());
+    // weighted 的实际计算轴向以 planningAdvanceAxis 为准；
+    // 为避免 node harness 看到“cacheKey.axis 与 payload.axis 不一致”而产生空候选，
+    // 这里的 per-mode cacheKey 也必须与 planningAdvanceAxis 对齐。
+    const effKey = String(buildEfficiencyCacheKey(planningAdvanceAxis));
+    const recKey = String(buildRecoveryCacheKey(planningAdvanceAxis));
+    const distKey = String(buildDisturbanceCacheKey(planningAdvanceAxis));
 
     const distP = planningDisturbanceParamsRef.current ?? {};
     const w = planningOptWeightsRef.current ?? planningOptWeights;
     const wEffIn = Number(w?.efficiency) || 0;
     const wRecIn = Number(w?.recovery) || 0;
     const wDistIn = Number(w?.disturbance) || 0;
+
+    // IMPORTANT: weighted 必须与 efficiency/recovery 一样对输入范围做兜底归一化。
+    // 否则在切换轴向或导入快照后，faceWidthMin/Max 等可能为空字符串，
+    // 直接 Number('') -> 0/NaN 再被 || null 吃掉，导致后端 node harness 产出 0 候选。
+    const wbR = getRangeWithFallback(planningParams?.boundaryPillarMin, planningParams?.boundaryPillarMax, planningParams?.boundaryPillarTarget);
+    const wsR = getRangeWithFallback(planningParams?.coalPillarMin, planningParams?.coalPillarMax, planningParams?.coalPillarTarget);
+    const fw = getFaceWidthRange();
 
     const hasOdi = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
     const { kind, thickness } = buildEfficiencyTonnagePostContext();
@@ -9149,6 +9203,16 @@ const App = () => {
       `distP=${Number(distP?.sampleStepM) || 25},${Number(distP?.maxSamples) || 4500},${Number(distP?.exceedThreshold) || 0.7},${Number(distP?.wMean) || 0.5},${Number(distP?.wP90) || 0.35},${Number(distP?.wExceed) || 0.15},${Number.isFinite(Number(distP?.outerBufferM)) ? Number(distP.outerBufferM) : 30}`,
       `thk=${kind || 'none'}`,
     ].join('|');
+
+    // 取消上一轮请求（若仍在进行）
+    try {
+      const prev = planningWeightedAbortRef.current;
+      if (prev && typeof prev.abort === 'function') prev.abort();
+    } catch {
+      // ignore
+    }
+    const aborter = new AbortController();
+    planningWeightedAbortRef.current = aborter;
 
     try {
       planningWeightedInFlightKeyRef.current = cacheKeyNow;
@@ -9214,7 +9278,7 @@ const App = () => {
     (async () => {
       let resp = null;
       try {
-        resp = await smartWeightedCompute({
+        resp = await smartWeightedComputeCancelable({
           reqSeq: reqSeqNow,
           cacheKey: cacheKeyNow,
 
@@ -9229,13 +9293,13 @@ const App = () => {
           fast: false,
 
           searchProfile: planningParams?.searchProfile ?? null,
-          boundaryPillarMin: Number(planningParams?.boundaryPillarMin) || null,
-          boundaryPillarMax: Number(planningParams?.boundaryPillarMax) || null,
-          coalPillarMin: Number(planningParams?.coalPillarMin) || null,
-          coalPillarMax: Number(planningParams?.coalPillarMax) || null,
-          coalPillarTarget: Number(planningParams?.coalPillarTarget) || null,
-          faceWidthMin: Number(planningParams?.faceWidthMin) || null,
-          faceWidthMax: Number(planningParams?.faceWidthMax) || null,
+          boundaryPillarMin: wbR.min,
+          boundaryPillarMax: wbR.max,
+          coalPillarMin: wsR.min,
+          coalPillarMax: wsR.max,
+          coalPillarTarget: parseNonNegOrNull(planningParams?.coalPillarTarget),
+          faceWidthMin: fw.min,
+          faceWidthMax: fw.max,
           faceAdvanceMax: Number(planningParams?.faceAdvanceMax) || null,
 
           topK: 60,
@@ -9245,7 +9309,8 @@ const App = () => {
             recovery: wRecIn,
             disturbance: wDistIn,
           },
-          odiFieldPack: hasOdi ? cloneJson(odiFieldPack) : null,
+          // 性能优化：ODI pack 可能很大，深拷贝会显著拖慢前端；直接传递即可（fetch 会自行序列化）。
+          odiFieldPack: hasOdi ? odiFieldPack : null,
           disturbanceParams: {
             sampleStepM: Number(distP?.sampleStepM) || 25,
             maxSamples: Number(distP?.maxSamples) || 4500,
@@ -9258,7 +9323,7 @@ const App = () => {
 
           // tonnage / recoveryScore evaluation
           thickness: thicknessForBackend,
-        });
+        }, { signal: aborter.signal });
       } catch (e) {
         resp = { ok: false, mode: 'smart-weighted', message: String(e?.message ?? e), failedReason: String(e?.message ?? e), table: { rows: [] } };
       }
@@ -9267,6 +9332,13 @@ const App = () => {
       if (reqSeqNow !== planningWeightedReqSeqRef.current) return;
       try {
         if (String(planningWeightedInFlightKeyRef.current || '') !== String(cacheKeyNow || '')) return;
+      } catch {
+        // ignore
+      }
+
+      // 若该回包对应的请求已被取消，直接丢弃（避免把 UI 覆盖成“已取消”）
+      try {
+        if (aborter.signal && aborter.signal.aborted) return;
       } catch {
         // ignore
       }
@@ -9282,6 +9354,26 @@ const App = () => {
 
       setPlanningWeightedBusy(false);
       setPlanningWeightedProgress(null);
+      // 失败增强：把后端 debug.subResults 的关键摘要拼进 message，便于现场排查“暂无候选”。
+      try {
+        if (resp && typeof resp === 'object' && resp.ok === false && String(resp?.failedReason ?? '') === 'NO_CANDIDATES') {
+          const sub = resp?.debug?.subResults;
+          const fmtOne = (name) => {
+            const x = sub?.[name];
+            if (!x || typeof x !== 'object') return `${name}:无`;
+            const ok = x?.ok === true ? 'ok' : 'fail';
+            const n = Number.isFinite(Number(x?.candidatesCount)) ? Number(x.candidatesCount) : 0;
+            const reason = String(x?.failedReason ?? '').trim();
+            return `${name}:${ok},n=${n}${reason ? `,reason=${reason}` : ''}`;
+          };
+          const extra = sub ? `（${fmtOne('efficiency')}；${fmtOne('recovery')}；${fmtOne('disturbance')}）` : '';
+          const msg0 = String(resp?.message ?? '').trim();
+          resp = { ...(resp ?? {}), message: `${msg0}${extra}` };
+        }
+      } catch {
+        // ignore
+      }
+
       setPlanningWeightedResult(resp);
 
       // 默认联动展示 Top1（若用户尚未手动选）
@@ -13376,7 +13468,20 @@ const App = () => {
   }, [plannedWorkfaceUnionLoopsWorld, combinedPointsForBounds]);
 
   const safeLoopNoClosure = (loop) => {
-    const pts = Array.isArray(loop) ? loop.filter((p) => Number.isFinite(Number(p?.x)) && Number.isFinite(Number(p?.y))).map((p) => ({ x: Number(p.x), y: Number(p.y) })) : [];
+    const pts = Array.isArray(loop)
+      ? loop
+        .map((p) => {
+          if (Array.isArray(p) && p.length >= 2) {
+            const x = (typeof p[0] === 'string' && String(p[0]).trim() === '') ? NaN : Number(p[0]);
+            const y = (typeof p[1] === 'string' && String(p[1]).trim() === '') ? NaN : Number(p[1]);
+            return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+          }
+          const x = (typeof p?.x === 'string' && p.x.trim() === '') ? NaN : Number(p?.x);
+          const y = (typeof p?.y === 'string' && p.y.trim() === '') ? NaN : Number(p?.y);
+          return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+        })
+        .filter(Boolean)
+      : [];
     if (pts.length >= 2) {
       const a = pts[0];
       const b = pts[pts.length - 1];
@@ -13415,7 +13520,9 @@ const App = () => {
   };
 
   const fmtOrDash = (v, digits) => {
-    const n = (typeof v === 'string' && v.trim() === '') ? NaN : Number(v);
+    if (v == null) return '—';
+    if (typeof v === 'string' && v.trim() === '') return '—';
+    const n = Number(v);
     return Number.isFinite(n) ? n.toFixed(digits) : '—';
   };
 
@@ -13467,13 +13574,42 @@ const App = () => {
     if (!(Number.isFinite(fi) && fi >= 1)) return null;
 
     const isRec = planningOptMode === 'recovery';
-    const result = isRec ? planningRecoveryResult : planningEfficiencyResult;
-    const candidate = isRec ? planningRecoverySelectedCandidate : planningEfficiencySelectedCandidate;
+    const isWeighted = planningOptMode === 'weighted';
+
+    let result = null;
+    let candidate = null;
+    if (isRec) {
+      result = planningRecoveryResult;
+      candidate = planningRecoverySelectedCandidate;
+    } else if (isWeighted) {
+      const pack = planningWeightedResult ?? {};
+      const sig = String(planningWeightedSelected?.sig ?? pack?.best?.signature ?? '').trim();
+      const src = String(planningWeightedSelected?.source ?? pack?.best?.source ?? '').trim();
+      const arr = (src === 'recovery')
+        ? (Array.isArray(pack?.recResult?.candidates) ? pack.recResult.candidates : [])
+        : (src === 'disturbance')
+          ? (Array.isArray(pack?.distResult?.candidates) ? pack.distResult.candidates : [])
+          : (Array.isArray(pack?.effResult?.candidates) ? pack.effResult.candidates : []);
+      candidate = sig ? (arr.find((c) => String(c?.signature ?? '').trim() === sig) ?? null) : null;
+      result = (src === 'recovery') ? pack?.recResult : (src === 'disturbance' ? pack?.distResult : pack?.effResult);
+    } else {
+      result = planningEfficiencyResult;
+      candidate = planningEfficiencySelectedCandidate;
+    }
+
     const axis = String(planningAdvanceAxis ?? result?.axis ?? candidate?.axis ?? 'x') || 'x';
 
-    const loopW = (Array.isArray(plannedWorkfaceLoopsWorld)
-      ? plannedWorkfaceLoopsWorld.find((x) => Number(x?.faceIndex) === fi)?.loop
-      : null);
+    const resolveLoopW = (arr, faceIndex) => {
+      const src = Array.isArray(arr) ? arr : [];
+      const byIndex = src.find((x) => Number(x?.faceIndex) === faceIndex);
+      const loop0 = byIndex?.loop;
+      if (Array.isArray(loop0) && loop0.length) return loop0;
+      const fallback = src[faceIndex - 1];
+      if (Array.isArray(fallback?.loop)) return fallback.loop;
+      if (Array.isArray(fallback)) return fallback;
+      return null;
+    };
+    const loopW = resolveLoopW(plannedWorkfaceLoopsWorld, fi);
     const bb = bboxOfLoop(loopW);
     if (!bb) return { faceIndex: fi, B_m: null, L_m: null, A_face_m2: null };
 
@@ -13485,7 +13621,12 @@ const App = () => {
       ? candidate.BList
       : (Array.isArray(candidate?.metrics?.BList) ? candidate.metrics.BList : null);
     const bFace = Array.isArray(bList) ? toFiniteNum(bList[fi - 1]) : null;
-    const B_m = (bFace != null) ? bFace : (toFiniteNum(candidate?.B) ?? toFiniteNum(result?.B));
+    const B_geo = axis === 'y'
+      ? (bb.maxX - bb.minX)
+      : (bb.maxY - bb.minY);
+    const B_m = (bFace != null)
+      ? bFace
+      : (toFiniteNum(candidate?.B) ?? toFiniteNum(result?.B) ?? (Number.isFinite(B_geo) ? B_geo : null));
     const ws_m = (toFiniteNum(candidate?.ws) ?? toFiniteNum(result?.ws));
 
     const L_m = axis === 'y'
@@ -13514,6 +13655,8 @@ const App = () => {
     planningEfficiencyResult,
     planningRecoverySelectedCandidate,
     planningRecoveryResult,
+    planningWeightedResult,
+    planningWeightedSelected,
     planningAdvanceAxis,
   ]);
 
@@ -15324,7 +15467,13 @@ const App = () => {
                       {planningEfficiencyResult?.ok && (
                         <>
                           <div className="text-[10px] text-slate-400 font-mono">
-                            候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}
+                            {(() => {
+                              const total = Array.isArray(planningEfficiencyResult?.table?.rows) ? planningEfficiencyResult.table.rows.length : 0;
+                              const shown = Math.min(10, total);
+                              const all = Number(planningEfficiencyResult?.stats?.candidateCount);
+                              const allTxt = Number.isFinite(all) ? String(Math.max(0, Math.round(all))) : String(total);
+                              return `候选：Top${shown} / ${allTxt}`;
+                            })()}
                           </div>
                           {(() => {
                             const k = String(planningEfficiencyResult?.stats?.tonnageThicknessKind ?? '').trim();
@@ -15351,9 +15500,9 @@ const App = () => {
                               type="button"
                               className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
                               onClick={handleToggleEfficiencyCandidates}
-                              title="默认仅展示最优方案；可展开查看TopK候选对比表"
+                              title="默认仅展示最优方案；可切换查看Top10候选对比表"
                             >
-                              {planningEfficiencyShowAllCandidates ? '仅显示最优' : '展开候选'}
+                              {planningEfficiencyShowAllCandidates ? '仅显示最优' : '显示Top10'}
                             </button>
                           )}
                         </>
@@ -15393,7 +15542,7 @@ const App = () => {
                         <tbody>
                           {(() => {
                             const rows0 = planningEfficiencyResult?.table?.rows ?? [];
-                            const rows = planningEfficiencyShowAllCandidates ? rows0 : rows0.slice(0, 1);
+                            const rows = planningEfficiencyShowAllCandidates ? rows0.slice(0, 10) : rows0.slice(0, 1);
 
                             return rows.map((r) => {
                               const sig = String(r?.signature ?? '');
@@ -15467,7 +15616,13 @@ const App = () => {
                       )}
                       {planningEfficiencyResult?.ok && (
                         <>
-                          <div className="text-[10px] text-slate-400 font-mono">候选：{planningEfficiencyResult?.stats?.topK ?? 0} / {planningEfficiencyResult?.stats?.candidateCount ?? 0}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            {(() => {
+                              const total = Array.isArray(planningEfficiencyResult?.disturbance?.table?.rows) ? planningEfficiencyResult.disturbance.table.rows.length : 0;
+                              const shown = Math.min(10, total);
+                              return `候选：Top${shown} / ${total}`;
+                            })()}
+                          </div>
                           <button
                             type="button"
                             className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
@@ -15481,9 +15636,9 @@ const App = () => {
                               type="button"
                               className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
                               onClick={handleToggleEfficiencyCandidates}
-                              title="默认仅展示最优方案；可展开查看TopK候选对比表"
+                              title="默认仅展示最优方案；可切换查看Top10候选对比表"
                             >
-                              {planningEfficiencyShowAllCandidates ? '仅显示最优' : '展开候选'}
+                              {planningEfficiencyShowAllCandidates ? '仅显示最优' : '显示Top10'}
                             </button>
                           )}
                         </>
@@ -15530,7 +15685,7 @@ const App = () => {
                           <tbody>
                             {(() => {
                               const rows0 = planningEfficiencyResult?.disturbance?.table?.rows ?? [];
-                              const rows = planningEfficiencyShowAllCandidates ? rows0 : rows0.slice(0, 1);
+                              const rows = planningEfficiencyShowAllCandidates ? rows0.slice(0, 10) : rows0.slice(0, 1);
                               const fmt0 = (v) => (Number.isFinite(Number(v)) ? String(Math.round(Number(v))) : '--');
                               const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
                               const fmt2 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
@@ -15606,9 +15761,6 @@ const App = () => {
                   <div className="p-4 border-b border-slate-100 flex items-center justify-between">
                     <div className="min-w-0">
                       <div className="text-xs font-bold text-slate-500 uppercase tracking-widest">权重自定义候选对比表（三目标加权：效率/回收/扰动）</div>
-                      <div className="mt-1 text-[11px] text-slate-500">
-                        说明：综合得分 = wEff·effNorm + wRec·recNorm + wDist·distNorm（distNorm 为扰动 rawScore 归一化反向，越大越好）。
-                      </div>
                       {(!odiFieldPack || !odiFieldPack?.field) && (
                         <div className="mt-1 text-[11px] text-amber-700">未检测到 ODI 场：扰动排序将退化（建议先算 ODI）。</div>
                       )}
@@ -15628,30 +15780,36 @@ const App = () => {
                           })()}
                         </div>
                       )}
-                      {planningWeightedResult && (
-                        <button
-                          type="button"
-                          className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
-                          onClick={openWeightedDebugModal}
-                          title="查看 weighted 的归一化区间、权重、Top候选与总分拆解（可复制JSON）"
-                        >
-                          计算过程
-                        </button>
-                      )}
                       {planningWeightedResult?.ok && (
                         <>
                           <div className="text-[10px] text-slate-400 font-mono">
                             权重：wEff={Number(planningWeightedResult?.weightsUsed?.wEff ?? 0).toFixed(2)} / wRec={Number(planningWeightedResult?.weightsUsed?.wRec ?? 0).toFixed(2)} / wDist={Number(planningWeightedResult?.weightsUsed?.wDist ?? 0).toFixed(2)}
                           </div>
-                          <div className="text-[10px] text-slate-400 font-mono">候选：{planningWeightedResult?.table?.rows?.length ?? 0}</div>
+                          <div className="text-[10px] text-slate-400 font-mono">
+                            {(() => {
+                              const total = Array.isArray(planningWeightedResult?.table?.rows) ? planningWeightedResult.table.rows.length : 0;
+                              const shown = Math.min(10, total);
+                              return `候选：Top${shown} / ${total}`;
+                            })()}
+                          </div>
+                          {planningWeightedResult && (
+                            <button
+                              type="button"
+                              className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
+                              onClick={openWeightedDebugModal}
+                              title="打开计算过程弹窗：可复制请求/回包/Top候选关键字段（用于排障）"
+                            >
+                              计算过程
+                            </button>
+                          )}
                           {Array.isArray(planningWeightedResult?.table?.rows) && planningWeightedResult.table.rows.length > 1 && (
                             <button
                               type="button"
                               className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
                               onClick={() => setPlanningWeightedShowAllCandidates((v) => !v)}
-                              title="默认仅展示最优方案；可展开查看候选对比表"
+                              title="默认仅展示最优方案；可切换查看Top10候选对比表"
                             >
-                              {planningWeightedShowAllCandidates ? '仅显示最优' : '展开候选'}
+                              {planningWeightedShowAllCandidates ? '仅显示最优' : '显示Top10'}
                             </button>
                           )}
                         </>
@@ -15679,33 +15837,240 @@ const App = () => {
                               <th className="w-14 text-center py-2 px-1 text-slate-500 font-bold whitespace-nowrap">方案选择</th>
                               <th className="min-w-[84px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">来源</th>
                               <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面个数（个）</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度B（m）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面宽度（m）</th>
+                              <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">工作面推进长度（m）</th>
                               <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">边界煤柱（m）</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱（m）</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">区段煤柱范围（m）</th>
                               <th className="min-w-[88px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">覆盖率（%）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">扰动得分（100）</th>
                               <th className="min-w-[132px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">总储量（万吨）</th>
-                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">综合得分</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">effNorm</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">recNorm</th>
-                              <th className="min-w-[96px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">distNorm</th>
+                              <th className="min-w-[112px] text-center py-2 px-2 text-slate-500 font-bold whitespace-nowrap">综合得分（0-100）</th>
                             </tr>
                           </thead>
                           <tbody>
                             {(() => {
                               const rows0 = planningWeightedResult?.table?.rows ?? [];
-                              const rows = planningWeightedShowAllCandidates ? rows0 : rows0.slice(0, 1);
-                              const fmt1 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
-                              const fmt2 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '--');
-                              const fmt3 = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(3) : '--');
-                              const fmtPts = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(1) : '--');
-                              const fmtWanT = (v) => (Number.isFinite(Number(v)) ? (Number(v) / 10000).toFixed(2) : '--');
+                              const rows = planningWeightedShowAllCandidates ? rows0.slice(0, 10) : rows0.slice(0, 1);
+                              const clamp01Local = (x) => {
+                                const v = Number(x);
+                                if (!Number.isFinite(v)) return 0;
+                                return Math.max(0, Math.min(1, v));
+                              };
+                              const total01 = (r) => {
+                                const v = Number(r?.totalScore ?? r?.combinedScore);
+                                return clamp01Local(v);
+                              };
+                              const displayScore100 = (r) => {
+                                // A2: map [0,1] -> [60,100]
+                                const s = total01(r);
+                                return Math.round(60 + 40 * s);
+                              };
+
+                              // 从原始候选（effResult/recResult/distResult）回查 BMin/BMax
+                              const pack = planningWeightedResult ?? {};
+                              const effCandidates = Array.isArray(pack?.effResult?.candidates) ? pack.effResult.candidates : [];
+                              const recCandidates = Array.isArray(pack?.recResult?.candidates) ? pack.recResult.candidates : [];
+                              const distCandidates = Array.isArray(pack?.distResult?.candidates) ? pack.distResult.candidates : [];
+
+                              const buildSigMap = (arr) => {
+                                const m = new Map();
+                                for (const c of (arr || [])) {
+                                  const sig = String(c?.signature ?? '').trim();
+                                  if (!sig) continue;
+                                  if (!m.has(sig)) m.set(sig, c);
+                                }
+                                return m;
+                              };
+                              const effBySig = buildSigMap(effCandidates);
+                              const recBySig = buildSigMap(recCandidates);
+                              const distBySig = buildSigMap(distCandidates);
+
+                              const getBRangeFromCandidate = (cand) => {
+                                const c = cand ?? null;
+                                const m = c?.metrics ?? null;
+                                const toFinite = (v0) => {
+                                  if (v0 == null) return null;
+                                  if (typeof v0 === 'string' && v0.trim() === '') return null;
+                                  const v = Number(v0);
+                                  return Number.isFinite(v) ? v : null;
+                                };
+                                const pick = (...vals) => {
+                                  for (const vv of vals) {
+                                    const v = toFinite(vv);
+                                    if (v != null) return v;
+                                  }
+                                  return null;
+                                };
+                                const bMin = pick(c?.BMin, c?.Bmin, m?.BMin, m?.Bmin);
+                                const bMax = pick(c?.BMax, c?.Bmax, m?.BMax, m?.Bmax);
+                                if (bMin == null || bMax == null) return null;
+                                const a = Math.min(bMin, bMax);
+                                const b = Math.max(bMin, bMax);
+                                if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+                                return { min: a, max: b };
+                              };
+
+                              const getWsRangeFromCandidate = (cand) => {
+                                const c = cand ?? null;
+                                const m = c?.metrics ?? null;
+                                const g = c?.genes ?? null;
+                                const toFinite = (v0) => {
+                                  if (v0 == null) return null;
+                                  if (typeof v0 === 'string' && v0.trim() === '') return null;
+                                  const v = Number(v0);
+                                  return Number.isFinite(v) ? v : null;
+                                };
+                                const pick = (...vals) => {
+                                  for (const vv of vals) {
+                                    const v = toFinite(vv);
+                                    if (v != null) return v;
+                                  }
+                                  return null;
+                                };
+                                const wsMin = pick(c?.wsMin, m?.wsMin, g?.wsMin);
+                                const wsMax = pick(c?.wsMax, m?.wsMax, g?.wsMax);
+                                if (wsMin == null || wsMax == null) return null;
+                                const a = Math.min(wsMin, wsMax);
+                                const b = Math.max(wsMin, wsMax);
+                                if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+                                return { min: a, max: b };
+                              };
+                              const getAdvanceRangeFromCandidate = (cand) => {
+                                const c = cand ?? null;
+                                const m = c?.metrics ?? null;
+                                const g = c?.genes ?? null;
+                                const toFinite = (v0) => {
+                                  if (v0 == null) return null;
+                                  if (typeof v0 === 'string' && v0.trim() === '') return null;
+                                  const v = Number(v0);
+                                  return Number.isFinite(v) ? v : null;
+                                };
+                                const pick = (...vals) => {
+                                  for (const vv of vals) {
+                                    const v = toFinite(vv);
+                                    if (v != null) return v;
+                                  }
+                                  return null;
+                                };
+
+                                const lMin = pick(
+                                  c?.Lmin, c?.LMin, c?.lMin, c?.lmin,
+                                  m?.Lmin, m?.LMin, m?.lMin, m?.lmin,
+                                  g?.Lmin, g?.LMin, g?.lMin, g?.lmin,
+                                  planningParams?.faceAdvanceMin
+                                );
+                                const lMax = pick(
+                                  c?.Lmax, c?.LMax, c?.lMax, c?.lmax,
+                                  m?.Lmax, m?.LMax, m?.lMax, m?.lmax,
+                                  g?.Lmax, g?.LMax, g?.lMax, g?.lmax,
+                                  planningParams?.faceAdvanceMax
+                                );
+
+                                if (lMin == null && lMax == null) return null;
+                                if (lMin == null && lMax != null) return { min: lMax, max: lMax };
+                                if (lMin != null && lMax == null) return { min: lMin, max: lMin };
+                                const a = Math.min(lMin, lMax);
+                                const b = Math.max(lMin, lMax);
+                                if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+                                return { min: a, max: b };
+                              };
+
+                              const getAdvanceRangeFromCandidateByLoops = (cand) => {
+                                const c = cand ?? null;
+                                const axis = String(planningAdvanceAxis ?? c?.axis ?? c?.metrics?.axis ?? c?.genes?.axis ?? 'x') || 'x';
+
+                                const raw = c?.render?.plannedWorkfaceLoopsWorld
+                                  ?? c?.plannedWorkfaceLoopsWorld
+                                  ?? c?.render?.facesLoops
+                                  ?? c?.facesLoops
+                                  ?? null;
+                                const arr = Array.isArray(raw) ? raw : [];
+                                if (!arr.length) return null;
+
+                                const lengths = [];
+                                for (let i = 0; i < arr.length; i++) {
+                                  const it = arr[i];
+                                  const loop = Array.isArray(it?.loop) ? it.loop : (Array.isArray(it) ? it : null);
+                                  if (!loop) continue;
+                                  const bb = bboxOfLoop(loop);
+                                  if (!bb) continue;
+                                  const L = axis === 'y' ? (bb.maxY - bb.minY) : (bb.maxX - bb.minX);
+                                  if (Number.isFinite(L) && L > 0) lengths.push(L);
+                                }
+                                if (!lengths.length) return null;
+                                const min = Math.min(...lengths);
+                                const max = Math.max(...lengths);
+                                if (!(Number.isFinite(min) && Number.isFinite(max))) return null;
+                                return { min, max };
+                              };
+                              const fmtWsRange = (range, fallbackWs) => {
+                                const fb = (fallbackWs == null || (typeof fallbackWs === 'string' && fallbackWs.trim() === '')) ? NaN : Number(fallbackWs);
+                                if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+                                  const a = Number(range.min).toFixed(1);
+                                  const b = Number(range.max).toFixed(1);
+                                  return (a === b) ? a : `${a}~${b}`;
+                                }
+                                if (Number.isFinite(fb)) return fb.toFixed(1);
+                                return '--';
+                              };
+                              const fmtBRange = (range, fallbackB) => {
+                                const fb = (fallbackB == null || (typeof fallbackB === 'string' && fallbackB.trim() === '')) ? NaN : Number(fallbackB);
+                                if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+                                  const a = Number(range.min).toFixed(1);
+                                  const b = Number(range.max).toFixed(1);
+                                  return (a === b) ? a : `${a}~${b}`;
+                                }
+                                if (Number.isFinite(fb)) return fb.toFixed(1);
+                                return '--';
+                              };
+                              const fmtAdvanceRange = (range) => {
+                                if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+                                  const a = Number(range.min).toFixed(1);
+                                  const b = Number(range.max).toFixed(1);
+                                  return (a === b) ? a : `${a}~${b}`;
+                                }
+                                return '--';
+                              };
+                              const toFiniteCell = (vv) => {
+                                if (vv == null) return null;
+                                if (typeof vv === 'string' && vv.trim() === '') return null;
+                                const n = Number(vv);
+                                return Number.isFinite(n) ? n : null;
+                              };
+                              const fmt1 = (v) => {
+                                const n = toFiniteCell(v);
+                                return n != null ? n.toFixed(1) : '--';
+                              };
+                              const fmt2 = (v) => {
+                                const n = toFiniteCell(v);
+                                return n != null ? n.toFixed(2) : '--';
+                              };
+                              const fmt3 = (v) => {
+                                const n = toFiniteCell(v);
+                                return n != null ? n.toFixed(3) : '--';
+                              };
+                              const fmtPts = (v) => {
+                                const n = toFiniteCell(v);
+                                return n != null ? n.toFixed(1) : '--';
+                              };
+                              const fmtWanT = (v) => {
+                                const n = toFiniteCell(v);
+                                return n != null ? (n / 10000).toFixed(2) : '--';
+                              };
 
                               return rows.map((r) => {
                                 const sig = String(r?.signature ?? '');
                                 const src = String(r?.source ?? '');
                                 const active = sig && src && sig === planningWeightedSelected?.sig && src === planningWeightedSelected?.source;
                                 const srcLabel = (src === 'recovery') ? '回收' : (src === 'disturbance' ? '扰动' : '效率');
+
+                                const cand = (src === 'recovery')
+                                  ? recBySig.get(sig)
+                                  : (src === 'disturbance')
+                                    ? distBySig.get(sig)
+                                    : effBySig.get(sig);
+                                const bRange = getBRangeFromCandidate(cand);
+                                const wsRange = getWsRangeFromCandidate(cand);
+                                const advRange = getAdvanceRangeFromCandidate(cand) ?? getAdvanceRangeFromCandidateByLoops(cand);
                                 return (
                                   <tr
                                     key={`${src}::${sig}`}
@@ -15729,21 +16094,29 @@ const App = () => {
                                     </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-bold">{srcLabel}</td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{Number.isFinite(Number(r?.N)) ? r.N : '--'}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.B)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={bRange ? `面宽范围：最小=${Number(bRange.min).toFixed(2)}，最大=${Number(bRange.max).toFixed(2)}` : ''}>
+                                      {fmtBRange(bRange, r?.B)}
+                                    </td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={advRange ? `推进长度范围：最小=${Number(advRange.min).toFixed(2)}，最大=${Number(advRange.max).toFixed(2)}` : ''}>
+                                      {fmtAdvanceRange(advRange)}
+                                    </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.wb)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt1(r?.ws)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono" title={wsRange ? `区段煤柱范围：最小=${Number(wsRange.min).toFixed(2)}，最大=${Number(wsRange.max).toFixed(2)}` : ''}>
+                                      {fmtWsRange(wsRange, r?.ws)}
+                                    </td>
                                     <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt2(r?.coveragePct)}</td>
+                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWanT(r?.tonnageTotal)}</td>
                                     <td
                                       className="py-2 px-2 text-center text-slate-700 font-mono"
-                                      title={Number.isFinite(Number(r?.distScore)) ? `rawScore=${Number(r.distScore).toFixed(4)}（越小越好）` : ''}
+                                      title={(() => {
+                                        const s01 = total01(r);
+                                        const raw = Number(r?.totalScore ?? r?.combinedScore);
+                                        const rawTxt = Number.isFinite(raw) ? raw.toFixed(6) : '--';
+                                        return `综合得分（0~1）=${rawTxt}，截断后=${s01.toFixed(6)}`;
+                                      })()}
                                     >
-                                      {fmtPts(r?.distPoints)}
+                                      {displayScore100(r)}
                                     </td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmtWanT(r?.tonnageTotal)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.totalScore ?? r?.combinedScore)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.effNorm)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.recNorm)}</td>
-                                    <td className="py-2 px-2 text-center text-slate-700 font-mono">{fmt3(r?.distNorm)}</td>
                                   </tr>
                                 );
                               });
@@ -15792,7 +16165,13 @@ const App = () => {
                       {planningRecoveryResult?.ok && (
                         <>
                           <div className="text-[10px] text-slate-400 font-mono">
-                            候选：{planningRecoveryResult?.stats?.topK ?? 0} / {planningRecoveryResult?.stats?.candidateCount ?? 0}
+                            {(() => {
+                              const total = Array.isArray(planningRecoveryResult?.table?.rows) ? planningRecoveryResult.table.rows.length : 0;
+                              const shown = Math.min(10, total);
+                              const all = Number(planningRecoveryResult?.stats?.candidateCount);
+                              const allTxt = Number.isFinite(all) ? String(Math.max(0, Math.round(all))) : String(total);
+                              return `候选：Top${shown} / ${allTxt}`;
+                            })()}
                           </div>
                           {(() => {
                             const b = planningRecoveryResult?.attemptSummary?.Bsearch;
@@ -15875,9 +16254,9 @@ const App = () => {
                               type="button"
                               className="px-2 py-1 text-[10px] rounded border border-slate-200 text-slate-500 hover:bg-slate-50"
                               onClick={handleToggleRecoveryCandidates}
-                              title="默认仅展示最优方案；可展开查看TopK候选对比表"
+                              title="默认仅展示最优方案；可切换查看Top10候选对比表"
                             >
-                              {planningRecoveryShowAllCandidates ? '仅显示最优' : '展开候选'}
+                              {planningRecoveryShowAllCandidates ? '仅显示最优' : '显示Top10'}
                             </button>
                           )}
                           {(() => {
@@ -15946,7 +16325,7 @@ const App = () => {
                           <tbody>
                             {(() => {
                               const rows0 = planningRecoveryResult?.table?.rows ?? [];
-                              const rows = planningRecoveryShowAllCandidates ? rows0 : rows0.slice(0, 1);
+                              const rows = planningRecoveryShowAllCandidates ? rows0.slice(0, 10) : rows0.slice(0, 1);
 
                               return rows.map((r, idx) => {
                               const sig = String(r?.signature ?? '');

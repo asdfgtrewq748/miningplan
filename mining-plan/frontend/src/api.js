@@ -37,6 +37,16 @@ async function apiRequest(url, options = {}, maxRetries = 3, retryDelay = 1000, 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       const controller = new AbortController();
+      const externalSignal = options?.signal;
+      // Merge external abort with timeout abort.
+      if (externalSignal) {
+        try {
+          if (externalSignal.aborted) controller.abort();
+          else externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+        } catch {
+          // ignore
+        }
+      }
       const tMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : 30000;
       const timeout = setTimeout(() => controller.abort(), tMs);
 
@@ -69,7 +79,10 @@ async function apiRequest(url, options = {}, maxRetries = 3, retryDelay = 1000, 
         throw err;
       }
       if (err.name === 'AbortError') {
-        throw new ApiError('请求超时', 408);
+        // distinguish user-cancel vs timeout (best-effort)
+        const externalSignal = options?.signal;
+        const isUserAbort = Boolean(externalSignal && externalSignal.aborted);
+        throw new ApiError(isUserAbort ? '请求已取消' : '请求超时', isUserAbort ? 499 : 408);
       }
 
       // 网络错误或服务器错误，等待后重试
@@ -83,7 +96,7 @@ async function apiRequest(url, options = {}, maxRetries = 3, retryDelay = 1000, 
 
   // 所有重试都失败
   if (lastError?.message === 'Failed to fetch') {
-    throw new ApiError('无法连接到后端服务，请确保后端已启动 (端口 3001)', 0);
+    throw new ApiError('无法连接到后端服务：请确认后端已启动（默认端口 3001）。若在 VS Code 开发环境中，可运行任务“后端：FastAPI（自动热更新）”。', 0);
   }
   throw lastError;
 }
@@ -113,6 +126,16 @@ async function apiPostWithTimeout(endpoint, data = {}, timeoutMs = 30000) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
+  }, 3, 1000, timeoutMs);
+  return res.json();
+}
+
+async function apiPostWithTimeoutAndSignal(endpoint, data = {}, timeoutMs = 30000, signal = null) {
+  const res = await apiRequest(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+    signal: signal || undefined,
   }, 3, 1000, timeoutMs);
   return res.json();
 }
@@ -168,6 +191,12 @@ export async function smartResourceCompute(payload) {
 export async function smartWeightedCompute(payload) {
   // weighted 可能更重：放宽超时
   return apiPostWithTimeout('/planning/smart-weighted/compute', payload ?? {}, 180000);
+}
+
+// 可取消版本（向后兼容：不影响旧调用）
+export async function smartWeightedComputeCancelable(payload, options = {}) {
+  const signal = options?.signal || null;
+  return apiPostWithTimeoutAndSignal('/planning/smart-weighted/compute', payload ?? {}, 180000, signal);
 }
 
 /**

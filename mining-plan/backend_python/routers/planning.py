@@ -4,6 +4,9 @@ import math
 import hashlib
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import copy
 
 import json
 import os
@@ -20,6 +23,59 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 
 router = APIRouter()
+
+
+# Reuse a small thread pool to parallelize independent Node harness calls
+# within a single request (eff/recovery/disturbance). This reduces wall-clock
+# latency without changing deterministic outputs.
+_NODE_EXECUTOR = ThreadPoolExecutor(max_workers=3)
+
+# Cache Node harness outputs to avoid re-running identical payloads across requests.
+# Keyed by a stable hash of the full payload to guarantee correctness.
+_NODE_RESULT_CACHE: Dict[str, Dict[str, Any]] = {}
+_NODE_RESULT_CACHE_MAX = 16
+_NODE_RESULT_CACHE_LOCK = threading.Lock()
+
+
+def _stable_payload_hash(payload: Dict[str, Any]) -> str:
+    try:
+        s = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    except Exception:
+        s = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(s.encode('utf-8', errors='ignore')).hexdigest()
+
+
+def _node_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    k = str(key or '')
+    if not k:
+        return None
+    with _NODE_RESULT_CACHE_LOCK:
+        it = _NODE_RESULT_CACHE.get(k)
+        if not isinstance(it, dict):
+            return None
+        val = it.get('value')
+        if not isinstance(val, dict):
+            return None
+        # refresh ts (LRU-ish)
+        it['_ts'] = time.time()
+        # defensive copy: downstream may add fields; keep cache immutable
+        return copy.deepcopy(val)
+
+
+def _node_cache_put(key: str, value: Dict[str, Any]) -> None:
+    k = str(key or '')
+    if not k or not isinstance(value, dict):
+        return
+    with _NODE_RESULT_CACHE_LOCK:
+        try:
+            if len(_NODE_RESULT_CACHE) >= _NODE_RESULT_CACHE_MAX:
+                items = list(_NODE_RESULT_CACHE.items())
+                items.sort(key=lambda kv: float(kv[1].get('_ts', 0.0)))
+                for kk, _ in items[: max(1, len(items) - _NODE_RESULT_CACHE_MAX + 1)]:
+                    _NODE_RESULT_CACHE.pop(kk, None)
+            _NODE_RESULT_CACHE[k] = {'_ts': time.time(), 'value': copy.deepcopy(value)}
+        except Exception:
+            return
 
 
 # -----------------------------
@@ -326,27 +382,16 @@ def _loops_to_polygon_union(loops: Any) -> Optional[BaseGeometry]:
     arr = loops if isinstance(loops, list) else []
     polys: List[Polygon] = []
     for loop in arr:
-        pts = loop if isinstance(loop, list) else []
-        coords = []
-        for p in pts:
-            if not isinstance(p, dict):
-                continue
-            x = p.get('x')
-            y = p.get('y')
-            try:
-                fx = float(x)
-                fy = float(y)
-            except Exception:
-                continue
-            if not (math.isfinite(fx) and math.isfinite(fy)):
-                continue
-            coords.append((fx, fy))
-        if len(coords) < 3:
+        # Some render payloads wrap loops as { faceIndex, loop: [...] }.
+        loop_pts = loop
+        if isinstance(loop, dict) and 'loop' in loop:
+            loop_pts = loop.get('loop')
+
+        # Keep parsing consistent with other geometry helpers.
+        poly = _loop_to_polygon(loop_pts)
+        if poly is None or poly.is_empty:
             continue
-        if coords[0] != coords[-1]:
-            coords.append(coords[0])
         try:
-            poly = Polygon(coords)
             if not poly.is_valid:
                 poly = poly.buffer(0)
             if poly and not poly.is_empty and poly.area > 0:
@@ -636,6 +681,12 @@ def _run_node_smart_efficiency(payload: Dict[str, Any], timeout_s: float = 120.0
     if not script.exists():
         raise RuntimeError(f'Node harness not found: {script}')
 
+    cache_id = f"eff|{_stable_payload_hash(payload)}"
+    cached = _node_cache_get(cache_id)
+    if cached is not None:
+        cached['_nodeCacheHit'] = True
+        return cached
+
     # Ensure Node can resolve frontend deps (jsts etc). Prefer frontend/node_modules.
     frontend_node_modules = root / 'frontend' / 'node_modules'
     env = os.environ.copy()
@@ -660,7 +711,11 @@ def _run_node_smart_efficiency(payload: Dict[str, Any], timeout_s: float = 120.0
     out = proc.stdout.decode('utf-8', errors='replace').strip()
     if not out:
         raise RuntimeError('node returned empty output')
-    return json.loads(out)
+    res = json.loads(out)
+    if isinstance(res, dict):
+        _node_cache_put(cache_id, res)
+        res['_nodeCacheHit'] = False
+    return res
 
 
 def _run_node_smart_resource(payload: Dict[str, Any], timeout_s: float = 120.0) -> Dict[str, Any]:
@@ -668,6 +723,12 @@ def _run_node_smart_resource(payload: Dict[str, Any], timeout_s: float = 120.0) 
     script = root / 'tools' / 'run-smart-resource.mjs'
     if not script.exists():
         raise RuntimeError(f'Node harness not found: {script}')
+
+    cache_id = f"rec|{_stable_payload_hash(payload)}"
+    cached = _node_cache_get(cache_id)
+    if cached is not None:
+        cached['_nodeCacheHit'] = True
+        return cached
 
     frontend_node_modules = root / 'frontend' / 'node_modules'
     env = os.environ.copy()
@@ -692,7 +753,11 @@ def _run_node_smart_resource(payload: Dict[str, Any], timeout_s: float = 120.0) 
     out = proc.stdout.decode('utf-8', errors='replace').strip()
     if not out:
         raise RuntimeError('node returned empty output')
-    return json.loads(out)
+    res = json.loads(out)
+    if isinstance(res, dict):
+        _node_cache_put(cache_id, res)
+        res['_nodeCacheHit'] = False
+    return res
 
 
 # -----------------------------
@@ -1237,8 +1302,14 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
 
     odi_pack_raw = payload.get('odiFieldPack')
     odi_pack = None
+    # Fast path: avoid expensive deep validation for the potentially huge `field`.
+    # Frontend already constructs a well-formed pack; keeping validation would
+    # mainly add overhead without improving determinism.
     try:
-        odi_pack = ThicknessFieldPack.model_validate(odi_pack_raw) if odi_pack_raw is not None else None
+        if isinstance(odi_pack_raw, dict):
+            odi_pack = ThicknessFieldPack.model_construct(**odi_pack_raw)
+        else:
+            odi_pack = ThicknessFieldPack.model_validate(odi_pack_raw) if odi_pack_raw is not None else None
     except Exception:
         odi_pack = None
     has_odi = bool(odi_pack and odi_pack.field and odi_pack.gridW and odi_pack.gridH)
@@ -1325,10 +1396,19 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
     rec_res: Optional[Dict[str, Any]] = None
     dist_res: Optional[Dict[str, Any]] = None
 
+    node_ms: Dict[str, float] = {}
+    node_cache_hit: Dict[str, bool] = {}
+
     if single_mode == 'efficiency':
+        t_node = time.time()
         eff_res = _run_node_smart_efficiency(eff_payload)
+        node_ms['efficiency'] = (time.time() - t_node) * 1000
+        node_cache_hit['efficiency'] = bool(isinstance(eff_res, dict) and eff_res.get('_nodeCacheHit') is True)
     elif single_mode == 'recovery':
+        t_node = time.time()
         rec_res = _run_node_smart_resource(rec_payload)
+        node_ms['recovery'] = (time.time() - t_node) * 1000
+        node_cache_hit['recovery'] = bool(isinstance(rec_res, dict) and rec_res.get('_nodeCacheHit') is True)
     elif single_mode == 'disturbance':
         if not has_odi:
             out = {
@@ -1354,24 +1434,43 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
             **base_knobs,
             'input': {'mode': 'disturbance'},
         }
+        t_node = time.time()
         dist_res = _run_node_smart_efficiency(dist_payload)
+        node_ms['disturbance'] = (time.time() - t_node) * 1000
+        node_cache_hit['disturbance'] = bool(isinstance(dist_res, dict) and dist_res.get('_nodeCacheHit') is True)
     else:
-        eff_res = _run_node_smart_efficiency(eff_payload)
-        rec_res = _run_node_smart_resource(rec_payload)
+        futures: Dict[str, Any] = {}
+        starts: Dict[str, float] = {}
+        starts['efficiency'] = time.time()
+        futures['efficiency'] = _NODE_EXECUTOR.submit(_run_node_smart_efficiency, eff_payload)
+        starts['recovery'] = time.time()
+        futures['recovery'] = _NODE_EXECUTOR.submit(_run_node_smart_resource, rec_payload)
+        # optional: add a diversity run using disturbance search (only if ODI present and wDist>0)
+        if has_odi and w_dis > 1e-9:
+            dist_payload = {
+                'mode': 'smart-efficiency',
+                'reqSeq': payload.get('reqSeq'),
+                'cacheKey': cache_dist,
+                **base_knobs,
+                'input': {'mode': 'disturbance'},
+            }
+            starts['disturbance'] = time.time()
+            futures['disturbance'] = _NODE_EXECUTOR.submit(_run_node_smart_efficiency, dist_payload)
 
-    # optional: add a diversity run using disturbance search (only if ODI present and wDist>0)
-    if single_mode is None and has_odi and w_dis > 1e-9:
-        dist_payload = {
-            'mode': 'smart-efficiency',
-            'reqSeq': payload.get('reqSeq'),
-            'cacheKey': cache_dist,
-            **base_knobs,
-            'input': {'mode': 'disturbance'},
-        }
-        try:
-            dist_res = _run_node_smart_efficiency(dist_payload)
-        except Exception:
-            dist_res = None
+        for name, fut in futures.items():
+            try:
+                res = fut.result()
+            except Exception:
+                res = None
+            t0n = float(starts.get(name, time.time()))
+            node_ms[name] = (time.time() - t0n) * 1000
+            node_cache_hit[name] = bool(isinstance(res, dict) and res.get('_nodeCacheHit') is True)
+            if name == 'efficiency':
+                eff_res = res
+            elif name == 'recovery':
+                rec_res = res
+            elif name == 'disturbance':
+                dist_res = res
 
     eff_cands = eff_res.get('candidates') if isinstance(eff_res, dict) else []
     rec_cands = rec_res.get('candidates') if isinstance(rec_res, dict) else []
@@ -1380,20 +1479,20 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
     rec_cands = rec_cands if isinstance(rec_cands, list) else []
     dist_cands = dist_cands if isinstance(dist_cands, list) else []
 
-    # build combined pool (hard constraint: qualified only)
-    pool: List[Dict[str, Any]] = []
+    # build combined pool
+    # - Prefer qualified candidates.
+    # - If none are qualified (common when constraints are tight), fall back to unqualified
+    #   candidates so the UI still has something to inspect (with qualified=false).
+    pool_all: List[Dict[str, Any]] = []
     def _push(source: str, c: Any) -> None:
         if not isinstance(c, dict):
             return
         sig = str(c.get('signature') or '').strip()
         if not sig:
             return
-        q = c.get('qualified')
-        if q is False:
-            return
         item = dict(c)
         item['_source'] = source
-        pool.append(item)
+        pool_all.append(item)
 
     for c in eff_cands:
         _push('efficiency', c)
@@ -1402,21 +1501,70 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
     for c in dist_cands:
         _push('disturbance', c)
 
+    pool_qualified = [c for c in pool_all if c.get('qualified') is True]
+    fallback_unqualified = False
+    pool: List[Dict[str, Any]]
+    if pool_qualified:
+        pool = pool_qualified
+    else:
+        pool = pool_all
+        fallback_unqualified = bool(pool_all)
+
     if not pool:
+        def _brief(res: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            if not isinstance(res, dict):
+                return {'ok': False, 'message': '无回包（node harness 异常或返回空）', 'failedReason': 'NO_RESPONSE', 'candidatesCount': 0}
+            cands = res.get('candidates')
+            n = len(cands) if isinstance(cands, list) else 0
+            return {
+                'ok': bool(res.get('ok')),
+                'message': str(res.get('message') or ''),
+                'failedReason': str(res.get('failedReason') or ''),
+                'axis': str(res.get('axis') or ''),
+                'cacheKey': str(res.get('cacheKey') or ''),
+                'candidatesCount': n,
+            }
+
+        diag = {
+            'efficiency': _brief(eff_res),
+            'recovery': _brief(rec_res),
+            'disturbance': _brief(dist_res) if dist_res is not None else None,
+        }
         out = {
             'ok': False,
             'mode': 'smart-weighted',
             'cacheKey': cache_key,
-            'message': '暂无候选：效率/回收候选均为空或全部不合格。',
+            'message': '暂无候选：效率/回收候选均为空或全部不合格。（请查看 debug.subResults 获取原因）',
             'failedReason': 'NO_CANDIDATES',
             'best': {'signature': '', 'source': ''},
             'table': {'rows': []},
             'weightsUsed': {'wEff': w_eff, 'wRec': w_rec, 'wDist': w_dis},
+            'debug': {
+                'salt': salt,
+                'cacheEff': cache_eff,
+                'cacheRec': cache_rec,
+                'cacheDist': cache_dist,
+                'subResults': diag,
+            },
             'stats': {'backendElapsedMs': (time.time() - t0) * 1000, 'cacheHit': False},
         }
         if cache_key:
             _cache_put(cache_key, out)
         return out
+
+    # Speed: build a representative list for per-signature computations (tonnage / disturbance).
+    # We keep the original `pool` (may contain duplicates) for selection, but expensive scoring
+    # only needs one geometry per unique signature.
+    rep_by_sig: Dict[str, Dict[str, Any]] = {}
+    rep_list: List[Dict[str, Any]] = []
+    for c in pool:
+        sig0 = str(c.get('signature') or '').strip()
+        if not sig0:
+            continue
+        if sig0 in rep_by_sig:
+            continue
+        rep_by_sig[sig0] = c
+        rep_list.append(c)
 
     # Recovery score for all candidates (prefer recoveryScore): use existing tonnage endpoint logic.
     # Build minimal candidate inputs.
@@ -1427,12 +1575,12 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         'topK': int(payload.get('topK') or 60),
         'debug': False,
     }
-    for c in pool:
+    for c in rep_list:
         sig = str(c.get('signature') or '')
         rr = c.get('render') if isinstance(c.get('render'), dict) else None
         ton_req['candidates'].append({
             'signature': sig,
-            'qualified': True,
+            'qualified': bool(c.get('qualified') is True),
             'coverageRatio': c.get('coverageRatio') or (c.get('metrics') or {}).get('coverageRatio'),
             'coverageRatioEff': c.get('coverageRatioEff') or (c.get('metrics') or {}).get('coverageRatioEff'),
             'N': c.get('N') or (c.get('metrics') or {}).get('faceCount'),
@@ -1443,7 +1591,9 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
             'render': rr,
         })
 
+    t_ton = time.time()
     ton_resp = smart_resource_tonnage(SmartResourceTonnageRequest.model_validate(ton_req))
+    ton_ms = (time.time() - t_ton) * 1000
     rec_by_sig = ton_resp.recoveryScoreBySignature if isinstance(ton_resp, SmartResourceTonnageResponse) else {}
     ton_by_sig = ton_resp.tonnageBySignature if isinstance(ton_resp, SmartResourceTonnageResponse) else {}
 
@@ -1454,8 +1604,11 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
     except Exception:
         dist_params = SmartWeightedDisturbanceParams()
     dist_by_sig: Dict[str, Dict[str, Any]] = {}
+    dist_ms = 0.0
     if has_odi:
-        dist_by_sig = _compute_disturbance_for_candidates(pool, odi_pack, dist_params)
+        t_dist = time.time()
+        dist_by_sig = _compute_disturbance_for_candidates(rep_list, odi_pack, dist_params)
+        dist_ms = (time.time() - t_dist) * 1000
 
     # build objective vectors
     items: List[Dict[str, Any]] = []
@@ -1503,7 +1656,7 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         items.append({
             'signature': sig,
             'source': src,
-            'qualified': True,
+            'qualified': bool(c.get('qualified') is True),
             'effScore': eff_score_f,
             'recScore': rec_score_f,
             'tonnageTotal': ton_total,
@@ -1532,7 +1685,9 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         else:
             obj_vecs.append([float(it.get('effScore') or 0.0), float(it.get('recScore') or 0.0)])
 
+    t_sel = time.time()
     selected_idx, pareto_rank, crowd = _select_topk_nsga(obj_vecs, k)
+    sel_ms = (time.time() - t_sel) * 1000
     selected_items = [items[i] for i in selected_idx]
 
     # Normalize for combined score (min-max on selected set for stability)
@@ -1563,7 +1718,7 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
             'rank': rnk,
             'signature': it.get('signature'),
             'source': it.get('source'),
-            'qualified': True,
+            'qualified': bool(it.get('qualified') is True),
             'N': it.get('N'),
             'B': it.get('B'),
             'wb': it.get('wb'),
@@ -1582,6 +1737,9 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
             'distExceedPct': it.get('distExceedPct'),
             'totalScore': it.get('totalScore'),
             'combinedScore': it.get('combinedScore'),
+            # debug compat (frontend debug copy uses r._distScore)
+            '_distScore': it.get('distScore'),
+            '_distCalib': it.get('_distCalib'),
             # debug
             'paretoRank': it.get('paretoRank'),
             'crowding': it.get('crowding'),
@@ -1594,11 +1752,14 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         'cacheKey': cache_key,
         'best': {'signature': str(best.get('signature') or ''), 'source': str(best.get('source') or '')} if best else {'signature': '', 'source': ''},
         'table': {'rows': rows},
+        'message': '未找到合格候选，已回退展示未达标候选（qualified=false）。' if fallback_unqualified else '',
+        'failedReason': 'FALLBACK_UNQUALIFIED' if fallback_unqualified else '',
         'weightsInput': {'efficiency': w_eff_in, 'recovery': w_rec_in, 'disturbance': w_dis_in},
         'weightsUsed': {'wEff': w_eff, 'wRec': w_rec, 'wDist': w_dis},
         'hasOdiField': has_odi,
         'derived': {
             'hasDist': has_odi,
+            'fallbackUnqualified': fallback_unqualified,
             'ranges': {
                 'eff': {'min': eff_mn, 'max': eff_mx},
                 'rec': {'min': rec_mn, 'max': rec_mx},
@@ -1632,6 +1793,11 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         'stats': {
             'backendElapsedMs': (time.time() - t0) * 1000,
             'cacheHit': False,
+            'nodeElapsedMs': node_ms,
+            'nodeCacheHit': node_cache_hit,
+            'tonnageElapsedMs': ton_ms,
+            'disturbanceElapsedMs': dist_ms,
+            'selectionElapsedMs': sel_ms,
         },
     }
 
@@ -1652,8 +1818,24 @@ def _loop_to_polygon(loop: Any) -> Optional[Polygon]:
     coords: List[Tuple[float, float]] = []
     for p in pts:
         try:
-            x = float(p.get('x')) if isinstance(p, dict) else float(getattr(p, 'x'))
-            y = float(p.get('y')) if isinstance(p, dict) else float(getattr(p, 'y'))
+            # Support point shapes:
+            # - {x, y}
+            # - [x, y] / (x, y)
+            # - objects with .x/.y
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                x = float(p[0])
+                y = float(p[1])
+            elif isinstance(p, dict):
+                # some payloads may use 0/1 index keys
+                if 'x' in p and 'y' in p:
+                    x = float(p.get('x'))
+                    y = float(p.get('y'))
+                else:
+                    x = float(p.get(0))
+                    y = float(p.get(1))
+            else:
+                x = float(getattr(p, 'x'))
+                y = float(getattr(p, 'y'))
         except Exception:
             continue
         if not np.isfinite(x) or not np.isfinite(y):
