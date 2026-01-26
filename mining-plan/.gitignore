@@ -46,3 +46,6 @@ npm-debug.log*
 
 # Claude
 .claude/
+
+# Local debug artifacts
+/_debug_*.json
