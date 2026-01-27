@@ -6,6 +6,7 @@ import * as api from '../api';
 
 const GeoModelPreview = ({ data }) => {
   const containerRef = useRef(null);
+  const canvasHostRef = useRef(null);
   const [layerData, setLayerData] = useState(null);
   const [selectedCoalIdx, setSelectedCoalIdx] = useState(-1); // -1表示高亮全部煤层
   const [opacity, setOpacity] = useState(0.2); // 默认围岩透明
@@ -97,14 +98,53 @@ const GeoModelPreview = ({ data }) => {
 
   // 构建3D模型
   useEffect(() => {
-    if (!containerRef.current || !layerData || !layerData.boreholes) return;
+    if (!containerRef.current || !canvasHostRef.current || !layerData || !layerData.boreholes) return;
     if (layerData.boreholes.length === 0) return;
 
+    const cleanupRenderer = () => {
+      try {
+        cancelAnimationFrame(frameIdRef.current);
+      } catch {
+        // ignore
+      }
+
+      try {
+        const prevRenderer = rendererRef.current;
+        if (prevRenderer?.domElement) {
+          // 只移除 Three.js 注入的 canvas，避免破坏 React 渲染的 HUD/控件节点
+          try {
+            prevRenderer.domElement.remove();
+          } catch {
+            try {
+              const parent = prevRenderer.domElement.parentNode;
+              if (parent) parent.removeChild(prevRenderer.domElement);
+            } catch {
+              // ignore
+            }
+          }
+        }
+
+        if (canvasHostRef.current) {
+          // 确保 host 里不残留旧 canvas（host 内不包含 React 节点）
+          try {
+            while (canvasHostRef.current.firstChild) {
+              canvasHostRef.current.removeChild(canvasHostRef.current.firstChild);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        prevRenderer?.dispose?.();
+      } catch {
+        // ignore
+      }
+
+      rendererRef.current = null;
+    };
+
     // Cleanup previous scene
-    if (rendererRef.current) {
-      containerRef.current.innerHTML = '';
-      rendererRef.current.dispose();
-    }
+    if (rendererRef.current) cleanupRenderer();
 
     // Scene Setup
     const scene = new THREE.Scene();
@@ -120,7 +160,7 @@ const GeoModelPreview = ({ data }) => {
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.shadowMap.enabled = true;
-    containerRef.current.appendChild(renderer.domElement);
+    canvasHostRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
     // Lights
@@ -305,8 +345,7 @@ const GeoModelPreview = ({ data }) => {
     animate();
 
     return () => {
-      cancelAnimationFrame(frameIdRef.current);
-      if (rendererRef.current) rendererRef.current.dispose();
+      cleanupRenderer();
     };
   }, [layerData]);
 
@@ -475,6 +514,9 @@ const GeoModelPreview = ({ data }) => {
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
       >
+        {/* Three.js Canvas Host (仅挂载 renderer.domElement，不放 React 子节点) */}
+        <div ref={canvasHostRef} className="absolute inset-0 z-0" />
+
         {/* HUD Overlay */}
         <div className="absolute top-3 left-4 right-4 flex justify-between items-center z-10 pointer-events-none">
           <span className="text-[10px] font-bold tracking-widest text-blue-400/80">

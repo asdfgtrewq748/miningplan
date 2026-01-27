@@ -190,13 +190,13 @@ const App = () => {
   // 智能规划：计算门禁（2026-01-22）
   // 目标：导入/更新输入后不自动计算；用户点击“启动智能采区规划”后才允许计算。
   // 说明：保留“参数改动后自动后台重算”，但仅对已被用户显式启动过的模式生效。
-  const [planningComputeEnabledByMode, setPlanningComputeEnabledByMode] = useState({ efficiency: false, recovery: false, disturbance: false });
+  const [planningComputeEnabledByMode, setPlanningComputeEnabledByMode] = useState({ efficiency: false, recovery: false, disturbance: false, weighted: false });
 
   // 智能规划：方案B（手动重算）
   // - 参数一旦变化，对应 mode 标记为 dirty；切换 tab 不自动算，仅提示用户点击“启动智能采区规划”重新计算。
   // - 完成一次 full compute（或命中一致缓存并应用）后，清掉 dirty。
-  const [planningDirtyByMode, setPlanningDirtyByMode] = useState({ efficiency: true, recovery: true, disturbance: true });
-  const planningLastComputedCacheKeyRef = useRef({ efficiency: '', recovery: '', disturbance: '' });
+  const [planningDirtyByMode, setPlanningDirtyByMode] = useState({ efficiency: true, recovery: true, disturbance: true, weighted: true });
+  const planningLastComputedCacheKeyRef = useRef({ efficiency: '', recovery: '', disturbance: '', weighted: '' });
 
   // Worker 代际：用于在 worker 崩溃/卡死后强制重建（避免 busy/inFlightKey 永久卡住导致“怎么点都不算”）
   const [planningWorkerGen, setPlanningWorkerGen] = useState(0);
@@ -6452,39 +6452,25 @@ const App = () => {
     const isReclickSameMode = m && m === String(planningOptMode ?? '').trim();
     setPlanningOptMode(m);
 
-    // 需求（2026-01-22）：导入后不自动算，但用户单独点击“工程效率最优/资源回收最优”时应立即启动计算。
-    // 因此：把点击这两个模式本身视为“显式启动该模式”，自动打开门禁。
+    // 需求（2026-01-27）：首次点击某模式允许自动计算；若已有缓存/导入结果（lastComputed 已存在）则不再自动算。
+    // 参数变更导致 dirty 时不自动后台重算（需要用户点“启动/重新计算”）。
     if (m !== 'efficiency' && m !== 'recovery' && m !== 'disturbance' && m !== 'weighted') return;
-
-    // 体验优化：在“采区规划图”视图下，切换到 efficiency/recovery 立即启动对应计算。
-    // 注意：这里使用 force=true，避免 setState 未生效导致 requestCompute* 被门禁提前 return。
+    workerLog('[planning] opt-mode click', { nextMode: m, reclick: isReclickSameMode });
     if (mainViewMode !== 'planning') return;
     if (!boundaryLoopWorld?.length || boundaryLoopWorld.length < 3) return;
 
-    // weighted 需要 efficiency + recovery 同时具备。
-    const gate = m;
-    const enable = (m === 'weighted')
-      ? { efficiency: true, recovery: true }
-      : { [gate]: true };
-
-    setPlanningComputeEnabledByMode((prev) => ({ ...(prev ?? {}), ...enable }));
-    workerLog('[planning] opt-mode click', { nextMode: m, reclick: isReclickSameMode });
-
-    // 方案B：参数变更后不自动算（必须点击“启动智能采区规划”）。
-    // 但若该模式从未计算过（lastComputed 为空），允许首次切换时自动触发一次。
+    // 同步 dirty（不触发 compute）
     try {
       if (m === 'weighted') {
         const curE = String(buildEfficiencyCacheKey());
         const curR = String(buildRecoveryCacheKey());
         const lastE = String(planningLastComputedCacheKeyRef.current?.efficiency ?? '');
         const lastR = String(planningLastComputedCacheKeyRef.current?.recovery ?? '');
-        const hasComputedOnce = Boolean(lastE || lastR);
         const nextDirty = (curE !== lastE) || (curR !== lastR);
         setPlanningDirtyByMode((prev) => {
           if (Boolean(prev?.weighted) === Boolean(nextDirty)) return prev;
           return { ...(prev ?? {}), weighted: Boolean(nextDirty) };
         });
-        if (hasComputedOnce && nextDirty) return;
       } else {
         const keyMode = (m === 'recovery') ? 'recovery' : (m === 'disturbance' ? 'disturbance' : 'efficiency');
         const currentKey = String(
@@ -6493,123 +6479,67 @@ const App = () => {
               : buildEfficiencyCacheKey()
         );
         const lastComputed = String(planningLastComputedCacheKeyRef.current?.[keyMode] ?? '');
-        const hasComputedOnce = Boolean(lastComputed);
         const nextDirty = currentKey !== lastComputed;
         setPlanningDirtyByMode((prev) => {
           if (Boolean(prev?.[m]) === Boolean(nextDirty)) return prev;
           return { ...(prev ?? {}), [m]: Boolean(nextDirty) };
         });
-        if (hasComputedOnce && nextDirty) return;
       }
     } catch {
       // ignore
     }
 
-    if (m === 'disturbance') {
-      // 覆岩扰动最优：必须先具备 ODI 插值场；否则直接弹门禁提示。
-      try {
-        const odiReady = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
-        if (!odiReady) {
-          if (!planningDisturbanceOdiGateOpen) openPlanningDisturbanceOdiGate();
-          return;
+    // 首次进入自动计算（有缓存则不算）
+    try {
+      const last = planningLastComputedCacheKeyRef.current ?? {};
+
+      if (m === 'efficiency') {
+        const lastE = String(last?.efficiency ?? '');
+        if (!lastE) {
+          requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false, optMode: 'efficiency' });
         }
+      }
+
+      if (m === 'recovery') {
+        const lastR = String(last?.recovery ?? '');
+        if (!lastR) {
+          requestComputeRecovery({ force: true, fast: false, refine: false, background: false, ignoreCache: false });
+        }
+      }
+
+      if (m === 'weighted') {
+        const lastW = String(last?.weighted ?? '');
+        const hasOk = Boolean(planningWeightedResult?.ok);
+        if (!lastW && !hasOk) {
+          setPlanningWeightedApplySeq((s) => (Number(s) || 0) + 1);
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // disturbance：需要 ODI 就绪；若从未算过 disturbance 且当前也没有可用 efficiency 结果，则首次进入自动触发一次。
+    if (m === 'disturbance') {
+      let odiReady = false;
+      try {
+        odiReady = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
       } catch {
+        odiReady = false;
+      }
+      if (!odiReady) {
         if (!planningDisturbanceOdiGateOpen) openPlanningDisturbanceOdiGate();
         return;
       }
 
       try {
-        const currentKey = String(buildDisturbanceCacheKey());
-        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
-        const lastKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
-        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDateOk = Boolean(!planningEfficiencyBusy && planningEfficiencyResult?.ok && lastKey && currentKey === lastKey);
-        if (isComputingSame) return;
-        if (isUpToDateOk) {
-          // 已是最新结果：直接派生 disturbance 表（避免用户看到“没有候选表”）。
-          try {
-            const p = planningDisturbanceParamsRef.current ?? {};
-            const pack = buildDisturbanceRankingPackForEfficiencyResult(planningEfficiencyResult, odiFieldPack, {
-              sampleStepM: Number(p?.sampleStepM) || 25,
-              maxSamples: Number(p?.maxSamples) || 4500,
-              exceedThreshold: Number(p?.exceedThreshold) || 0.7,
-              wMean: Number(p?.wMean) || 0.50,
-              wP90: Number(p?.wP90) || 0.35,
-              wExceed: Number(p?.wExceed) || 0.15,
-              outerBufferM: Number.isFinite(Number(p?.outerBufferM)) ? Number(p.outerBufferM) : 30,
-            });
-            setPlanningEfficiencyResult((prev) => (prev?.ok ? ({ ...(prev ?? {}), disturbance: pack }) : prev));
-          } catch {
-            // ignore
-          }
-          return;
+        const last = planningLastComputedCacheKeyRef.current ?? {};
+        const lastD = String(last?.disturbance ?? '');
+        if (!lastD) {
+          requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, ignoreCache: false, optMode: 'disturbance' });
         }
       } catch {
         // ignore
       }
-
-      requestComputeEfficiency({ force: true, fast: false, refine: false, background: false, optMode: 'disturbance' });
-      return;
-    }
-
-    if (m === 'weighted') {
-      // weighted 已改为“仅显式启动才计算”，且候选池由后端统一生成。
-      // 因此这里不再自动触发 efficiency/recovery 计算。
-      return;
-    }
-
-    if (m === 'efficiency') {
-      // 显式切换：
-      // - 若工程效率正在计算同一输入，不要重复发起新请求（否则会自增 reqSeq，progress 全被过滤，UI卡在0%）。
-      // - 若已有同一输入的 ok 结果，也不强制重算。
-      try {
-        const currentKey = String(buildEfficiencyCacheKey());
-        const inFlightKey = String(efficiencyInFlightKeyRef.current || '');
-        const lastKey = String(planningEfficiencyResult?.cacheKey ?? planningEfficiencyCacheKeyRef.current ?? '');
-        const isComputingSame = Boolean(planningEfficiencyBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDateOk = Boolean(!planningEfficiencyBusy && planningEfficiencyResult?.ok && lastKey && currentKey === lastKey);
-        // 正在算同一输入：不要重复发起（否则会自增 reqSeq，progress 全被过滤，UI 会卡在 0%）。
-        if (isComputingSame) return;
-
-        // 切换模式但已是最新 ok：不必重算，但仍要允许触发“吨位回填/重排”（导入钻孔+分层后常见）。
-        if (isUpToDateOk) {
-          try {
-            const sig = String(
-              planningEfficiencySelectedSig
-              || efficiencySelectedSigByKeyRef.current.get(currentKey)
-              || planningEfficiencyResult?.selectedCandidateKey
-              || planningEfficiencyResult?.bestKey
-              || planningEfficiencyResult?.bestSignature
-              || (planningEfficiencyResult?.candidates?.[0]?.signature ?? '')
-              || ''
-            );
-            maybePostprocessEfficiencyTonnage(planningEfficiencyResult, { cacheKeyForTonnage: currentKey, preferredSig: sig, reason: 'mode-click-upToDate' });
-          } catch {
-            // ignore
-          }
-          return;
-        }
-      } catch {
-        // ignore
-      }
-      requestComputeEfficiency({ force: true, fast: false, refine: false, background: false });
-      return;
-    }
-    if (m === 'recovery') {
-      try {
-        const currentKey = String(buildRecoveryCacheKey());
-        const inFlightKey = String(recoveryInFlightKeyRef.current || '');
-        const lastKey = String(planningRecoveryResult?.cacheKey ?? planningRecoveryCacheKeyRef.current ?? '');
-        const isComputingSame = Boolean(planningRecoveryBusy && inFlightKey && currentKey === inFlightKey);
-        const isUpToDateOk = Boolean(!planningRecoveryBusy && planningRecoveryResult?.ok && lastKey && currentKey === lastKey);
-        if (isComputingSame) return;
-
-        if (isUpToDateOk) return;
-      } catch {
-        // ignore
-      }
-      requestComputeRecovery({ force: true, fast: false, refine: false, background: false });
-      return;
     }
   };
 
@@ -6651,6 +6581,8 @@ const App = () => {
   // 含水层扰动场景：含水层类型选择（来自“含水层标记”列，例如：1含、2含、3）
   const [selectedAquiferType, setSelectedAquiferType] = useState('');
   const [workingFaceData, setWorkingFaceData] = useState([]);
+  // 协同调控：幽灵工作面（显示完整布局轮廓，当开启动态推进且长度缩短时显示）
+  const [coWorkfaceGhosts, setCoWorkfaceGhosts] = useState({}); // { 'import-1': [{x,y}...], 'planned-2': ... }
   // 智能规划：规划工作面轮廓（世界坐标）
   const [plannedWorkfaceLoopsWorld, setPlannedWorkfaceLoopsWorld] = useState([]); // [{ faceIndex, loop: [{x,y}...] }]
   // 智能规划：规划工作面“合并后外轮廓”（世界坐标；用于避免相邻面共享边形成重线）
@@ -6660,6 +6592,8 @@ const App = () => {
   const planningWorkfaceTooltipRef = useRef(null);
   const planningWorkfaceTooltipRafRef = useRef(0);
   const planningWorkfaceTooltipLastClientRef = useRef({ x: null, y: null });
+  // 协同调控：悬停到工作面“边界点”时的信息框（实时几何宽度 + 推进长度），并支持点击回填输入框
+  const [coWorkfaceHover, setCoWorkfaceHover] = useState(null);
   const [showPlanningBoundaryOverlay, setShowPlanningBoundaryOverlay] = useState(false);
   const [generatedPoints, setGeneratedPoints] = useState(null);
   // 智能规划：工作面宽度范围仅首次计算回填，后续保持用户选择（需纳入清空/撤回）
@@ -6690,6 +6624,7 @@ const App = () => {
   const [paramExtractionFullResult, setParamExtractionFullResult] = useState(null);
   // ODI 计算结果（分级响应 + 中间主图）
   const [odiResult, setOdiResult] = useState(null);
+  const [odiScaleReference, setOdiScaleReference] = useState(null);
 
   // 协同调控：统一标尺（P5/P95 联合分位数）与 ODI* 输出开关
   const [coControlEnabled, setCoControlEnabled] = useState(false);
@@ -6699,6 +6634,1777 @@ const App = () => {
   const [coScalePack, setCoScalePack] = useState(null); // { qLo,qHi,qLowValue,qHighValue,includeGeoOnly,counts,computedAt,scaleKey,keptFactorKeys }
   const [coOdiUnionResult, setCoOdiUnionResult] = useState(null); // { computedAt, points, geoPoints, fullPoints }
   const [coScaleDirty, setCoScaleDirty] = useState(true);
+
+  // 协同调控：面板显示缩放（仅影响右侧面板展示，便于在一个窗口内看全）
+  const [coPanelScalePct, setCoPanelScalePct] = useState(100); // 65~100
+
+  // 协同调控：生产层辅助信息（选中工作面后展示：平均煤厚 + 设计推进长度）
+  const [coProductionSummary, setCoProductionSummary] = useState(null); // { meanCoalThkM, sampleCount, usedStepM, designAdvanceLengthM, computedAt, coalHash }
+  const coProductionSummaryKeyRef = useRef('');
+  const [coCoalThkHash, setCoCoalThkHash] = useState('');
+  const coProductionAutoFillKeyRef = useRef('');
+
+  // 协同调控（新参数面板 v2）：按工作面分别设置，并把“导入面/规划面”分表存
+  const COCONTROL_STORAGE_KEY_V1 = 'miningplan.cocontrol.v1';
+  const COCONTROL_STORAGE_KEY_V2 = 'miningplan.cocontrol.v2';
+
+  const coDefaultLayout = useMemo(() => ({
+    workfaceWidthM: '200',
+    sectionPillarWidthM: '20',
+    advanceLengthM: '1000',
+    // 自动逻辑所需：ws 基准侧/基准邻面、方向锁定、推进长度基准端
+    wsBaselineSide: '', // 'up' | 'down' | 'left' | 'right'
+    wsBaselineNeighborKey: '', // 'import:No.1' | 'planned:1'
+    axisLocked: false,
+    axisFixed: '', // 'x' | 'y'
+    advanceBaselineEnd: '', // 'min' | 'max'
+  }), []);
+  const coDefaultProduction = useMemo(() => ({
+    miningHeightM: '4',
+    advanceLengthM: '200',
+    advanceStepM: '25',
+    advanceBaselineEnd: 'min',
+    advanceSpeedPerShift: '0',
+  }), []);
+
+  const makeCoEntry = (seed) => ({
+    layout: {
+      workfaceWidthM: String(seed?.layout?.workfaceWidthM ?? coDefaultLayout.workfaceWidthM),
+      sectionPillarWidthM: String(seed?.layout?.sectionPillarWidthM ?? coDefaultLayout.sectionPillarWidthM),
+      // 布局层：设计推进长度（wb 已废弃）
+      advanceLengthM: String(seed?.layout?.advanceLengthM ?? coDefaultLayout.advanceLengthM),
+      wsBaselineSide: String(seed?.layout?.wsBaselineSide ?? coDefaultLayout.wsBaselineSide),
+      wsBaselineNeighborKey: String(seed?.layout?.wsBaselineNeighborKey ?? coDefaultLayout.wsBaselineNeighborKey),
+      axisLocked: Boolean(seed?.layout?.axisLocked ?? coDefaultLayout.axisLocked),
+      axisFixed: String(seed?.layout?.axisFixed ?? coDefaultLayout.axisFixed),
+      advanceBaselineEnd: String(seed?.layout?.advanceBaselineEnd ?? coDefaultLayout.advanceBaselineEnd),
+    },
+    production: {
+      miningHeightM: String(seed?.production?.miningHeightM ?? coDefaultProduction.miningHeightM),
+      advanceLengthM: String(seed?.production?.advanceLengthM ?? coDefaultProduction.advanceLengthM),
+      advanceStepM: String(seed?.production?.advanceStepM ?? coDefaultProduction.advanceStepM),
+      advanceBaselineEnd: String(seed?.production?.advanceBaselineEnd ?? coDefaultProduction.advanceBaselineEnd),
+      advanceSpeedPerShift: String(seed?.production?.advanceSpeedPerShift ?? coDefaultProduction.advanceSpeedPerShift),
+    },
+    layoutConfirmed: Boolean(seed?.layoutConfirmed ?? false),
+    layoutNeedsReconfirm: Boolean(seed?.layoutNeedsReconfirm ?? false),
+  });
+
+  const [coImportParamsByNo, setCoImportParamsByNo] = useState(() => {
+    try {
+      const raw2 = window?.localStorage?.getItem(COCONTROL_STORAGE_KEY_V2);
+      if (raw2) {
+        const parsed2 = JSON.parse(raw2);
+        return parsed2?.import ?? {};
+      }
+      // 兼容：若只有 v1，则作为“默认种子”，但不直接生成任何工作面条目
+      const raw1 = window?.localStorage?.getItem(COCONTROL_STORAGE_KEY_V1);
+      if (raw1) {
+        JSON.parse(raw1);
+      }
+      return {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [coPlannedParamsByFaceIndex, setCoPlannedParamsByFaceIndex] = useState(() => {
+    try {
+      const raw2 = window?.localStorage?.getItem(COCONTROL_STORAGE_KEY_V2);
+      if (!raw2) return {};
+      const parsed2 = JSON.parse(raw2);
+      return parsed2?.planned ?? {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [coSelectedTarget, setCoSelectedTarget] = useState(null); // { kind: 'import', no: number } | { kind: 'planned', faceIndex: number }
+  const [coPickPopup, setCoPickPopup] = useState(null); // { x, y, importNo, plannedFaceIndex }
+  const [coWsPickPopup, setCoWsPickPopup] = useState(null); // { x, y, target, axis, side, options: [{kind,key,label,gap}], desiredWs?: string }
+
+  // 记录“导入工作面”的初始点位，用于单面还原（按 4 点一组，与 workingFaceData 同序）
+  const workingFaceDataOriginalRef = useRef([]);
+
+  const coSelectedLabel = useMemo(() => {
+    if (!coSelectedTarget) return '未选择工作面';
+    if (coSelectedTarget.kind === 'import') return `导入面 No.${Number(coSelectedTarget.no)}`;
+    return `规划面 faceIndex=${Number(coSelectedTarget.faceIndex)}`;
+  }, [coSelectedTarget]);
+
+  const getCoEntryForTarget = (t) => {
+    if (!t) return null;
+    if (t.kind === 'import') {
+      const k = `No.${Number(t.no)}`;
+      const hit = coImportParamsByNo?.[k];
+      return hit ? makeCoEntry(hit) : makeCoEntry(null);
+    }
+    const k = String(Number(t.faceIndex));
+    const hit = coPlannedParamsByFaceIndex?.[k];
+    return hit ? makeCoEntry(hit) : makeCoEntry(null);
+  };
+
+  const ensureCoEntryForTarget = (t) => {
+    if (!t) return;
+    if (t.kind === 'import') {
+      const k = `No.${Number(t.no)}`;
+      if (coImportParamsByNo?.[k]) return;
+      setCoImportParamsByNo((prev) => ({ ...(prev ?? {}), [k]: makeCoEntry(null) }));
+      return;
+    }
+    const k = String(Number(t.faceIndex));
+    if (coPlannedParamsByFaceIndex?.[k]) return;
+    setCoPlannedParamsByFaceIndex((prev) => ({ ...(prev ?? {}), [k]: makeCoEntry(null) }));
+  };
+
+  const coApplyPickTarget = (t) => {
+    if (!t) return;
+    setCoPickPopup(null);
+    setCoWsPickPopup(null);
+    setCoSelectedTarget(t);
+    ensureCoEntryForTarget(t);
+    switchMainViewModeWithRightPanel('cocontrol');
+  };
+
+  useEffect(() => {
+    if (coSelectedTarget) ensureCoEntryForTarget(coSelectedTarget);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coSelectedTarget]);
+
+  const sanitizeCoIntStr = (v) => {
+    const s = String(v ?? '');
+    if (s.trim() === '') return '';
+    const n = Math.round(Number(s));
+    if (!Number.isFinite(n)) return '';
+    return String(n);
+  };
+  const toCoIntOrNull = (v) => {
+    const s = String(v ?? '').trim();
+    if (!s) return null;
+    const n = Math.round(Number(s));
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const coGetKey = (t) => {
+    if (!t) return null;
+    if (t.kind === 'import') return `No.${Number(t.no)}`;
+    return String(Number(t.faceIndex));
+  };
+
+  const coUpdateEntry = (t, updater) => {
+    if (!t) return;
+    if (t.kind === 'import') {
+      const k = `No.${Number(t.no)}`;
+      setCoImportParamsByNo((prev) => {
+        const cur = makeCoEntry(prev?.[k]);
+        const next = updater(cur);
+        return { ...(prev ?? {}), [k]: next };
+      });
+      return;
+    }
+    const k = String(Number(t.faceIndex));
+    setCoPlannedParamsByFaceIndex((prev) => {
+      const cur = makeCoEntry(prev?.[k]);
+      const next = updater(cur);
+      return { ...(prev ?? {}), [k]: next };
+    });
+  };
+
+  const coNeighborKeyOfTarget = (t) => {
+    if (!t) return null;
+    if (t.kind === 'import') return { kind: 'import', key: `No.${Number(t.no)}` };
+    return { kind: 'planned', key: String(Number(t.faceIndex)) };
+  };
+
+  const coParseNeighborKey = (nk) => {
+    const s = String(nk ?? '').trim();
+    if (!s) return null;
+    const m = s.match(/^(import|planned)\s*:\s*(.+)$/i);
+    if (!m) return null;
+    const kindRaw = String(m[1] ?? '').toLowerCase();
+    const keyRaw = String(m[2] ?? '').trim();
+    if (!keyRaw) return null;
+
+    if (kindRaw === 'import') {
+      const mm = keyRaw.match(/^No\.(\d+)$/i);
+      if (mm) return { kind: 'import', key: `No.${Number(mm[1])}` };
+      const n = Number(keyRaw);
+      if (Number.isFinite(n)) return { kind: 'import', key: `No.${Math.max(1, Math.round(n))}` };
+      return { kind: 'import', key: keyRaw };
+    }
+
+    if (kindRaw === 'planned') {
+      const n = Number(keyRaw);
+      if (Number.isFinite(n)) return { kind: 'planned', key: String(Math.max(1, Math.round(n))) };
+      return { kind: 'planned', key: keyRaw };
+    }
+
+    return null;
+  };
+
+  const coIntervalOverlapLen = (a0, a1, b0, b1) => {
+    const lo = Math.max(Math.min(a0, a1), Math.min(b0, b1));
+    const hi = Math.min(Math.max(a0, a1), Math.max(b0, b1));
+    const len = hi - lo;
+    return Number.isFinite(len) ? len : 0;
+  };
+
+  const coGetBBoxFromPoints = (pts) => {
+    const arr = (pts ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+    if (!arr.length) return null;
+    let minX = arr[0].x;
+    let maxX = arr[0].x;
+    let minY = arr[0].y;
+    let maxY = arr[0].y;
+    for (const p of arr) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, maxX, minY, maxY };
+  };
+
+  const coGetImportFacePointsWorld = (no) => {
+    const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+    const base = (Number(no) - 1) * 4;
+    if (!(Number.isFinite(base) && base >= 0) || base + 3 >= src.length) return null;
+    const corners = src.slice(base, base + 4)
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (corners.length !== 4) return null;
+    return sortQuadByAngle(corners);
+  };
+
+  const coGetPlannedFacePointsWorld = (faceIndex) => {
+    const fi = Number(faceIndex);
+    const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    const hit = src.find((w) => Number(w?.faceIndex) === fi);
+    const loop = (hit?.loop ?? [])
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    return loop.length >= 3 ? loop : null;
+  };
+
+  const coGetFaceBBoxForTarget = (t) => {
+    if (!t) return null;
+    const pts = (t.kind === 'import')
+      ? coGetImportFacePointsWorld(t.no)
+      : coGetPlannedFacePointsWorld(t.faceIndex);
+    return pts ? coGetBBoxFromPoints(pts) : null;
+  };
+
+  const coComputeDimsFromQuad4 = (corners4) => {
+    const corners = sortQuadByAngle(corners4);
+    const d = (a, b) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+    const L0 = (d(corners[0], corners[1]) + d(corners[2], corners[3])) / 2;
+    const L1 = (d(corners[1], corners[2]) + d(corners[3], corners[0])) / 2;
+    const widthM = Math.min(L0, L1);
+    const advanceLengthM = Math.max(L0, L1);
+    return { widthM, advanceLengthM };
+  };
+
+  const coComputeDimsFromLoop = (loop) => {
+    const pts = (loop ?? [])
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (pts.length < 3) return null;
+
+    const c = pts.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+    c.x /= pts.length;
+    c.y /= pts.length;
+    let covXX = 0;
+    let covXY = 0;
+    let covYY = 0;
+    for (const p of pts) {
+      const dx = p.x - c.x;
+      const dy = p.y - c.y;
+      covXX += dx * dx;
+      covXY += dx * dy;
+      covYY += dy * dy;
+    }
+    const angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
+    let u = { x: Math.cos(angle), y: Math.sin(angle) };
+    const uLen = Math.sqrt(u.x * u.x + u.y * u.y);
+    if (!(Number.isFinite(uLen) && uLen > 1e-9)) u = { x: 1, y: 0 };
+    else u = { x: u.x / uLen, y: u.y / uLen };
+    const v = { x: -u.y, y: u.x };
+
+    let minU = Infinity;
+    let maxU = -Infinity;
+    let minV = Infinity;
+    let maxV = -Infinity;
+    for (const p of pts) {
+      const dx = p.x - c.x;
+      const dy = p.y - c.y;
+      const su = dx * u.x + dy * u.y;
+      const sv = dx * v.x + dy * v.y;
+      if (su < minU) minU = su;
+      if (su > maxU) maxU = su;
+      if (sv < minV) minV = sv;
+      if (sv > maxV) maxV = sv;
+    }
+    const L0 = maxU - minU;
+    const L1 = maxV - minV;
+    const widthM = Math.min(L0, L1);
+    const advanceLengthM = Math.max(L0, L1);
+    return { widthM, advanceLengthM };
+  };
+
+  const coComputeDimsForTarget = (t) => {
+    if (!t) return null;
+    if (t.kind === 'import') {
+      const corners = coGetImportFacePointsWorld(t.no);
+      if (!corners || corners.length !== 4) return null;
+      return coComputeDimsFromQuad4(corners);
+    }
+    const loop = coGetPlannedFacePointsWorld(t.faceIndex);
+    return loop ? coComputeDimsFromLoop(loop) : null;
+  };
+
+  const coGetTargetLoopsWorld = (t) => {
+    if (!t) return [];
+    if (t.kind === 'import') {
+      const corners = coGetImportFacePointsWorld(t.no);
+      return (corners && corners.length === 4) ? [corners] : [];
+    }
+    const loop = coGetPlannedFacePointsWorld(t.faceIndex);
+    return (loop && loop.length >= 3) ? [loop] : [];
+  };
+
+  const coComputeMeanCoalThicknessForTarget = (t, { stepBaseM = 25, maxSamples = 900 } = {}) => {
+    const loops = coGetTargetLoopsWorld(t);
+    if (!loops.length) return null;
+    if (!(coalThicknessField?.field && coalThicknessField?.gridW && coalThicknessField?.gridH)) return null;
+
+    const step0 = Number(stepBaseM);
+    const stepM0 = (Number.isFinite(step0) && step0 > 0) ? step0 : 25;
+
+    const bbs = [];
+    let bboxAreaSum = 0;
+    for (const loop of loops) {
+      const pts = (loop ?? []).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+      if (pts.length < 3) continue;
+      let minX = pts[0].x;
+      let maxX = pts[0].x;
+      let minY = pts[0].y;
+      let maxY = pts[0].y;
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+      const a = (maxX - minX) * (maxY - minY);
+      if (Number.isFinite(a) && a > 0) bboxAreaSum += a;
+      bbs.push({ loop: pts, bb: { minX, maxX, minY, maxY } });
+    }
+    if (!bbs.length) return null;
+
+    const expected = bboxAreaSum / (stepM0 * stepM0);
+    const usedStepM = (Number.isFinite(expected) && expected > maxSamples)
+      ? Math.max(stepM0, Math.sqrt(bboxAreaSum / Math.max(1, maxSamples)) * 1.05)
+      : stepM0;
+
+    const values = [];
+    let sampled = 0;
+    for (const { bb, loop } of bbs) {
+      for (let x = bb.minX; x <= bb.maxX; x += usedStepM) {
+        for (let y = bb.minY; y <= bb.maxY; y += usedStepM) {
+          if (sampled >= maxSamples) break;
+          if (!polygonContainsPoint(loop, { x, y })) continue;
+          const thk = sampleFieldAtWorldXY(coalThicknessField, x, y);
+          if (Number.isFinite(thk)) values.push(thk);
+          sampled += 1;
+        }
+        if (sampled >= maxSamples) break;
+      }
+      if (sampled >= maxSamples) break;
+    }
+    const n = values.length;
+    if (!n) return { meanCoalThkM: null, sampleCount: 0, usedStepM };
+    const mean = values.reduce((s, v) => s + v, 0) / n;
+    return { meanCoalThkM: Number.isFinite(mean) ? mean : null, sampleCount: n, usedStepM };
+  };
+
+  const coAutoInitKeyRef = useRef('');
+  useEffect(() => {
+    const t = coSelectedTarget;
+    if (!t) return;
+    const key = coGetKey(t);
+    if (!key) return;
+    if (coAutoInitKeyRef.current === key) return;
+    coAutoInitKeyRef.current = key;
+
+    const entry = getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const faceBBox = coGetFaceBBoxForTarget(t);
+    if (!faceBBox) return;
+
+    // 1) 自动判别布置方向，并默认“锁定”（若用户觉得判别错，用翻转纠正）
+    const autoAxis = coResolveAxis(faceBBox, { ...layout, axisLocked: false });
+
+    // 2) 自动识别几何尺寸，填入布局层 B/L（仅在条目还是默认值/空值时才种子化）
+    const dims = coComputeDimsForTarget(t);
+    const seedB = dims?.widthM;
+    const seedL = dims?.advanceLengthM;
+
+    coUpdateEntry(t, (cur) => {
+      const curLayout = cur?.layout ?? makeCoEntry(null).layout;
+      const nextLayout = { ...curLayout };
+
+      nextLayout.axisLocked = true;
+      nextLayout.axisFixed = autoAxis;
+
+      const curB = toCoIntOrNull(curLayout.workfaceWidthM);
+      const curL = toCoIntOrNull(curLayout.advanceLengthM);
+      const defB = toCoIntOrNull(coDefaultLayout.workfaceWidthM);
+      const defL = toCoIntOrNull(coDefaultLayout.advanceLengthM);
+
+      if (Number.isFinite(seedB) && seedB > 0 && (curB == null || curB === defB)) {
+        nextLayout.workfaceWidthM = String(Math.round(seedB));
+      }
+      if (Number.isFinite(seedL) && seedL > 0 && (curL == null || curL === defL)) {
+        nextLayout.advanceLengthM = String(Math.round(seedL));
+      }
+
+      // 推进长度基准端：不提供“自动”选项时，缺省落到固定 min 端
+      const curEnd = String(curLayout.advanceBaselineEnd ?? '').trim();
+      if (!(curEnd === 'min' || curEnd === 'max')) {
+        nextLayout.advanceBaselineEnd = 'min';
+      }
+
+      // 布置方向变化可能影响 ws 侧向选项：先清空，让用户或自动逻辑重新选
+      nextLayout.wsBaselineSide = '';
+      nextLayout.wsBaselineNeighborKey = '';
+
+      return { ...cur, layout: nextLayout };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coSelectedTarget]);
+
+  // 协同调控：选中工作面后，计算“平均煤厚 + 设计推进长度”并展示在生产层
+  useEffect(() => {
+    const t = coSelectedTarget;
+    if (!t) {
+      setCoProductionSummary(null);
+      coProductionSummaryKeyRef.current = '';
+      return;
+    }
+
+    const entry = getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const designL0 = toCoIntOrNull(layout?.advanceLengthM);
+    const dims = (!Number.isFinite(designL0) || designL0 <= 0) ? coComputeDimsForTarget(t) : null;
+    const designAdvanceLengthM = (Number.isFinite(designL0) && designL0 > 0)
+      ? designL0
+      : (Number.isFinite(dims?.advanceLengthM) ? Math.round(dims.advanceLengthM) : null);
+
+    const key = `${coGetKey(t)}|coal=${String(coCoalThkHash || '')}|L=${String(designAdvanceLengthM ?? '')}|wfN=${Number(workingFaceData?.length ?? 0)}|pfN=${Number(plannedWorkfaceLoopsWorld?.length ?? 0)}`;
+    if (coProductionSummaryKeyRef.current === key) return;
+    coProductionSummaryKeyRef.current = key;
+
+    const thkPack = coComputeMeanCoalThicknessForTarget(t, { stepBaseM: 25, maxSamples: 900 });
+    setCoProductionSummary({
+      meanCoalThkM: thkPack?.meanCoalThkM ?? null,
+      sampleCount: Number(thkPack?.sampleCount ?? 0) || 0,
+      usedStepM: Number.isFinite(Number(thkPack?.usedStepM)) ? Number(thkPack.usedStepM) : 25,
+      designAdvanceLengthM,
+      computedAt: Date.now(),
+      coalHash: String(coCoalThkHash || ''),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coSelectedTarget, coCoalThkHash, workingFaceData, plannedWorkfaceLoopsWorld, coImportParamsByNo, coPlannedParamsByFaceIndex]);
+
+  // 协同调控：选中工作面后，把“平均煤厚/设计推进长度”同步回填到生产层输入框
+  // 口径：
+  // - 设计采高（m）= 采面区域内平均煤厚（若可计算）
+  // - 工作面推进长度（m）= 布局层设计推进长度（m）（若可得）
+  // 注意：只在该工作面生产层参数仍为默认/空时回填，避免覆盖用户手工修改。
+  useEffect(() => {
+    const t = coSelectedTarget;
+    if (!t) {
+      coProductionAutoFillKeyRef.current = '';
+      return;
+    }
+
+    const meanThk = Number(coProductionSummary?.meanCoalThkM);
+    const designL = Number(coProductionSummary?.designAdvanceLengthM);
+    const coalHash = String(coProductionSummary?.coalHash ?? '');
+
+    const key = `${coGetKey(t)}|coal=${coalHash}|mean=${Number.isFinite(meanThk) ? meanThk.toFixed(3) : ''}|L=${Number.isFinite(designL) ? String(Math.round(designL)) : ''}`;
+    if (coProductionAutoFillKeyRef.current === key) return;
+    coProductionAutoFillKeyRef.current = key;
+
+    coUpdateEntry(t, (cur) => {
+      const curProd = cur?.production ?? makeCoEntry(null).production;
+      const nextProd = { ...curProd };
+
+      const curMH = Number(curProd?.miningHeightM);
+      const defMH = Number(coDefaultProduction?.miningHeightM);
+      const curMHEmpty = String(curProd?.miningHeightM ?? '').trim() === '';
+      const curMHIsDefault = (!curMHEmpty && Number.isFinite(curMH) && Number.isFinite(defMH) && Math.abs(curMH - defMH) < 1e-9);
+      if (Number.isFinite(meanThk) && meanThk > 0 && (curMHEmpty || !Number.isFinite(curMH) || curMHIsDefault)) {
+        nextProd.miningHeightM = String(Number(meanThk).toFixed(2));
+      }
+
+      const curAdv = toCoIntOrNull(curProd?.advanceLengthM);
+      const defAdv = toCoIntOrNull(coDefaultProduction?.advanceLengthM);
+      if (Number.isFinite(designL) && designL > 0 && (curAdv == null || curAdv === defAdv)) {
+        nextProd.advanceLengthM = String(Math.round(designL));
+      }
+
+      // 动态推进长度基准端：缺省沿用布局层设置（否则固定 min）
+      const curDynEnd = String(curProd?.advanceBaselineEnd ?? '').trim();
+      if (!(curDynEnd === 'min' || curDynEnd === 'max')) {
+        const layEnd = String(getCoEntryForTarget(t)?.layout?.advanceBaselineEnd ?? '').trim();
+        nextProd.advanceBaselineEnd = (layEnd === 'min' || layEnd === 'max') ? layEnd : 'min';
+      }
+
+      return { ...cur, production: nextProd };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coSelectedTarget, coProductionSummary]);
+
+  // 协同调控（生产层）：应用“动态推进长度/基准端”到几何，并触发 3C 自动计算
+  const coApplyDynamicAdvanceForSelected = ({ nextLengthStr = null, nextEnd = null, reason = '' } = {}) => {
+    const t = coSelectedTarget;
+    if (!t) return;
+
+    const entry = getCoEntryForTarget(t);
+    if (!Boolean(entry?.layoutConfirmed)) return;
+
+    const layout = entry?.layout ?? coDefaultLayout;
+    const production = entry?.production ?? coDefaultProduction;
+
+    const dims = coComputeDimsForTarget(t);
+    const Ltotal0 = toCoIntOrNull(layout?.advanceLengthM);
+    const Ltotal = (Number.isFinite(Ltotal0) && Ltotal0 > 0)
+      ? Ltotal0
+      : (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0 ? Math.round(dims.advanceLengthM) : null);
+    if (!(Number.isFinite(Ltotal) && Ltotal >= 0)) return;
+
+    const curDynL0 = toCoIntOrNull(production?.advanceLengthM);
+    const curDynL = Number.isFinite(curDynL0) ? Math.max(0, curDynL0) : Ltotal;
+
+    const rawNext = (nextLengthStr == null) ? String(production?.advanceLengthM ?? '') : String(nextLengthStr ?? '');
+    const parsedNext0 = toCoIntOrNull(rawNext);
+    const parsedNext = (parsedNext0 == null) ? curDynL : Math.max(0, parsedNext0);
+    const nextDynL = Math.max(0, Math.min(Ltotal, parsedNext));
+
+    const end0 = String(nextEnd ?? production?.advanceBaselineEnd ?? '').trim();
+    const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'min';
+
+    // 1) 先写回生产层参数（保证 UI 一致）
+    coUpdateEntry(t, (cur) => ({
+      ...cur,
+      production: {
+        ...(cur.production ?? makeCoEntry(null).production),
+        advanceLengthM: String(Math.round(nextDynL)),
+        advanceBaselineEnd: endPick,
+      },
+    }));
+
+    const entryNextForKey = {
+      ...(entry ?? {}),
+      layout,
+      production: {
+        ...(production ?? {}),
+        advanceLengthM: String(Math.round(nextDynL)),
+        advanceBaselineEnd: endPick,
+      },
+      layoutConfirmed: true,
+    };
+    const keyOverride = coBuildAutoOdiKey(t, entryNextForKey);
+
+    // 2) 基准端变化但长度不变：不改几何；只触发自动算
+    // 修正：由于 Slider onChange 已更新 Production 状态，curDynL 可能已等于 nextDynL，
+    // 但几何 (WorkingFaceData) 可能尚未更新。因此取消此处的 Early Return，
+    // 改为由 updateGeometry 函数内部判断是否需要实际移动。
+    /* 
+    if (Math.round(nextDynL) === Math.round(curDynL)) {
+      coRequestAutoOdi({ reason: reason || 'dyn-end-change', keyOverride });
+      return;
+    }
+    */
+
+    // 3) 长度变化：按布局层的轴向，基于“动态基准端”调整几何
+    const prevLayoutLike = { ...layout, advanceLengthM: String(Math.round(curDynL)), advanceBaselineEnd: String(production?.advanceBaselineEnd ?? endPick) };
+    const nextLayoutLike = { ...layout, advanceLengthM: String(Math.round(nextDynL)), advanceBaselineEnd: endPick };
+
+    let wfDataNext = null;
+    let planLoopsNext = null;
+
+    if (t.kind === 'import') {
+      wfDataNext = coUpdateImportWorkfaceGeometry({ faceNo: t.no, prevLayout: prevLayoutLike, nextLayout: nextLayoutLike, ghostLengthM: Ltotal });
+    } else {
+      planLoopsNext = coUpdatePlannedWorkfaceGeometry({ faceIndex: t.faceIndex, prevLayout: prevLayoutLike, nextLayout: nextLayoutLike, ghostLengthM: Ltotal });
+    }
+
+    // 4) 几何变化后：派生结果作废，并触发自动算（会自动补齐评价点）
+    coInvalidateDerivedAfterWorkfaceChange();
+    coRequestAutoOdi({ 
+      reason: reason || 'dyn-length-change', 
+      forceRegenPoints: true, 
+      keyOverride, 
+      workingFaceDataOverride: wfDataNext, 
+      plannedWorkfaceLoopsOverride: planLoopsNext 
+    });
+  };
+
+  const coGetFaceBBoxByNeighborKey = (nk) => {
+    const parsed = coParseNeighborKey(nk);
+    if (!parsed) return null;
+    if (parsed.kind === 'import') {
+      const m = String(parsed.key).match(/^No\.(\d+)$/);
+      const no = m ? Number(m[1]) : Number(parsed.key);
+      if (!(Number.isFinite(no) && no >= 1)) return null;
+      const pts = coGetImportFacePointsWorld(no);
+      return pts ? coGetBBoxFromPoints(pts) : null;
+    }
+    const fi = Number(parsed.key);
+    if (!(Number.isFinite(fi) && fi >= 1)) return null;
+    const pts = coGetPlannedFacePointsWorld(fi);
+    return pts ? coGetBBoxFromPoints(pts) : null;
+  };
+
+  const coComputeGapForSide = ({ curBBox, neighborBBox, axis, side }) => {
+    if (!curBBox || !neighborBBox) return null;
+    const eps = 1e-9;
+    if (axis === 'x') {
+      if (side === 'up') {
+        if (!(neighborBBox.minY >= curBBox.maxY - eps)) return null;
+        return Math.max(0, neighborBBox.minY - curBBox.maxY);
+      }
+      if (side === 'down') {
+        if (!(neighborBBox.maxY <= curBBox.minY + eps)) return null;
+        return Math.max(0, curBBox.minY - neighborBBox.maxY);
+      }
+      return null;
+    }
+    if (side === 'right') {
+      if (!(neighborBBox.minX >= curBBox.maxX - eps)) return null;
+      return Math.max(0, neighborBBox.minX - curBBox.maxX);
+    }
+    if (side === 'left') {
+      if (!(neighborBBox.maxX <= curBBox.minX + eps)) return null;
+      return Math.max(0, curBBox.minX - neighborBBox.maxX);
+    }
+    return null;
+  };
+
+  const coTranslateSelectedGeometry = (t, dx, dy) => {
+    if (!t) return;
+    const ddx = Number(dx);
+    const ddy = Number(dy);
+    if (!(Number.isFinite(ddx) && Number.isFinite(ddy))) return;
+    if (Math.abs(ddx) < 1e-9 && Math.abs(ddy) < 1e-9) return;
+
+    if (t.kind === 'import') {
+      const no = Math.round(Number(t.no));
+      if (!(Number.isFinite(no) && no >= 1)) return;
+      const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+      const base = (no - 1) * 4;
+      if (base + 3 >= src.length) return;
+      const next = src.map((p, idx) => {
+        if (idx < base || idx > base + 3) return p;
+        const x0 = Number(p?.x);
+        const y0 = Number(p?.y);
+        if (!Number.isFinite(x0) || !Number.isFinite(y0)) return p;
+        return { ...p, x: x0 + ddx, y: y0 + ddy };
+      });
+      setWorkingFaceData(next);
+      return;
+    }
+
+    const fi = Math.round(Number(t.faceIndex));
+    if (!(Number.isFinite(fi) && fi >= 1)) return;
+    const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    const i = src.findIndex((w) => Number(w?.faceIndex) === fi);
+    if (i < 0) return;
+    const loop = (src[i]?.loop ?? []);
+    const nextLoop = loop.map((p) => {
+      const x0 = Number(p?.x);
+      const y0 = Number(p?.y);
+      if (!Number.isFinite(x0) || !Number.isFinite(y0)) return p;
+      return { ...p, x: x0 + ddx, y: y0 + ddy };
+    });
+    const nextArr = src.map((w, idx) => (idx === i ? { ...w, loop: nextLoop } : w));
+    setPlannedWorkfaceLoopsWorld(nextArr);
+  };
+
+  const coApplyWsShiftForSelected = (t, targetWsStr) => {
+    if (!t) return;
+    const entry = getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const curBBox = coGetFaceBBoxForTarget(t);
+    if (!curBBox) return;
+    const axis = coResolveAxis(curBBox, layout);
+
+    const sideOptions = coGetWsSideOptions(axis).map((o) => o.value);
+    const side = sideOptions.includes(String(layout.wsBaselineSide)) ? String(layout.wsBaselineSide) : sideOptions[0];
+    const targetWs = toCoIntOrNull(targetWsStr);
+    if (!(Number.isFinite(targetWs) && targetWs >= 0)) return;
+
+    const candidates = coComputeWsCandidates({ bbox: curBBox, axis, side, allFaces: coListAllFaceBBoxes(t) });
+    if (!candidates.length) {
+      window.alert('未找到该侧相邻工作面，无法按 ws 平移。请先调整 ws 基准侧或检查工作面重叠关系。');
+      return;
+    }
+
+    // 多候选且未锁定基准邻面：先弹窗选基准，再执行平移
+    const parsed0 = coParseNeighborKey(layout.wsBaselineNeighborKey);
+    const hasPinned = Boolean(parsed0 && candidates.some((c) => c.kind === parsed0.kind && String(c.key) === String(parsed0.key)));
+    if (candidates.length >= 2 && !hasPinned) {
+      setCoWsPickPopup({
+        x: 24,
+        y: 24,
+        target: t,
+        axis,
+        side,
+        options: candidates,
+        desiredWs: String(targetWsStr ?? ''),
+      });
+      return;
+    }
+
+    const parsed = coParseNeighborKey(layout.wsBaselineNeighborKey);
+    const pick = (parsed && candidates.find((c) => c.kind === parsed.kind && String(c.key) === String(parsed.key)))
+      ? candidates.find((c) => c.kind === parsed.kind && String(c.key) === String(parsed.key))
+      : candidates[0];
+
+    const neighborBBox = coGetFaceBBoxByNeighborKey(`${pick.kind}:${pick.key}`);
+    const curGap = coComputeGapForSide({ curBBox, neighborBBox, axis, side });
+    if (!Number.isFinite(curGap)) {
+      window.alert('无法计算当前 gap，请重新选择基准工作面。');
+      return;
+    }
+
+    // 通过平移当前工作面改变 gap：推导见口径讨论
+    let dx = 0;
+    let dy = 0;
+    if (axis === 'x') {
+      // 宽度方向 y
+      dy = (side === 'up') ? (curGap - targetWs) : (targetWs - curGap);
+    } else {
+      // 宽度方向 x
+      dx = (side === 'right') ? (curGap - targetWs) : (targetWs - curGap);
+    }
+
+    coTranslateSelectedGeometry(t, dx, dy);
+
+    coUpdateEntry(t, (cur) => ({
+      ...cur,
+      layout: {
+        ...cur.layout,
+        sectionPillarWidthM: sanitizeCoIntStr(targetWs),
+        wsBaselineSide: side,
+        wsBaselineNeighborKey: `${pick.kind}:${pick.key}`,
+      },
+      layoutConfirmed: cur.layoutConfirmed ? false : cur.layoutConfirmed,
+      layoutNeedsReconfirm: cur.layoutConfirmed ? true : cur.layoutNeedsReconfirm,
+    }));
+
+    // 几何变化后：评价点/提取结果作废（避免口径不一致）
+    setGeneratedPoints(null);
+    setParamExtractionResult(null);
+    setParamExtractionGeoResult(null);
+    setParamExtractionFullResult(null);
+    setOdiResult(null);
+  };
+
+  const coListAllFaceBBoxes = (excludeTarget) => {
+    const out = [];
+    const ex = coNeighborKeyOfTarget(excludeTarget);
+
+    const srcImp = Array.isArray(workingFaceData) ? workingFaceData : [];
+    const nFaces = Math.floor(srcImp.length / 4);
+    for (let no = 1; no <= nFaces; no++) {
+      const key = `No.${no}`;
+      if (ex && ex.kind === 'import' && ex.key === key) continue;
+      const pts = coGetImportFacePointsWorld(no);
+      const bbox = pts ? coGetBBoxFromPoints(pts) : null;
+      if (!bbox) continue;
+      out.push({ kind: 'import', key, label: `导入面 ${key}`, bbox });
+    }
+
+    const srcPlanned = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    for (const wf of srcPlanned) {
+      const fi = Number(wf?.faceIndex);
+      if (!(Number.isFinite(fi) && fi >= 1)) continue;
+      const key = String(fi);
+      if (ex && ex.kind === 'planned' && ex.key === key) continue;
+      const loop = (wf?.loop ?? [])
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (loop.length < 3) continue;
+      const bbox = coGetBBoxFromPoints(loop);
+      if (!bbox) continue;
+      out.push({ kind: 'planned', key, label: `规划面 No.${key}`, bbox });
+    }
+
+    return out;
+  };
+
+  const coResolveAxis = (bbox, layout) => {
+    const locked = Boolean(layout?.axisLocked);
+    const fixed = String(layout?.axisFixed ?? '').trim();
+    if (locked && (fixed === 'x' || fixed === 'y')) return fixed;
+    const w = Number(bbox?.maxX) - Number(bbox?.minX);
+    const h = Number(bbox?.maxY) - Number(bbox?.minY);
+    if (!(Number.isFinite(w) && Number.isFinite(h))) return 'x';
+    return (Math.abs(w) >= Math.abs(h)) ? 'x' : 'y';
+  };
+
+  const coGetWsSideOptions = (axis) => {
+    if (axis === 'y') return [
+      { value: 'left', label: '左侧' },
+      { value: 'right', label: '右侧' },
+    ];
+    return [
+      { value: 'down', label: '下侧' },
+      { value: 'up', label: '上侧' },
+    ];
+  };
+
+  const coGetAdvanceEndOptions = (axis) => {
+    if (axis === 'y') return [
+      { value: 'min', label: '下端' },
+      { value: 'max', label: '上端' },
+    ];
+    return [
+      { value: 'min', label: '左端' },
+      { value: 'max', label: '右端' },
+    ];
+  };
+
+  const coComputeWsCandidates = ({ bbox, axis, side, allFaces }) => {
+    if (!bbox) return [];
+    const eps = 1e-9;
+    const adv0 = (axis === 'x') ? bbox.minX : bbox.minY;
+    const adv1 = (axis === 'x') ? bbox.maxX : bbox.maxY;
+    const out = [];
+
+    for (const n of (allFaces ?? [])) {
+      const b = n?.bbox;
+      if (!b) continue;
+      const nAdv0 = (axis === 'x') ? b.minX : b.minY;
+      const nAdv1 = (axis === 'x') ? b.maxX : b.maxY;
+      const overlap = coIntervalOverlapLen(adv0, adv1, nAdv0, nAdv1);
+      if (!(Number.isFinite(overlap) && overlap > 0)) continue; // 任意重叠
+
+      let gap = null;
+      if (axis === 'x') {
+        // 宽度方向 y：up/down
+        if (side === 'up' && Number.isFinite(b.minY) && Number.isFinite(bbox.maxY) && b.minY >= bbox.maxY - eps) {
+          gap = b.minY - bbox.maxY;
+        }
+        if (side === 'down' && Number.isFinite(bbox.minY) && Number.isFinite(b.maxY) && b.maxY <= bbox.minY + eps) {
+          gap = bbox.minY - b.maxY;
+        }
+      } else {
+        // 宽度方向 x：left/right
+        if (side === 'right' && Number.isFinite(b.minX) && Number.isFinite(bbox.maxX) && b.minX >= bbox.maxX - eps) {
+          gap = b.minX - bbox.maxX;
+        }
+        if (side === 'left' && Number.isFinite(bbox.minX) && Number.isFinite(b.maxX) && b.maxX <= bbox.minX + eps) {
+          gap = bbox.minX - b.maxX;
+        }
+      }
+      if (!(Number.isFinite(gap) && gap >= -eps)) continue;
+      out.push({ kind: n.kind, key: n.key, label: n.label, gap: Math.max(0, gap) });
+    }
+
+    out.sort((a, b) => (a.gap - b.gap));
+    return out;
+  };
+
+  const coRecomputeWsForTarget = (t, { triggerPopup } = {}) => {
+    if (!t) return;
+    const entry = getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const bbox = coGetFaceBBoxForTarget(t);
+    if (!bbox) return;
+    const axis = coResolveAxis(bbox, layout);
+    const allFaces = coListAllFaceBBoxes(t);
+
+    let side = String(layout.wsBaselineSide ?? '').trim();
+    const sideOptions = coGetWsSideOptions(axis).map((o) => o.value);
+    if (!sideOptions.includes(side)) {
+      // 未设置时：按两侧最小 gap 自动选一个基准侧
+      const cands0 = coComputeWsCandidates({ bbox, axis, side: sideOptions[0], allFaces });
+      const cands1 = coComputeWsCandidates({ bbox, axis, side: sideOptions[1], allFaces });
+      const g0 = cands0.length ? cands0[0].gap : Infinity;
+      const g1 = cands1.length ? cands1[0].gap : Infinity;
+      side = (g0 <= g1) ? sideOptions[0] : sideOptions[1];
+      coUpdateEntry(t, (cur) => ({
+        ...cur,
+        layout: {
+          ...cur.layout,
+          wsBaselineSide: side,
+        },
+      }));
+    }
+
+    const candidates = coComputeWsCandidates({ bbox, axis, side, allFaces });
+    const parsed = coParseNeighborKey(layout.wsBaselineNeighborKey);
+
+    if (!candidates.length) {
+      coUpdateEntry(t, (cur) => ({
+        ...cur,
+        layout: {
+          ...cur.layout,
+          sectionPillarWidthM: '',
+          wsBaselineNeighborKey: '',
+        },
+      }));
+      return;
+    }
+
+    if (candidates.length === 1) {
+      const pick = candidates[0];
+      coUpdateEntry(t, (cur) => ({
+        ...cur,
+        layout: {
+          ...cur.layout,
+          sectionPillarWidthM: sanitizeCoIntStr(pick.gap),
+          wsBaselineNeighborKey: `${pick.kind}:${pick.key}`,
+        },
+      }));
+      return;
+    }
+
+    // 多候选：若已选过基准邻面且仍在候选中，直接更新 gap；否则弹窗让用户选
+    if (parsed) {
+      const hit = candidates.find((c) => c.kind === parsed.kind && String(c.key) === String(parsed.key));
+      if (hit) {
+        coUpdateEntry(t, (cur) => ({
+          ...cur,
+          layout: {
+            ...cur.layout,
+            sectionPillarWidthM: sanitizeCoIntStr(hit.gap),
+          },
+        }));
+        return;
+      }
+    }
+
+    if (triggerPopup) {
+      setCoWsPickPopup({
+        x: 24,
+        y: 24,
+        target: t,
+        axis,
+        side,
+        options: candidates,
+      });
+    }
+  };
+
+  const coWsAutoKeyRef = useRef('');
+  useEffect(() => {
+    const t = coSelectedTarget;
+    if (!t) return;
+    const entry = getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const k = `${coGetKey(t)}|${layout.wsBaselineSide}|${layout.wsBaselineNeighborKey}|${layout.axisLocked ? '1' : '0'}|${layout.axisFixed}|${workingFaceData?.length ?? 0}|${plannedWorkfaceLoopsWorld?.length ?? 0}`;
+    if (coWsAutoKeyRef.current === k) return;
+    coWsAutoKeyRef.current = k;
+    coRecomputeWsForTarget(t, { triggerPopup: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coSelectedTarget, coImportParamsByNo, coPlannedParamsByFaceIndex, workingFaceData, plannedWorkfaceLoopsWorld]);
+
+  const coSaveAll = () => {
+    try {
+      const payload = {
+        savedAt: new Date().toISOString(),
+        version: 2,
+        defaults: { layout: coDefaultLayout, production: coDefaultProduction },
+        import: coImportParamsByNo ?? {},
+        planned: coPlannedParamsByFaceIndex ?? {},
+      };
+      window.localStorage.setItem(COCONTROL_STORAGE_KEY_V2, JSON.stringify(payload));
+
+      // 生产层确认/保存：按采高重提取（不影响煤厚插值，只影响 Mi=min(煤厚,采高) 等派生项）
+      if (generatedPoints) {
+        handleExtractHighPrecisionParams();
+      }
+
+      window.alert('协同调控参数已保存（本地，按工作面分表）。');
+    } catch {
+      window.alert('保存失败：浏览器存储不可用。');
+    }
+  };
+
+  const coResetAll = () => {
+    setCoImportParamsByNo({});
+    setCoPlannedParamsByFaceIndex({});
+    setCoSelectedTarget(null);
+    setCoPickPopup(null);
+    setCoWsPickPopup(null);
+    workingFaceDataOriginalRef.current = [];
+    try {
+      window.localStorage.removeItem(COCONTROL_STORAGE_KEY_V2);
+    } catch {
+      // ignore
+    }
+  };
+
+  const coRemapNeighborKeyAfterImportDelete = (nk, deletedNo) => {
+    const s = String(nk ?? '').trim();
+    const m = s.match(/^import:No\.(\d+)$/);
+    if (!m) return s;
+    const n = Number(m[1]);
+    if (!(Number.isFinite(n) && Number.isFinite(deletedNo))) return s;
+    if (n === deletedNo) return '';
+    if (n > deletedNo) return `import:No.${n - 1}`;
+    return s;
+  };
+
+  const coInvalidateDerivedAfterWorkfaceChange = () => {
+    setGeneratedPoints(null);
+    setParamExtractionResult(null);
+    setParamExtractionGeoResult(null);
+    setParamExtractionFullResult(null);
+    setOdiResult(null);
+    setCoScalePack(null);
+    setCoOdiUnionResult(null);
+    setCoScaleDirty(true);
+  };
+
+  const handleCoRestoreSelectedWorkface = () => {
+    const t = coSelectedTarget;
+    if (!t) {
+      window.alert('请先在主图中选择一个工作面。');
+      return;
+    }
+    if (t.kind !== 'import') {
+      window.alert('“还原工作面”当前仅支持导入工作面。');
+      return;
+    }
+    const no = Math.round(Number(t.no));
+    if (!(Number.isFinite(no) && no >= 1)) return;
+    const base = (no - 1) * 4;
+    const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+    if (base + 3 >= orig.length) {
+      const cur = Array.isArray(workingFaceData) ? workingFaceData : [];
+      if (base + 3 < cur.length) {
+        const ok = window.confirm('未找到该工作面的“初始导入快照”（可能是该工作面在本功能上线前就已导入/从旧快照恢复）。\n\n是否将“当前工作面坐标”设置为可还原基线？\n（设置后可用“还原工作面”回到当前这一版，但无法回到更早的初始导入版。）');
+        if (ok) {
+          workingFaceDataOriginalRef.current = cur.map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
+          window.alert('已设置当前数据为可还原基线。你可以再次点击“还原工作面”。');
+        }
+      } else {
+        window.alert('未找到该工作面的初始导入数据，无法还原。');
+      }
+      return;
+    }
+
+    const origSlice = orig.slice(base, base + 4).map((p) => ({ x: Number(p?.x), y: Number(p?.y) }));
+    if (origSlice.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+      window.alert('初始导入数据存在无效坐标，无法还原。');
+      return;
+    }
+
+    setWorkingFaceData((prev) => {
+      const cur = Array.isArray(prev) ? prev : [];
+      if (base + 3 >= cur.length) return cur;
+      return cur.map((p, idx) => {
+        if (idx < base || idx > base + 3) return p;
+        const q = origSlice[idx - base];
+        return { ...p, x: q.x, y: q.y };
+      });
+    });
+
+    coInvalidateDerivedAfterWorkfaceChange();
+    // ws 自动回填 effect 只看长度，不看坐标，这里手动触发一次
+    setTimeout(() => {
+      try {
+        coRecomputeWsForTarget(t, { triggerPopup: true });
+      } catch {
+        // ignore
+      }
+    }, 0);
+  };
+
+  const handleCoDeleteSelectedWorkface = () => {
+    const t = coSelectedTarget;
+    if (!t) {
+      window.alert('请先在主图中选择一个工作面。');
+      return;
+    }
+    if (t.kind !== 'import') {
+      window.alert('“删除工作面”当前仅支持导入工作面。');
+      return;
+    }
+    const no = Math.round(Number(t.no));
+    if (!(Number.isFinite(no) && no >= 1)) return;
+    if (!window.confirm(`确认删除导入面 No.${no} 吗？此操作会重新编号后续导入面，并可能影响已设置的协同调控参数与邻面基准。`)) return;
+
+    const base = (no - 1) * 4;
+    setWorkingFaceData((prev) => {
+      const cur = Array.isArray(prev) ? prev : [];
+      if (base + 3 >= cur.length) return cur;
+      const next = [...cur.slice(0, base), ...cur.slice(base + 4)];
+      return next;
+    });
+
+    // 同步删除初始快照中的该面
+    const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+    if (base + 3 < orig.length) {
+      workingFaceDataOriginalRef.current = [...orig.slice(0, base), ...orig.slice(base + 4)];
+    }
+
+    // 删除并重排导入面的协同调控分表条目（No.k）
+    setCoImportParamsByNo((prev) => {
+      const src = prev ?? {};
+      const entries = Object.entries(src);
+      const out = {};
+      for (const [k, v] of entries) {
+        const m = String(k).match(/^No\.(\d+)$/);
+        if (!m) {
+          out[k] = v;
+          continue;
+        }
+        const n = Number(m[1]);
+        if (!(Number.isFinite(n) && n >= 1)) {
+          out[k] = v;
+          continue;
+        }
+        if (n === no) continue;
+        const nn = n > no ? (n - 1) : n;
+        const nextKey = `No.${nn}`;
+        const cur = makeCoEntry(v);
+        const remapped = {
+          ...cur,
+          layout: {
+            ...cur.layout,
+            wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
+          },
+        };
+        out[nextKey] = remapped;
+      }
+      return out;
+    });
+
+    // 规划面分表里也可能引用 import:No.k 作为邻面基准：需要同步修正
+    setCoPlannedParamsByFaceIndex((prev) => {
+      const src = prev ?? {};
+      const out = {};
+      for (const [k, v] of Object.entries(src)) {
+        const cur = makeCoEntry(v);
+        out[k] = {
+          ...cur,
+          layout: {
+            ...cur.layout,
+            wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
+          },
+        };
+      }
+      return out;
+    });
+
+    // 更新选择：删除当前面则清空；删除前面的面则编号 -1
+    setCoSelectedTarget((prevSel) => {
+      if (!prevSel) return prevSel;
+      if (prevSel.kind !== 'import') return prevSel;
+      const n = Math.round(Number(prevSel.no));
+      if (!(Number.isFinite(n) && n >= 1)) return null;
+      if (n === no) return null;
+      if (n > no) return { ...prevSel, no: n - 1 };
+      return prevSel;
+    });
+    setCoPickPopup(null);
+    setCoWsPickPopup(null);
+
+    coInvalidateDerivedAfterWorkfaceChange();
+  };
+
+  const coConfirmLayoutForSelected = () => {
+    if (!coSelectedTarget) return;
+    coUpdateEntry(coSelectedTarget, (cur) => ({ ...cur, layoutConfirmed: true, layoutNeedsReconfirm: false }));
+  };
+
+  const coMarkLayoutDirtyForSelected = () => {
+    if (!coSelectedTarget) return;
+    coUpdateEntry(coSelectedTarget, (cur) => ({
+      ...cur,
+      layoutConfirmed: cur.layoutConfirmed ? false : cur.layoutConfirmed,
+      layoutNeedsReconfirm: cur.layoutConfirmed ? true : cur.layoutNeedsReconfirm,
+    }));
+  };
+
+  const coUpdateImportWorkfaceGeometry = ({ faceNo, prevLayout, nextLayout, ghostLengthM = null }) => {
+    const no = Math.round(Number(faceNo));
+    if (!(Number.isFinite(no) && no >= 1)) return;
+    const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+    const base = (no - 1) * 4;
+    // 幽灵轮廓处理：如果提供了 ghostLengthM 且当前长度 < ghostLengthM，则基于原始数据生成幽灵轮廓并存入状态
+    const handleGhost = ({ bbox, endPick, newMinW, newMaxW, ghostLengthM, axis, tolA, tolW }) => {
+       const gl = Number(ghostLengthM);
+       if (!Number.isFinite(gl) || gl <= 0) {
+         setCoWorkfaceGhosts(prev => { const n = { ...prev }; delete n[`import-${no}`]; return n; });
+         return;
+       }
+       // 幽灵只在实际长度小于最大长度时显示
+       // 使用一个临时 layout 计算“最大长度”下的坐标
+       const ghostLayout = { ...nextLayout, advanceLengthM: String(gl) };
+       // 这里偷懒复用逻辑：我们需要计算如果是最大长度，它的bbox应该是啥
+       // 简单做法：复用相同的轴向锁定和基准端逻辑，算出四个角点
+       const advAxis = (axis === 'x' || axis === 'y') ? axis : 'x'; // 没解析出来默认x
+       const widthAxis = (advAxis === 'x') ? 'y' : 'x';
+       
+       // 1. 宽度如果不动，中心线已经确定；我们已经有了 newMinW, newMaxW
+       // 2. 长度方向：从基准端延伸 ghostLengthM
+       // 基准端位置：prevLayout里的基准端位置（因为是拖动，认为基准端相对稳定）。
+       // 实际上在这个函数里，nextLayout 已经确定了“这次”的基准端不动。
+       // 上下文：curMinA/curMaxA... 
+       // 我们需要根据“基准端”推算 ghost 的 minA/maxA
+       // 重新获取当前bbox（注意这个函数开头取的是 geometric 变化前的 src）
+       // 这里的逻辑稍微绕：src 是“变化前”的点。我们想算出“变化后”的幽灵。
+       
+       // 改策略：幽灵 = “最大轮廓”。
+       // 如果生产参数 currentLength < layoutTotalLength, 
+       // 幽灵应该是 layoutTotalLength 对应的样子。
+       // 它的“基准端”应该和当前实际工作面的基准端重合。
+       
+       let gMinA = 0; 
+       let gMaxA = 0;
+       
+       const curMinA = (advAxis === 'y') ? bbox.minY : bbox.minX;
+       const curMaxA = (advAxis === 'y') ? bbox.maxY : bbox.maxX;
+       // 变化前的 L
+       // const curL = curMaxA - curMinA; 
+       // 注意：我们必须确保 ghost 的基准端跟 newFace 的基准端一致。
+       // 下面的主逻辑会算出 newFace 的新位置（dMinA/dMaxA 是增量）。
+       // 我们直接算 ghost 的绝对位置比较简单。
+       
+       if (endPick === 'min') {
+          // 基准端是 min, 则 max = min + ghostLength
+          // 注意：基准端可能本身因为 dMinA 移动了（虽然本函数里只有一端动，但复用逻辑得严谨）
+          // 本函数逻辑是：如果 endPick==min，则 dMinA=0 (fix min), dMaxA=delta.
+          // 所以 ghost 的 min = curMinA. ghost 的 max = curMinA + gl. 
+          // 宽度直接用 newMinW, newMaxW.
+          gMinA = curMinA;
+          gMaxA = curMinA + gl;
+       } else {
+          // 基准端是 max, dMaxA=0, dMinA=-delta.
+          // ghost 的 max = curMaxA. ghost 的 min = curMaxA - gl.
+          gMaxA = curMaxA;
+          gMinA = curMaxA - gl;
+       }
+       
+       // 生成4个点
+       let gPts = [];
+       if (advAxis === 'x') { // x是推进，y是宽
+         // minX,minY -> maxX,minY -> maxX,maxY -> minX,maxY
+         gPts = [
+            { x: gMinA, y: newMinW },
+            { x: gMaxA, y: newMinW },
+            { x: gMaxA, y: newMaxW },
+            { x: gMinA, y: newMaxW }
+         ];
+       } else { // y是推进，x是宽
+         // minX,minY -> minX,maxY -> maxX,maxY -> maxX,minY 
+         // (顺序为了围成圈，顺逆无所谓，svg plygon自动闭合)
+         gPts = [
+            { x: newMinW, y: gMinA },
+            { x: newMinW, y: gMaxA },
+            { x: newMaxW, y: gMaxA },
+            { x: newMaxW, y: gMinA }
+         ];
+       }
+       
+       // 只有当实际长度 < 幽灵长度（由于精度可能有微小误差，给个buffer）时才设置
+       // 下面的主代码算出的是 nextLayout.advanceLengthM
+       const nextL = Number(nextLayout.advanceLengthM);
+       if (Number.isFinite(nextL) && nextL < gl - 0.1) {
+           setCoWorkfaceGhosts(prev => ({ ...prev, [`import-${no}`]: gPts }));
+       } else {
+           setCoWorkfaceGhosts(prev => { const n = { ...prev }; delete n[`import-${no}`]; return n; });
+       }
+    };
+
+    if (base + 3 >= src.length) return;
+
+    const pts = [0, 1, 2, 3]
+      .map((k) => {
+        const p = src[base + k] ?? {};
+        return { idx: base + k, x: Number(p.x), y: Number(p.y) };
+      })
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (pts.length !== 4) return;
+
+    const bbox = coGetBBoxFromPoints(pts);
+    if (!bbox) return;
+    const axis = coResolveAxis(bbox, nextLayout);
+    const advAxis = axis; // 'x' | 'y'（锁定后的布置方向：推进方向）
+    const widthAxis = (axis === 'x') ? 'y' : 'x';
+
+    const curMinW = (widthAxis === 'y') ? bbox.minY : bbox.minX;
+    const curMaxW = (widthAxis === 'y') ? bbox.maxY : bbox.maxX;
+    const curCenterW = (curMinW + curMaxW) / 2;
+
+    const curMinA = (advAxis === 'y') ? bbox.minY : bbox.minX;
+    const curMaxA = (advAxis === 'y') ? bbox.maxY : bbox.maxX;
+    const curL = curMaxA - curMinA;
+
+    let newMinW = curMinW;
+    let newMaxW = curMaxW;
+
+    const targetB = toCoIntOrNull(nextLayout?.workfaceWidthM);
+    const prevB = toCoIntOrNull(prevLayout?.workfaceWidthM);
+    const hasBChange = Number.isFinite(targetB) && (prevB == null || targetB !== prevB);
+
+    const targetL = toCoIntOrNull(nextLayout?.advanceLengthM);
+    const prevL = toCoIntOrNull(prevLayout?.advanceLengthM);
+    // 修正：对比实际几何长度(curL)而不是 Production 状态(prevL)，处理“Slider 变化但几何未变”的情况
+    const hasLChange = Number.isFinite(targetL) && Math.abs(targetL - curL) > 0.1;
+
+    // B 更新：锁邻面侧边或锁短边方向中心线
+    if (hasBChange) {
+      const allFaces = coListAllFaceBBoxes({ kind: 'import', no });
+      const posSide = (axis === 'x') ? 'up' : 'right';
+      const negSide = (axis === 'x') ? 'down' : 'left';
+      const pos = coComputeWsCandidates({ bbox, axis, side: posSide, allFaces });
+      const neg = coComputeWsCandidates({ bbox, axis, side: negSide, allFaces });
+      const hasPos = Boolean(pos?.length);
+      const hasNeg = Boolean(neg?.length);
+
+      if (hasPos && hasNeg) {
+        // 两侧都有邻面：锁短边方向中心线
+        newMinW = curCenterW - targetB / 2;
+        newMaxW = curCenterW + targetB / 2;
+      } else if (hasPos && !hasNeg) {
+        // 仅正侧（上/右）有邻面：锁更靠近邻面的那一侧边（正侧边）
+        newMaxW = curMaxW;
+        newMinW = curMaxW - targetB;
+      } else if (!hasPos && hasNeg) {
+        // 仅负侧（下/左）有邻面：锁负侧边
+        newMinW = curMinW;
+        newMaxW = curMinW + targetB;
+      } else {
+        // 无邻面：默认锁中心线
+        newMinW = curCenterW - targetB / 2;
+        newMaxW = curCenterW + targetB / 2;
+      }
+    }
+
+    // L 更新：严格按锁定的布置方向（x/y）处理；固定一端，另一端沿推进轴伸缩；宽度保持不变
+    let dMinA = 0;
+    let dMaxA = 0;
+    if (hasLChange && Number.isFinite(targetL) && Number.isFinite(curL) && curL > 1e-9) {
+      const end = String(nextLayout?.advanceBaselineEnd ?? '').trim();
+      const endPick = (end === 'min' || end === 'max') ? end : 'min';
+      const deltaL = targetL - curL;
+      if (endPick === 'min') {
+        dMaxA = deltaL;
+      } else {
+        dMinA = -deltaL;
+      }
+    }
+
+    const tolW = Math.max(Math.abs(curMaxW - curMinW) * 0.02, 1e-6);
+    const tolA = Math.max(Math.abs(curMaxA - curMinA) * 0.02, 1e-6);
+    const dMinW = newMinW - curMinW;
+    const dMaxW = newMaxW - curMaxW;
+
+    const next = src.map((p, idx) => {
+      if (idx < base || idx > base + 3) return p;
+      const x0 = Number(p?.x);
+      const y0 = Number(p?.y);
+      if (!Number.isFinite(x0) || !Number.isFinite(y0)) return p;
+
+      let x = x0;
+      let y = y0;
+
+      // 宽度轴：只移动两侧边
+      if (hasBChange) {
+        if (widthAxis === 'y') {
+          if (Math.abs(y0 - curMinW) <= tolW) y += dMinW;
+          else if (Math.abs(y0 - curMaxW) <= tolW) y += dMaxW;
+        } else {
+          if (Math.abs(x0 - curMinW) <= tolW) x += dMinW;
+          else if (Math.abs(x0 - curMaxW) <= tolW) x += dMaxW;
+        }
+      }
+
+      // 推进轴：按基准端固定，移动另一端的端边（两点一起动）；宽度不变
+      if (hasLChange && (Math.abs(dMinA) > 1e-9 || Math.abs(dMaxA) > 1e-9)) {
+        if (advAxis === 'y') {
+          if (Math.abs(y0 - curMinA) <= tolA) y += dMinA;
+          else if (Math.abs(y0 - curMaxA) <= tolA) y += dMaxA;
+        } else {
+          if (Math.abs(x0 - curMinA) <= tolA) x += dMinA;
+          else if (Math.abs(x0 - curMaxA) <= tolA) x += dMaxA;
+        }
+      }
+
+      return { ...p, x, y };
+    });
+
+    handleGhost({
+      bbox,
+      endPick: (String(nextLayout?.advanceBaselineEnd ?? '').trim() === 'max' ? 'max' : 'min'),
+      newMinW,
+      newMaxW,
+      ghostLengthM,
+      axis,
+      tolA,
+      tolW
+    });
+
+    setWorkingFaceData(next);
+    return next;
+  };
+
+  const coUpdatePlannedWorkfaceGeometry = ({ faceIndex, prevLayout, nextLayout, ghostLengthM = null }) => {
+    const fi = Math.round(Number(faceIndex));
+    if (!(Number.isFinite(fi) && fi >= 1)) return;
+    const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    if (!src.length) return;
+    const i = src.findIndex((w) => Number(w?.faceIndex) === fi);
+    if (i < 0) return;
+    const loop = (src[i]?.loop ?? [])
+      .map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+    if (loop.length < 3) return;
+
+    const bbox = coGetBBoxFromPoints(loop);
+    if (!bbox) return;
+
+   // 幽灵轮廓处理：如果提供了 ghostLengthM，则基于原始数据生成幽灵轮廓并存入状态
+    const handleGhost = ({ bbox, endPick, newMinW, newMaxW, ghostLengthM, axis, tolA, tolW }) => {
+       const gl = Number(ghostLengthM);
+       if (!Number.isFinite(gl) || gl <= 0) {
+         setCoWorkfaceGhosts(prev => { const n = { ...prev }; delete n[`planned-${fi}`]; return n; });
+         return;
+       }
+       const advAxis = (axis === 'x' || axis === 'y') ? axis : 'x'; 
+       
+       let gMinA = 0; 
+       let gMaxA = 0;
+       
+       const curMinA = (advAxis === 'y') ? bbox.minY : bbox.minX;
+       const curMaxA = (advAxis === 'y') ? bbox.maxY : bbox.maxX;
+       
+       if (endPick === 'min') {
+          gMinA = curMinA;
+          gMaxA = curMinA + gl;
+       } else {
+          gMaxA = curMaxA;
+          gMinA = curMaxA - gl;
+       }
+       
+       let gPts = [];
+       if (advAxis === 'x') {
+         gPts = [
+            { x: gMinA, y: newMinW },
+            { x: gMaxA, y: newMinW },
+            { x: gMaxA, y: newMaxW },
+            { x: gMinA, y: newMaxW }
+         ];
+       } else {
+         gPts = [
+            { x: newMinW, y: gMinA },
+            { x: newMinW, y: gMaxA },
+            { x: newMaxW, y: gMaxA },
+            { x: newMaxW, y: gMinA }
+         ];
+       }
+       
+       const nextL = Number(nextLayout.advanceLengthM);
+       if (Number.isFinite(nextL) && nextL < gl - 0.1) {
+           setCoWorkfaceGhosts(prev => ({ ...prev, [`planned-${fi}`]: gPts }));
+       } else {
+           setCoWorkfaceGhosts(prev => { const n = { ...prev }; delete n[`planned-${fi}`]; return n; });
+       }
+    };
+    const axis = coResolveAxis(bbox, nextLayout);
+    const advAxis = axis; // 'x' | 'y'
+    const widthAxis = (axis === 'x') ? 'y' : 'x';
+
+    const curMinW = (widthAxis === 'y') ? bbox.minY : bbox.minX;
+    const curMaxW = (widthAxis === 'y') ? bbox.maxY : bbox.maxX;
+    const curCenterW = (curMinW + curMaxW) / 2;
+
+    const curMinA = (advAxis === 'y') ? bbox.minY : bbox.minX;
+    const curMaxA = (advAxis === 'y') ? bbox.maxY : bbox.maxX;
+    const curL = curMaxA - curMinA;
+
+    let newMinW = curMinW;
+    let newMaxW = curMaxW;
+
+    const targetB = toCoIntOrNull(nextLayout?.workfaceWidthM);
+    const prevB = toCoIntOrNull(prevLayout?.workfaceWidthM);
+    const hasBChange = Number.isFinite(targetB) && (prevB == null || targetB !== prevB);
+
+    const targetL = toCoIntOrNull(nextLayout?.advanceLengthM);
+    const prevL = toCoIntOrNull(prevLayout?.advanceLengthM);
+    // 修正：对比实际几何长度(curL)而不是 Production 状态(prevL)
+    const hasLChange = Number.isFinite(targetL) && Math.abs(targetL - curL) > 0.1;
+
+    if (hasBChange) {
+      const allFaces = coListAllFaceBBoxes({ kind: 'planned', faceIndex: fi });
+      const posSide = (axis === 'x') ? 'up' : 'right';
+      const negSide = (axis === 'x') ? 'down' : 'left';
+      const pos = coComputeWsCandidates({ bbox, axis, side: posSide, allFaces });
+      const neg = coComputeWsCandidates({ bbox, axis, side: negSide, allFaces });
+      const hasPos = Boolean(pos?.length);
+      const hasNeg = Boolean(neg?.length);
+
+      if (hasPos && hasNeg) {
+        newMinW = curCenterW - targetB / 2;
+        newMaxW = curCenterW + targetB / 2;
+      } else if (hasPos && !hasNeg) {
+        newMaxW = curMaxW;
+        newMinW = curMaxW - targetB;
+      } else if (!hasPos && hasNeg) {
+        newMinW = curMinW;
+        newMaxW = curMinW + targetB;
+      } else {
+        newMinW = curCenterW - targetB / 2;
+        newMaxW = curCenterW + targetB / 2;
+      }
+    }
+
+    let dMinA = 0;
+    let dMaxA = 0;
+    if (hasLChange && Number.isFinite(targetL) && Number.isFinite(curL) && curL > 1e-9) {
+      const end = String(nextLayout?.advanceBaselineEnd ?? '').trim();
+      const endPick = (end === 'min' || end === 'max') ? end : 'min';
+      const deltaL = targetL - curL;
+      if (endPick === 'min') {
+        dMaxA = deltaL;
+      } else {
+        dMinA = -deltaL;
+      }
+    }
+
+    const tolW = Math.max(Math.abs(curMaxW - curMinW) * 0.02, 1e-6);
+    const tolA = Math.max(Math.abs(curMaxA - curMinA) * 0.02, 1e-6);
+
+    handleGhost({
+      bbox,
+      endPick: (String(nextLayout?.advanceBaselineEnd ?? '').trim() === 'max' ? 'max' : 'min'),
+      newMinW,
+      newMaxW,
+      ghostLengthM,
+      axis,
+      tolA,
+      tolW
+    });
+
+    const dMinW = newMinW - curMinW;
+    const dMaxW = newMaxW - curMaxW;
+
+    const nextLoop = loop.map((p) => {
+      const x0 = Number(p?.x);
+      const y0 = Number(p?.y);
+      let x = x0;
+      let y = y0;
+
+      if (hasBChange) {
+        if (widthAxis === 'y') {
+          if (Math.abs(y0 - curMinW) <= tolW) y += dMinW;
+          else if (Math.abs(y0 - curMaxW) <= tolW) y += dMaxW;
+        } else {
+          if (Math.abs(x0 - curMinW) <= tolW) x += dMinW;
+          else if (Math.abs(x0 - curMaxW) <= tolW) x += dMaxW;
+        }
+      }
+
+      if (hasLChange && (Math.abs(dMinA) > 1e-9 || Math.abs(dMaxA) > 1e-9)) {
+        if (advAxis === 'y') {
+          if (Math.abs(y0 - curMinA) <= tolA) y += dMinA;
+          else if (Math.abs(y0 - curMaxA) <= tolA) y += dMaxA;
+        } else {
+          if (Math.abs(x0 - curMinA) <= tolA) x += dMinA;
+          else if (Math.abs(x0 - curMaxA) <= tolA) x += dMaxA;
+        }
+      }
+
+      return { ...p, x, y };
+    });
+
+    const nextArr = src.map((w, idx) => (idx === i ? { ...w, loop: nextLoop } : w));
+    setPlannedWorkfaceLoopsWorld(nextArr);
+    return nextArr;
+  };
+
+  const coUpdateLayoutForSelected = (patch) => {
+    if (!coSelectedTarget) return;
+    const t = coSelectedTarget;
+    const key = coGetKey(t);
+    if (!key) return;
+
+    const cur = getCoEntryForTarget(t);
+    const prevLayout = cur?.layout ?? makeCoEntry(null).layout;
+    const nextLayout = { ...prevLayout, ...patch };
+
+    const affectsGeometry = (
+      Object.prototype.hasOwnProperty.call(patch, 'workfaceWidthM')
+      || Object.prototype.hasOwnProperty.call(patch, 'advanceLengthM')
+    );
+
+    // 1) 更新分表
+    coUpdateEntry(t, (entry) => {
+      const wasConfirmed = Boolean(entry.layoutConfirmed);
+      return {
+        ...entry,
+        layout: {
+          workfaceWidthM: Object.prototype.hasOwnProperty.call(patch, 'workfaceWidthM') ? sanitizeCoIntStr(patch.workfaceWidthM) : entry.layout.workfaceWidthM,
+          sectionPillarWidthM: Object.prototype.hasOwnProperty.call(patch, 'sectionPillarWidthM') ? sanitizeCoIntStr(patch.sectionPillarWidthM) : entry.layout.sectionPillarWidthM,
+          advanceLengthM: Object.prototype.hasOwnProperty.call(patch, 'advanceLengthM') ? sanitizeCoIntStr(patch.advanceLengthM) : entry.layout.advanceLengthM,
+          wsBaselineSide: Object.prototype.hasOwnProperty.call(patch, 'wsBaselineSide') ? String(patch.wsBaselineSide ?? '') : entry.layout.wsBaselineSide,
+          wsBaselineNeighborKey: Object.prototype.hasOwnProperty.call(patch, 'wsBaselineNeighborKey') ? String(patch.wsBaselineNeighborKey ?? '') : entry.layout.wsBaselineNeighborKey,
+          axisLocked: Object.prototype.hasOwnProperty.call(patch, 'axisLocked') ? Boolean(patch.axisLocked) : entry.layout.axisLocked,
+          axisFixed: Object.prototype.hasOwnProperty.call(patch, 'axisFixed') ? String(patch.axisFixed ?? '') : entry.layout.axisFixed,
+          advanceBaselineEnd: Object.prototype.hasOwnProperty.call(patch, 'advanceBaselineEnd') ? String(patch.advanceBaselineEnd ?? '') : entry.layout.advanceBaselineEnd,
+        },
+        layoutConfirmed: wasConfirmed ? false : entry.layoutConfirmed,
+        layoutNeedsReconfirm: wasConfirmed ? true : entry.layoutNeedsReconfirm,
+      };
+    });
+
+    if (!affectsGeometry) return;
+
+    // 2) 更新几何（仅作用于“被编辑工作面自身”）
+    if (t.kind === 'import') {
+      coUpdateImportWorkfaceGeometry({ faceNo: t.no, prevLayout, nextLayout });
+    } else {
+      coUpdatePlannedWorkfaceGeometry({ faceIndex: t.faceIndex, prevLayout, nextLayout });
+    }
+
+    // 3) 几何变化后：评价点/提取结果作废（避免口径不一致）
+    setGeneratedPoints(null);
+    setParamExtractionResult(null);
+    setParamExtractionGeoResult(null);
+    setParamExtractionFullResult(null);
+    setOdiResult(null);
+  };
+
+  const coUpdateProductionForSelected = (patch) => {
+    if (!coSelectedTarget) return;
+    const t = coSelectedTarget;
+    coUpdateEntry(t, (entry) => ({
+      ...entry,
+      production: {
+        miningHeightM: Object.prototype.hasOwnProperty.call(patch, 'miningHeightM') ? sanitizeCoIntStr(patch.miningHeightM) : entry.production.miningHeightM,
+        advanceLengthM: Object.prototype.hasOwnProperty.call(patch, 'advanceLengthM') ? sanitizeCoIntStr(patch.advanceLengthM) : entry.production.advanceLengthM,
+        advanceStepM: Object.prototype.hasOwnProperty.call(patch, 'advanceStepM') ? sanitizeCoIntStr(patch.advanceStepM) : entry.production.advanceStepM,
+        advanceBaselineEnd: Object.prototype.hasOwnProperty.call(patch, 'advanceBaselineEnd') ? String(patch.advanceBaselineEnd ?? '') : entry.production.advanceBaselineEnd,
+        advanceSpeedPerShift: Object.prototype.hasOwnProperty.call(patch, 'advanceSpeedPerShift') ? sanitizeCoIntStr(patch.advanceSpeedPerShift) : entry.production.advanceSpeedPerShift,
+      },
+    }));
+  };
+
+  // 协同调控：3C 自动计算开关（默认开启；仅影响自动触发，不影响手动按钮）
+  const COCONTROL_AUTO_ODI_KEY = 'miningplan.cocontrol.autoOdi.v1';
+  const [coAutoOdiEnabled, setCoAutoOdiEnabled] = useState(() => {
+    try {
+      const raw = window?.localStorage?.getItem(COCONTROL_AUTO_ODI_KEY);
+      if (raw == null) return true;
+      const v = String(raw).trim().toLowerCase();
+      if (v === '0' || v === 'false') return false;
+      if (v === '1' || v === 'true') return true;
+      return true;
+    } catch {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      window?.localStorage?.setItem(COCONTROL_AUTO_ODI_KEY, coAutoOdiEnabled ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  }, [coAutoOdiEnabled]);
+
+  // 协同调控：自动算请求（需要时自动生成评价点，再 ODI 计算）
+  const coAutoOdiPendingRef = useRef(null); // { key, stepM, requestedAt }
+  const coAutoOdiTimerRef = useRef(0);
+  const coBuildAutoOdiKey = (t, entry0) => {
+    if (!t) return '';
+    const entry = entry0 ?? getCoEntryForTarget(t);
+    const layout = entry?.layout ?? coDefaultLayout;
+    const production = entry?.production ?? coDefaultProduction;
+    const k = coGetKey(t);
+    return `${String(k)}|Ldyn=${String(production.advanceLengthM ?? '')}|end=${String(production.advanceBaselineEnd ?? '')}|step=${String(production.advanceStepM ?? '')}|mh=${String(production.miningHeightM ?? '')}|L=${String(layout.advanceLengthM ?? '')}|ok=${Boolean(entry?.layoutConfirmed) ? '1' : '0'}`;
+  };
+  const coRequestAutoOdi = ({ reason = '', debounceMs = 350, stepOverrideM = null, forceRegenPoints = false, keyOverride = null, workingFaceDataOverride = null, plannedWorkfaceLoopsOverride = null } = {}) => {
+    if (!coAutoOdiEnabled) return;
+    const t = coSelectedTarget;
+    if (!t) return;
+
+    const entry = getCoEntryForTarget(t);
+    if (!Boolean(entry?.layoutConfirmed)) return;
+    if (!drillholeData?.length || !workingFaceData?.length) return;
+
+    const stepOverride0 = Number(stepOverrideM);
+    const stepM0 = Math.max(1, Math.round((Number.isFinite(stepOverride0) && stepOverride0 > 0) ? stepOverride0 : (Number(entry?.production?.advanceStepM) || 25)));
+    const keyPick = String(keyOverride ?? '').trim();
+    const key = keyPick ? keyPick : coBuildAutoOdiKey(t, entry);
+
+    if (coAutoOdiTimerRef.current) {
+      clearTimeout(coAutoOdiTimerRef.current);
+      coAutoOdiTimerRef.current = 0;
+    }
+    coAutoOdiTimerRef.current = setTimeout(() => {
+      coAutoOdiTimerRef.current = 0;
+      coAutoOdiPendingRef.current = { key, stepM: stepM0, requestedAt: Date.now(), reason: String(reason || '') };
+
+      // 先确保有评价点（自动算口径：必要时强制重生成；否则没有就生成，有则复用）
+      if (forceRegenPoints || !generatedPoints) {
+        try {
+          generatePoints({ silent: true, stepOverrideM: stepM0, workingFaceDataOverride, plannedWorkfaceLoopsOverride });
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      try {
+        const isDyn = String(reason || '').includes('dyn');
+        cocontrolComputeOdiAll({ silent: true, preserveScale: isDyn });
+      } catch {
+        // ignore
+      }
+    }, Math.max(0, Number(debounceMs) || 0));
+  };
+
+  useEffect(() => {
+    const pending = coAutoOdiPendingRef.current;
+    if (!pending) return;
+    if (!coAutoOdiEnabled) {
+      coAutoOdiPendingRef.current = null;
+      return;
+    }
+    if (!generatedPoints) return; // 等待自动生成评价点完成
+    const t = coSelectedTarget;
+    if (!t) {
+      coAutoOdiPendingRef.current = null;
+      return;
+    }
+    const keyNow = coBuildAutoOdiKey(t);
+    if (keyNow !== pending.key) {
+      // 期间参数又变了：丢弃本次，交给下一次请求
+      coAutoOdiPendingRef.current = null;
+      return;
+    }
+    coAutoOdiPendingRef.current = null;
+    try {
+      const isDyn = String(pending.reason || '').includes('dyn');
+      cocontrolComputeOdiAll({ silent: true, preserveScale: isDyn });
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generatedPoints, coSelectedTarget, coAutoOdiEnabled]);
   // 主图：图层叠加 & 交互分析
   const [showLayerDrillholes, setShowLayerDrillholes] = useState(true);
   const [showLayerEvalPoints, setShowLayerEvalPoints] = useState(true);
@@ -6790,6 +8496,8 @@ const App = () => {
   const [isMainMapFullscreen, setIsMainMapFullscreen] = useState(false);
   const [showMainMapExportMenu, setShowMainMapExportMenu] = useState(false);
   const [showMainMapLabelsMenu, setShowMainMapLabelsMenu] = useState(false);
+  const [showMainMapEvalMenu, setShowMainMapEvalMenu] = useState(false);
+  const [mainMapEvalMenuPos, setMainMapEvalMenuPos] = useState({ left: 0, top: 0, openUp: false });
 
   // 工程快照（仅输入）：保存/导入
   const PROJECT_SNAPSHOT_SCHEMA = 3;
@@ -7065,24 +8773,29 @@ const App = () => {
     selectedAquiferType,
   });
 
-  const applyScenarioParams = (p) => {
+  const applyScenarioParams = (p, options = {}) => {
     if (!p) return;
 
-    // 视为一次“输入数据载入/更新”：导入后不应立刻触发工程效率/资源回收计算。
-    setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false });
-    try {
-      planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '' };
-    } catch {
-      // ignore
-    }
-    setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true });
-    try {
-      setPlanningEfficiencySelectedSig('');
-      setPlanningRecoverySelectedSig('');
-      setPlanningEfficiencyResult(null);
-      setPlanningRecoveryResult(null);
-    } catch {
-      // ignore
+    const invalidatePlanning = options?.invalidatePlanning !== false;
+
+    if (invalidatePlanning) {
+      // 视为一次“输入数据载入/更新”：导入后不应立刻触发工程效率/资源回收计算。
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false, weighted: false });
+      try {
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '', weighted: '' };
+      } catch {
+        // ignore
+      }
+      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true, weighted: true });
+      try {
+        setPlanningEfficiencySelectedSig('');
+        setPlanningRecoverySelectedSig('');
+        setPlanningEfficiencyResult(null);
+        setPlanningRecoveryResult(null);
+        setPlanningWeightedResult(null);
+      } catch {
+        // ignore
+      }
     }
     setBoundaryData(p.boundaryData ?? []);
     setDrillholeData(p.drillholeData ?? []);
@@ -7199,6 +8912,21 @@ const App = () => {
       showMainMap,
       showMeasuredMapping,
       showErrorAnalysis,
+      // Workface / evaluation pipeline
+      drillholeData: cloneJson(drillholeData),
+      workingFaceData: cloneJson(workingFaceData),
+      stepLength,
+      generatedPoints: cloneJson(generatedPoints),
+      paramExtractionResult: cloneJson(paramExtractionResult),
+      paramExtractionGeoResult: cloneJson(paramExtractionGeoResult),
+      paramExtractionFullResult: cloneJson(paramExtractionFullResult),
+      odiResult: cloneJson(odiResult),
+      showWorkfaceOutline,
+      // Cocontrol v2
+      coImportParamsByNo: cloneJson(coImportParamsByNo),
+      coPlannedParamsByFaceIndex: cloneJson(coPlannedParamsByFaceIndex),
+      coSelectedTarget: cloneJson(coSelectedTarget),
+      coPickPopup: cloneJson(coPickPopup),
       planningParams: cloneJson(planningParams),
       planningDisturbanceParams: cloneJson(planningDisturbanceParams),
       planningReverseSolutions: cloneJson(planningReverseSolutions),
@@ -7219,11 +8947,33 @@ const App = () => {
       const tab = String(snap.activeTab ?? 'surface');
       const merged = snap.scenarioParamsById ?? {};
       const nextScenarioParams = merged?.[tab] ?? scenarioDefaultsById?.[tab];
+      const preservePlanningResults = Boolean(snap?.__preservePlanningResults);
 
       setMainViewMode(String(snap.mainViewMode ?? 'odi'));
       setShowMainMap(Boolean(snap.showMainMap));
       setShowMeasuredMapping(Boolean(snap.showMeasuredMapping));
       setShowErrorAnalysis(Boolean(snap.showErrorAnalysis));
+      // Workface / evaluation pipeline
+      setDrillholeData(snap.drillholeData ?? null);
+      setWorkingFaceData(snap.workingFaceData ?? null);
+      if (Array.isArray(snap.workingFaceData)) {
+        workingFaceDataOriginalRef.current = snap.workingFaceData
+          .map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
+      } else {
+        workingFaceDataOriginalRef.current = [];
+      }
+      setStepLength(typeof snap.stepLength === 'number' ? snap.stepLength : 5);
+      setGeneratedPoints(snap.generatedPoints ?? null);
+      setParamExtractionResult(snap.paramExtractionResult ?? null);
+      setParamExtractionGeoResult(snap.paramExtractionGeoResult ?? null);
+      setParamExtractionFullResult(snap.paramExtractionFullResult ?? null);
+      setOdiResult(snap.odiResult ?? null);
+      setShowWorkfaceOutline(Boolean(snap.showWorkfaceOutline));
+      // Cocontrol v2
+      setCoImportParamsByNo(snap.coImportParamsByNo ?? {});
+      setCoPlannedParamsByFaceIndex(snap.coPlannedParamsByFaceIndex ?? {});
+      setCoSelectedTarget(snap.coSelectedTarget ?? null);
+      setCoPickPopup(snap.coPickPopup ?? null);
       setPlanningParams(snap.planningParams ? cloneJson(snap.planningParams) : { ...DEFAULT_PLANNING_PARAMS });
       setPlanningDisturbanceParams(snap.planningDisturbanceParams ? cloneJson(snap.planningDisturbanceParams) : { ...DEFAULT_DISTURBANCE_PARAMS });
       setPlanningReverseSolutions(snap.planningReverseSolutions ?? []);
@@ -7234,7 +8984,7 @@ const App = () => {
       setHasInitializedFaceWidthRange(Boolean(snap.hasInitializedFaceWidthRange));
       setPlanningPreStartSnapshot(snap.planningPreStartSnapshot ? cloneJson(snap.planningPreStartSnapshot) : null);
       setScenarioParamsById(cloneJson(merged));
-      applyScenarioParams(nextScenarioParams);
+      applyScenarioParams(nextScenarioParams, { invalidatePlanning: !preservePlanningResults });
       setActiveTab(tab);
     } finally {
       // 让 React 完成本次恢复后再允许记录
@@ -7438,15 +9188,25 @@ const App = () => {
     planningReverseSolutions,
     planningAdvanceAxis,
     plannedWorkfaceLoopsWorld,
+    plannedWorkfaceUnionLoopsWorld,
     showPlanningBoundaryOverlay,
     hasInitializedFaceWidthRange,
     boundaryData,
     drillholeData,
+    workingFaceData,
+    generatedPoints,
+    paramExtractionResult,
+    paramExtractionGeoResult,
+    paramExtractionFullResult,
     drillholeLayersById,
     selectedCoal,
     showBoundaryLabels,
     showDrillholeLabels,
     showWorkfaceOutline,
+    coImportParamsByNo,
+    coPlannedParamsByFaceIndex,
+    coSelectedTarget,
+    coPickPopup,
     miningHeight,
     stepLength,
     richFactor,
@@ -8517,32 +10277,57 @@ const App = () => {
     reader.onload = () => {
       const text = String(reader.result ?? '');
       const points = parseWorkingFaceText(text);
-      setWorkingFaceData(points);
-      setActiveSelectedFaceNo(1);
-      setActiveMineHeightByFace([]);
-      setActiveRoofAngleByFace([]);
-      // 新导入后默认清掉旧生成结果
-      setGeneratedPoints(null);
-      setParamExtractionResult(null);
-      setOdiResult(null);
+
+      // 记录“初始导入”快照（支持追加导入）
+      const ptsArr = Array.isArray(points) ? points : [];
+      const clonedPts = ptsArr.map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
+      if (clonedPts.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) {
+        // 若这是“历史会话”（已有工作面但此前未记录快照），先把现有点位作为基线
+        const curOrig0 = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+        const curWf = Array.isArray(workingFaceData) ? workingFaceData : [];
+        if (!curOrig0.length && curWf.length) {
+          workingFaceDataOriginalRef.current = curWf.map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
+        }
+        const curOrig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+        workingFaceDataOriginalRef.current = [...curOrig, ...clonedPts];
+      }
+
+      // 追加导入：保留原工作面圈定点与评价点
+      setWorkingFaceData((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        if (!cur.length) return points;
+        return [...cur, ...(Array.isArray(points) ? points : [])];
+      });
+
+      // 不重置当前选择/采高数组/顶板垮落角数组：它们会在 workfaceCount 变化时自动对齐扩容
+      // 也不清空 generatedPoints/paramExtraction/odiResult：用户希望保留旧结果对比
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
-  const handleGeneratePoints = () => {
+  const generatePoints = ({ silent = false, stepOverrideM = null, workingFaceDataOverride = null, plannedWorkfaceLoopsOverride = null } = {}) => {
+    // 自动算时传入了最新的 geometry override，优先使用
+    const activeWfData = Array.isArray(workingFaceDataOverride) ? workingFaceDataOverride : workingFaceData;
+    
     if (!drillholeData?.length) {
-      console.warn('生成评价点需要先导入钻孔坐标数据');
-      return;
+      if (!silent) console.warn('生成评价点需要先导入钻孔坐标数据');
+      return null;
     }
-    if (!workingFaceData?.length) {
-      console.warn('生成评价点需要先导入工作面坐标数据');
-      return;
+    if (!activeWfData?.length) {
+      if (!silent) console.warn('生成评价点需要先导入工作面坐标数据');
+      // 注意：如果是 planning 模式且 override 为空，可能会走到这里；暂不处理 planning 模式自动算（除非手动传入了 override）
+      return null;
     }
+
+    const step0 = Number(stepOverrideM);
+    const step = (Number.isFinite(step0) && step0 > 0)
+      ? step0
+      : (Number.isFinite(Number(stepLength)) && Number(stepLength) > 0 ? Number(stepLength) : 25);
 
     const evalBoundary = computeEvalBoundaryRectFromDrillholes(drillholeData);
     const miningBoundaryCtrl = boundaryData ?? [];
-    const wfSets = buildWorkfacePointSets({ workingFacePoints: workingFaceData, step: stepLength });
+    const wfSets = buildWorkfacePointSets({ workingFacePoints: activeWfData, step });
 
     const gray = evalBoundary.map((p, idx) => ({ ...p, id: p.id || `BND-${idx + 1}` }));
     const blue = (miningBoundaryCtrl ?? []).map((p, idx) => ({ ...p, id: p.id || `AREA-${idx + 1}` }));
@@ -8551,7 +10336,7 @@ const App = () => {
     const red = wfSets.red;
 
     const total = gray.length + blue.length + pink.length + green.length + red.length;
-    setGeneratedPoints({
+    const pack = {
       gray,
       blue,
       pink,
@@ -8560,10 +10345,63 @@ const App = () => {
       faceCount: wfSets.faces.length,
       faces: wfSets.faces,
       totalPoints: total,
-    });
+    };
+    setGeneratedPoints(pack);
+
     // 点位重新生成后，参数提取结果需要重新计算
     setParamExtractionResult(null);
-    setOdiResult(null);
+    // 注意：生成评价点不应强制清空既有 ODI（便于用户前后对比）。
+    // 若需要 ODI 与新点位一致，请手动重新“参数提取/ODI 计算”。
+    return pack;
+  };
+
+  const handleGeneratePoints = () => {
+    generatePoints({ silent: false });
+  };
+
+  // 协同调控：一键“全参提取 + ODI 计算（默认权重）”
+  // 口径：点集=当前所有点（包含钻孔点 geo + 生成评价点），结果=点ODI + 插值ODI场（由 odiFieldPack 自动派生）
+  const cocontrolComputeOdiAll = ({ silent = false, preserveScale = false } = {}) => {
+    if (!drillholeData?.length) {
+      if (!silent) window.alert('请先导入钻孔坐标/分层数据（用于全参提取与煤厚插值）。');
+      return null;
+    }
+    if (!workingFaceData?.length) {
+      if (!silent) window.alert('请先导入设计工作面坐标。');
+      return null;
+    }
+    if (!generatedPoints) {
+      if (!silent) window.alert('请先点击“生成评价点”，再进行“全参提取 + ODI 计算”。');
+      return null;
+    }
+
+    const extracted = handleExtractHighPrecisionParams();
+    const pts = extracted?.points ?? paramExtractionFullResult?.points ?? paramExtractionResult?.points ?? [];
+    if (!Array.isArray(pts) || pts.length < 3) {
+      if (!silent) window.alert('全参提取失败或点数量不足（至少 3 个有效点）。请检查钻孔/工作面/煤层选择。');
+      return null;
+    }
+
+    // 固定默认权重：computeOdi 内置默认 { wd:0.45, wo:0.30, wf:0.25 }
+    // 动态推演时保持全局 ODI 标尺（峰值恒定）
+    const scaleCtx = (preserveScale && odiScaleReference) ? odiScaleReference : null;
+    const r = computeOdi(pts, null, scaleCtx);
+    setOdiResult(r);
+
+    // 若为全量计算（非动态推演），则更新全局标尺基准
+    if (!preserveScale && Number.isFinite(r.minOdi) && Number.isFinite(r.maxOdi)) {
+      setOdiScaleReference({ min: r.minOdi, max: r.maxOdi });
+    }
+
+    // 重新计算 ODI 后：旧的“实测约束分区/误差评估”基于旧场，需作废
+    setMeasuredZoningResultTracked(null);
+    setErrorAnalysisByLineId({});
+    setOdiLevelFilter(null);
+    return r;
+  };
+
+  const handleCocontrolComputeOdiAll = () => {
+    cocontrolComputeOdiAll({ silent: false });
   };
 
   const parseStratificationText = (text) => {
@@ -8854,6 +10692,15 @@ const App = () => {
     return { Ti, Ei, Hi, Di, Mi, CoalThk };
   }, [activeTab, drillholeCoordsById, drillholeLayersById, perBoreholeTarget, selectedCoal]);
 
+  // 协同调控：煤厚样本 hash（用于生产层汇总的依赖键；避免 TDZ：必须在 boreholeParamSamples 初始化后）
+  useEffect(() => {
+    try {
+      setCoCoalThkHash(hashCoalThicknessSamples(boreholeParamSamples?.CoalThk));
+    } catch {
+      setCoCoalThkHash('');
+    }
+  }, [boreholeParamSamples]);
+
   const autoSeamThicknessInfo = useMemo(() => {
     const coal = String(selectedCoal ?? '').trim();
     if (!coal) return null;
@@ -9083,6 +10930,39 @@ const App = () => {
       return clamp(n, 0, 1);
     };
 
+    const renormField01 = (pack) => {
+      if (!pack?.field) return pack;
+      const grid = pack.field;
+      let fMin = Infinity;
+      let fMax = -Infinity;
+      for (let y = 0; y < grid.length; y++) {
+        const row = grid[y];
+        if (!Array.isArray(row)) continue;
+        for (let x = 0; x < row.length; x++) {
+          const v = Number(row[x]);
+          if (!Number.isFinite(v)) continue;
+          if (v < fMin) fMin = v;
+          if (v > fMax) fMax = v;
+        }
+      }
+
+      if (!Number.isFinite(fMin) || !Number.isFinite(fMax)) {
+        return { ...pack, min: 0, max: 1 };
+      }
+
+      const denom = (fMax - fMin) || 1;
+      const field01 = grid.map((row) => {
+        if (!Array.isArray(row)) return row;
+        return row.map((vv) => {
+          const v = Number(vv);
+          if (!Number.isFinite(v)) return vv;
+          return clamp((v - fMin) / denom, 0, 1);
+        });
+      });
+
+      return { ...pack, field: field01, min: 0, max: 1 };
+    };
+
     const useUnified = Boolean(coControlEnabled && coScalePack && coOdiUnionResult);
     const basePts = useUnified
       ? (coOdiUnionResult?.fullPoints?.length ? coOdiUnionResult.fullPoints : (coOdiUnionResult?.points ?? []))
@@ -9137,9 +11017,12 @@ const App = () => {
           kNearest: 24,
         });
     if (!pack?.field) return pack;
-    // ODI 归一化场固定 0~1，避免色带/分级受 min/max 波动影响
-    return { ...pack, min: 0, max: 1 };
-  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult]);
+    // 可视化口径：插值场按“场自身 min/max”再次归一化到 0~1，使色标/热力图覆盖完整区间
+    // 注意：这会改变“场值”的绝对语义（从样本归一化 → 场归一化），但更符合“最大值要看到 1”的展示诉求。
+    // 修正：动态推演时（存在 odiScaleReference）必须禁止场再次归一化，否则会导致峰值颜色随面积缩小而漂移。
+    if (odiScaleReference) return pack;
+    return renormField01(pack);
+  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, odiScaleReference]);
 
   // disturbance 模式：只要已有 efficiency 结果，就应确保派生 disturbance pack。
   // 兜底场景：compute 回包时用户切走了模式/视图，导致 handleComputeResult 内 wantDisturbance=false。
@@ -9436,6 +11319,19 @@ const App = () => {
       }
 
       setPlanningWeightedResult(resp);
+
+      // 成功：记录 lastComputed + 清 dirty（避免再次进入 weighted 误触发计算）
+      try {
+        if (resp?.ok) {
+          planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), weighted: String(cacheKeyNow || '') };
+          setPlanningDirtyByMode((prev) => {
+            if (Boolean(prev?.weighted) === false) return prev;
+            return { ...(prev ?? {}), weighted: false };
+          });
+        }
+      } catch {
+        // ignore
+      }
 
       // 默认联动展示 Top1（若用户尚未手动选）
       try {
@@ -9933,30 +11829,97 @@ const App = () => {
       : undefined;
 
     const planningResults = includePlanningResults
-      ? {
-          savedAt: new Date().toISOString(),
-          planningOptMode: String(planningOptMode ?? 'efficiency'),
-          planningOptWeights: cloneJson(planningOptWeights),
-          planningComputeEnabledByMode: cloneJson(planningComputeEnabledByMode),
-          planningDirtyByMode: cloneJson(planningDirtyByMode),
+      ? (() => {
+          const last = (planningLastComputedCacheKeyRef.current ?? {});
+          const lastE = String(last?.efficiency ?? '');
+          const lastR = String(last?.recovery ?? '');
+          const lastD = String(last?.disturbance ?? '');
+          const lastW = String(last?.weighted ?? '');
 
-          efficiency: {
-            result: planningEfficiencyResult ? cloneJson(planningEfficiencyResult) : null,
-            cacheKey: String(planningEfficiencyCacheKey ?? ''),
-            selectedSig: String(planningEfficiencySelectedSig ?? ''),
-            showAllCandidates: Boolean(planningEfficiencyShowAllCandidates),
-          },
-          recovery: {
-            result: planningRecoveryResult ? cloneJson(planningRecoveryResult) : null,
-            selectedSig: String(planningRecoverySelectedSig ?? ''),
-            showAllCandidates: Boolean(planningRecoveryShowAllCandidates),
-          },
-          weighted: {
-            result: planningWeightedResult ? cloneJson(planningWeightedResult) : null,
-            selected: cloneJson(planningWeightedSelected),
-            showAllCandidates: Boolean(planningWeightedShowAllCandidates),
-          },
-        }
+          const pullEffFromCache = (key) => {
+            try {
+              const cached = efficiencyCacheRef.current.get(String(key || ''));
+              return cached?.result ? cloneJson(cached.result) : null;
+            } catch {
+              return null;
+            }
+          };
+          const pullRecFromCache = (key) => {
+            try {
+              const cached = recoveryCacheRef.current.get(String(key || ''));
+              return cached?.result ? cloneJson(cached.result) : null;
+            } catch {
+              return null;
+            }
+          };
+          const pullSigFromEffCache = (key) => {
+            try {
+              const k = String(key || '');
+              return String(
+                efficiencySelectedSigByKeyRef.current.get(k)
+                || efficiencyCacheRef.current.get(k)?.selectedSig
+                || ''
+              );
+            } catch {
+              return '';
+            }
+          };
+          const pullSigFromRecCache = (key) => {
+            try {
+              const k = String(key || '');
+              return String(
+                recoverySelectedSigByKeyRef.current.get(k)
+                || recoveryCacheRef.current.get(k)?.selectedSig
+                || ''
+              );
+            } catch {
+              return '';
+            }
+          };
+
+          // 优先使用“最后一次成功计算”的结果（即使当前 UI state 不在该模式，也能一起保存）。
+          const effResult = lastE ? (pullEffFromCache(lastE) ?? (planningEfficiencyResult ? cloneJson(planningEfficiencyResult) : null))
+            : (planningEfficiencyResult ? cloneJson(planningEfficiencyResult) : null);
+          const recResult = lastR ? (pullRecFromCache(lastR) ?? (planningRecoveryResult ? cloneJson(planningRecoveryResult) : null))
+            : (planningRecoveryResult ? cloneJson(planningRecoveryResult) : null);
+          const distResult = lastD ? (pullEffFromCache(lastD) ?? null) : null;
+
+          const weightedKey = String(planningWeightedResult?.cacheKey ?? lastW ?? '');
+
+          return {
+            savedAt: new Date().toISOString(),
+            planningOptMode: String(planningOptMode ?? 'efficiency'),
+            planningOptWeights: cloneJson(planningOptWeights),
+            planningComputeEnabledByMode: cloneJson(planningComputeEnabledByMode),
+            planningDirtyByMode: cloneJson(planningDirtyByMode),
+
+            efficiency: {
+              result: effResult,
+              cacheKey: String(lastE || planningEfficiencyCacheKey || ''),
+              selectedSig: String(pullSigFromEffCache(lastE) || planningEfficiencySelectedSig || ''),
+              showAllCandidates: Boolean(planningEfficiencyShowAllCandidates),
+            },
+            recovery: {
+              result: recResult,
+              cacheKey: String(lastR || planningRecoveryCacheKey || ''),
+              selectedSig: String(pullSigFromRecCache(lastR) || planningRecoverySelectedSig || ''),
+              showAllCandidates: Boolean(planningRecoveryShowAllCandidates),
+            },
+            disturbance: {
+              // disturbance 复用 efficiency 结果结构（cacheKey 使用 dist|...），并尽量保存带 disturbance pack 的 result。
+              result: distResult,
+              cacheKey: String(lastD || ''),
+              selectedSig: String(pullSigFromEffCache(lastD) || planningEfficiencySelectedSig || ''),
+              showAllCandidates: Boolean(planningEfficiencyShowAllCandidates),
+            },
+            weighted: {
+              result: planningWeightedResult ? cloneJson(planningWeightedResult) : null,
+              cacheKey: String(weightedKey || ''),
+              selected: cloneJson(planningWeightedSelected),
+              showAllCandidates: Boolean(planningWeightedShowAllCandidates),
+            },
+          };
+        })()
       : undefined;
 
     return {
@@ -10071,6 +12034,9 @@ const App = () => {
         showPlanningBoundaryOverlay: nextShowPlanningOverlay,
         hasInitializedFaceWidthRange: nextHasInitFaceWidthRange,
         planningPreStartSnapshot: null,
+
+        // 仅用于本次导入：若工程文件携带 planningResults，则恢复输入时不要把规划结果自动作废。
+        __preservePlanningResults: Boolean(importedPlanningResults),
       };
 
       pushHistoryFromCurrentTo(nextSnap);
@@ -10091,19 +12057,39 @@ const App = () => {
           setPlanningWeightedProgress(null);
 
           if (importedPlanningResults?.planningComputeEnabledByMode) {
-            setPlanningComputeEnabledByMode(cloneJson(importedPlanningResults.planningComputeEnabledByMode));
+            const raw = cloneJson(importedPlanningResults.planningComputeEnabledByMode);
+            setPlanningComputeEnabledByMode({
+              efficiency: Boolean(raw?.efficiency),
+              recovery: Boolean(raw?.recovery),
+              disturbance: Boolean(raw?.disturbance),
+              weighted: Boolean(raw?.weighted),
+            });
           } else {
             // 兜底：只要有结果，就视为“已启动过计算”
             const hasEff = Boolean(importedPlanningResults?.efficiency?.result?.ok);
             const hasRec = Boolean(importedPlanningResults?.recovery?.result?.ok);
-            const hasDist = Boolean(importedPlanningResults?.efficiency?.result?.disturbance?.ok);
-            setPlanningComputeEnabledByMode({ efficiency: hasEff, recovery: hasRec, disturbance: hasDist });
+            const hasDist = Boolean(importedPlanningResults?.disturbance?.result?.ok || importedPlanningResults?.efficiency?.result?.disturbance?.ok);
+            const hasW = Boolean(importedPlanningResults?.weighted?.result?.ok);
+            setPlanningComputeEnabledByMode({ efficiency: hasEff, recovery: hasRec, disturbance: hasDist, weighted: hasW });
           }
 
-          if (importedPlanningResults?.planningDirtyByMode) {
-            setPlanningDirtyByMode(cloneJson(importedPlanningResults.planningDirtyByMode));
-          } else {
-            setPlanningDirtyByMode({ efficiency: false, recovery: false, disturbance: false });
+          // 导入目标：能直接用缓存结果。
+          // 若某模式已携带 ok 结果，则默认视为“非 dirty”（即使保存时 dirty 标记为 true）。
+          {
+            const savedDirty = (importedPlanningResults?.planningDirtyByMode && typeof importedPlanningResults.planningDirtyByMode === 'object')
+              ? importedPlanningResults.planningDirtyByMode
+              : {};
+            const hasEffOk = Boolean(importedPlanningResults?.efficiency?.result?.ok);
+            const hasRecOk = Boolean(importedPlanningResults?.recovery?.result?.ok);
+            const hasDistOk = Boolean(importedPlanningResults?.disturbance?.result?.ok || importedPlanningResults?.efficiency?.result?.disturbance?.ok);
+            const hasWOk = Boolean(importedPlanningResults?.weighted?.result?.ok);
+            const nextDirty = {
+              efficiency: hasEffOk ? false : Boolean(savedDirty?.efficiency ?? true),
+              recovery: hasRecOk ? false : Boolean(savedDirty?.recovery ?? true),
+              disturbance: hasDistOk ? false : Boolean(savedDirty?.disturbance ?? true),
+              weighted: hasWOk ? false : Boolean(savedDirty?.weighted ?? true),
+            };
+            setPlanningDirtyByMode(nextDirty);
           }
 
           if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.efficiency ?? {}, 'result')) {
@@ -10116,9 +12102,91 @@ const App = () => {
             setPlanningWeightedResult(importedPlanningResults.weighted.result ? cloneJson(importedPlanningResults.weighted.result) : null);
           }
 
+          // disturbance：若单独携带，则合并进 efficiency 结果（UI 复用 planningEfficiencyResult.disturbance）。
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults ?? {}, 'disturbance')) {
+            try {
+              const distRes = importedPlanningResults?.disturbance?.result ? cloneJson(importedPlanningResults.disturbance.result) : null;
+              if (distRes) {
+                setPlanningEfficiencyResult((prev) => {
+                  const base = (prev && typeof prev === 'object') ? prev : (importedPlanningResults?.efficiency?.result ? cloneJson(importedPlanningResults.efficiency.result) : null);
+                  if (!base || typeof base !== 'object') return base;
+                  // 仅在未携带 disturbance 或为空时合并，避免覆盖更完整的 pack
+                  const hasDist = Boolean(base?.disturbance && typeof base.disturbance === 'object');
+                  return hasDist ? base : { ...(base ?? {}), disturbance: distRes };
+                });
+              }
+            } catch {
+              // ignore
+            }
+          }
+
           if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.efficiency ?? {}, 'cacheKey')) {
             setPlanningEfficiencyCacheKey(String(importedPlanningResults?.efficiency?.cacheKey ?? ''));
             planningEfficiencyCacheKeyRef.current = String(importedPlanningResults?.efficiency?.cacheKey ?? '');
+          }
+
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.recovery ?? {}, 'cacheKey')) {
+            setPlanningRecoveryCacheKey(String(importedPlanningResults?.recovery?.cacheKey ?? ''));
+            planningRecoveryCacheKeyRef.current = String(importedPlanningResults?.recovery?.cacheKey ?? '');
+          }
+
+          // weighted cacheKey（用于“已有缓存时不自动算”的判断）
+          if (Object.prototype.hasOwnProperty.call(importedPlanningResults?.weighted ?? {}, 'cacheKey')) {
+            try {
+              const wk = String(importedPlanningResults?.weighted?.cacheKey ?? '');
+              if (wk) {
+                planningLastComputedCacheKeyRef.current = { ...(planningLastComputedCacheKeyRef.current ?? {}), weighted: wk };
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          // 同步 lastComputed：避免某些“是否已计算过”的门禁因为 ref 为空而误判需要重算。
+          try {
+            const effKey = String(importedPlanningResults?.efficiency?.cacheKey ?? '');
+            const recKey = String(importedPlanningResults?.recovery?.cacheKey ?? '');
+            const distKey = String(importedPlanningResults?.disturbance?.cacheKey ?? '');
+            const nextLast = { ...(planningLastComputedCacheKeyRef.current ?? {}) };
+            if (recKey) nextLast.recovery = recKey;
+            if (effKey) {
+              const isDist = effKey.includes('dist|');
+              if (isDist) nextLast.disturbance = effKey;
+              else nextLast.efficiency = effKey;
+            }
+            if (distKey) nextLast.disturbance = distKey;
+            planningLastComputedCacheKeyRef.current = nextLast;
+          } catch {
+            // ignore
+          }
+
+          // 回填缓存 Map：避免“已有结果但 cacheRef 为空”导致后续误触发重算。
+          try {
+            const effKey = String(importedPlanningResults?.efficiency?.cacheKey ?? '');
+            const effRes = importedPlanningResults?.efficiency?.result;
+            const effSig = String(importedPlanningResults?.efficiency?.selectedSig ?? '');
+            if (effKey && effRes && typeof effRes === 'object') {
+              efficiencyCacheRef.current.set(effKey, { result: cloneJson(effRes), selectedSig: String(effSig || '') });
+              if (effSig) efficiencySelectedSigByKeyRef.current.set(effKey, String(effSig));
+            }
+
+            const distKey = String(importedPlanningResults?.disturbance?.cacheKey ?? '');
+            const distRes = importedPlanningResults?.disturbance?.result;
+            const distSig = String(importedPlanningResults?.disturbance?.selectedSig ?? '');
+            if (distKey && distRes && typeof distRes === 'object') {
+              efficiencyCacheRef.current.set(distKey, { result: cloneJson(distRes), selectedSig: String(distSig || '') });
+              if (distSig) efficiencySelectedSigByKeyRef.current.set(distKey, String(distSig));
+            }
+
+            const recKey = String(importedPlanningResults?.recovery?.cacheKey ?? '');
+            const recRes = importedPlanningResults?.recovery?.result;
+            const recSig = String(importedPlanningResults?.recovery?.selectedSig ?? '');
+            if (recKey && recRes && typeof recRes === 'object') {
+              recoveryCacheRef.current.set(recKey, { result: cloneJson(recRes), selectedSig: String(recSig || '') });
+              if (recSig) recoverySelectedSigByKeyRef.current.set(recKey, String(recSig));
+            }
+          } catch {
+            // ignore
           }
 
           setPlanningEfficiencySelectedSig(String(importedPlanningResults?.efficiency?.selectedSig ?? ''));
@@ -10194,6 +12262,36 @@ const App = () => {
     document.addEventListener('mousedown', onDocDown);
     return () => document.removeEventListener('mousedown', onDocDown);
   }, [showMainMapLabelsMenu]);
+
+  useEffect(() => {
+    if (!showMainMapEvalMenu) return;
+    const onDocDown = (e) => {
+      const root = mainMapContainerRef.current;
+      if (!root) {
+        setShowMainMapEvalMenu(false);
+        return;
+      }
+      const menu = root.querySelector('[data-main-map-eval-menu]');
+      const btn = root.querySelector('[data-main-map-eval-button]');
+      const t = e.target;
+      if (menu && menu.contains(t)) return;
+      if (btn && btn.contains(t)) return;
+      setShowMainMapEvalMenu(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [showMainMapEvalMenu]);
+
+  useEffect(() => {
+    if (!showMainMapEvalMenu) return;
+    const onResizeOrScroll = () => setShowMainMapEvalMenu(false);
+    window.addEventListener('resize', onResizeOrScroll);
+    window.addEventListener('scroll', onResizeOrScroll, true);
+    return () => {
+      window.removeEventListener('resize', onResizeOrScroll);
+      window.removeEventListener('scroll', onResizeOrScroll, true);
+    };
+  }, [showMainMapEvalMenu]);
 
   useEffect(() => {
     if (!showErrorExportMenu) return;
@@ -11322,7 +13420,7 @@ const App = () => {
   };
 
   const handleExtractHighPrecisionParams = () => {
-    if (!generatedPoints) return;
+    if (!generatedPoints) return null;
 
     const ts = new Date();
     const stamp = ts.toISOString();
@@ -11350,6 +13448,13 @@ const App = () => {
       // 按工作面编号取采高：三个场景都支持；若未设置则回退到全局输入
       if (Number.isFinite(Number(faceIndex)) && Number(faceIndex) >= 1) {
         const i = Math.round(Number(faceIndex)) - 1;
+
+        // 协同调控 v2：优先使用“按工作面”设置的生产层采高（不影响煤厚插值，只影响 Mi=min(煤厚,采高)）
+        const importEntry = coImportParamsByNo?.[`No.${String(Math.round(Number(faceIndex)))}`] ?? null;
+        const plannedEntry = coPlannedParamsByFaceIndex?.[String(Math.round(Number(faceIndex)))] ?? null;
+        const mh = Number(importEntry?.production?.miningHeightM ?? plannedEntry?.production?.miningHeightM);
+        if (Number.isFinite(mh) && mh > 0) return mh;
+
         const byFace = activeTab === 'surface'
           ? surfaceMineHeightByFace
           : (activeTab === 'upward' ? upwardMineHeightByFace : aquiferMineHeightByFace);
@@ -11605,6 +13710,8 @@ const App = () => {
     setCoScaleDirty(true);
     setLastParamExtractionMode('full');
     setOdiResult(null);
+
+    return next;
   };
 
   const ODI_MATRIX = useMemo(() => {
@@ -11665,7 +13772,7 @@ const App = () => {
     return out;
   };
 
-  const computeOdi = (points, weights) => {
+  const computeOdi = (points, weights, scaleRef = null) => {
     const pts = (points ?? []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
     if (!pts.length) return null;
 
@@ -11753,10 +13860,17 @@ const App = () => {
       });
     }
 
-    const denom = (maxOdi - minOdi) || 1;
+    let baseMin = minOdi;
+    let baseMax = maxOdi;
+    if (scaleRef && Number.isFinite(scaleRef.min) && Number.isFinite(scaleRef.max)) {
+      baseMin = scaleRef.min;
+      baseMax = scaleRef.max;
+    }
+
+    const denom = (baseMax - baseMin) || 1;
     const pointsNorm = pointsOut.map((p) => ({
       ...p,
-      odiNorm: Number.isFinite(p.odi) ? (p.odi - minOdi) / denom : null,
+      odiNorm: Number.isFinite(p.odi) ? (p.odi - baseMin) / denom : null,
     }));
 
     return {
@@ -11764,6 +13878,7 @@ const App = () => {
       weights: { ...w },
       minOdi: Number.isFinite(minOdi) ? minOdi : null,
       maxOdi: Number.isFinite(maxOdi) ? maxOdi : null,
+      scaleRef: scaleRef ? { min: baseMin, max: baseMax } : null,
       points: pointsNorm,
     };
   };
@@ -12023,15 +14138,157 @@ const App = () => {
       wy,
       values: { odiNorm, Mi },
     });
+
+    // 协同调控：悬停边界点信息框（仅在“协同调控”视图/折叠面板激活时启用）
+    const canHoverWorkface = mainViewMode === 'cocontrol' || (Array.isArray(activeAccordion) && activeAccordion.includes('cocontrol'));
+    if (!canHoverWorkface) {
+      setCoWorkfaceHover((prev) => (prev ? null : prev));
+      return;
+    }
+
+    const hitTolPx = 8;
+    const pxToWorldX = spatialBounds.rangeX / ((x1 - x0) || 1);
+    const pxToWorldY = spatialBounds.rangeY / ((y1 - y0) || 1);
+    const hitTolWorld = hitTolPx * Math.max(pxToWorldX, pxToWorldY);
+    const tol2 = hitTolWorld * hitTolWorld;
+    const pW = { x: wx, y: wy };
+
+    const dist2 = (a, b) => {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+
+    const computeDimsFromQuad4 = (corners4) => {
+      const corners = sortQuadByAngle(corners4);
+      const d = (a, b) => {
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        return Math.sqrt(dx * dx + dy * dy);
+      };
+      const L0 = (d(corners[0], corners[1]) + d(corners[2], corners[3])) / 2;
+      const L1 = (d(corners[1], corners[2]) + d(corners[3], corners[0])) / 2;
+      const widthM = Math.min(L0, L1);
+      const advanceLengthM = Math.max(L0, L1);
+      return { widthM, advanceLengthM };
+    };
+
+    const computeDimsFromLoop = (loop) => {
+      const c = loop.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+      c.x /= loop.length;
+      c.y /= loop.length;
+      let covXX = 0;
+      let covXY = 0;
+      let covYY = 0;
+      for (const p of loop) {
+        const dx = p.x - c.x;
+        const dy = p.y - c.y;
+        covXX += dx * dx;
+        covXY += dx * dy;
+        covYY += dy * dy;
+      }
+      const angle = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
+      let u = { x: Math.cos(angle), y: Math.sin(angle) };
+      const uLen = Math.sqrt(u.x * u.x + u.y * u.y);
+      if (!(Number.isFinite(uLen) && uLen > 1e-9)) u = { x: 1, y: 0 };
+      else u = { x: u.x / uLen, y: u.y / uLen };
+      const v = { x: -u.y, y: u.x };
+
+      let minU = Infinity;
+      let maxU = -Infinity;
+      let minV = Infinity;
+      let maxV = -Infinity;
+      for (const p of loop) {
+        const dx = p.x - c.x;
+        const dy = p.y - c.y;
+        const su = dx * u.x + dy * u.y;
+        const sv = dx * v.x + dy * v.y;
+        if (su < minU) minU = su;
+        if (su > maxU) maxU = su;
+        if (sv < minV) minV = sv;
+        if (sv > maxV) maxV = sv;
+      }
+      const L0 = maxU - minU;
+      const L1 = maxV - minV;
+      const widthM = Math.min(L0, L1);
+      const advanceLengthM = Math.max(L0, L1);
+      return { widthM, advanceLengthM };
+    };
+
+    const findHoverImport = () => {
+      const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+      const nFaces = Math.floor(src.length / 4);
+      let best = null;
+      for (let no = 1; no <= nFaces; no++) {
+        const base = (no - 1) * 4;
+        const corners = src.slice(base, base + 4)
+          .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (corners.length !== 4) continue;
+        for (const pt of corners) {
+          const d2v = dist2(pt, pW);
+          if (d2v <= tol2 && (!best || d2v < best.d2)) {
+            best = { kind: 'import', no, point: pt, d2: d2v, dims: computeDimsFromQuad4(corners) };
+          }
+        }
+      }
+      return best;
+    };
+
+    const findHoverPlanned = () => {
+      const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+      let best = null;
+      for (const wf of src) {
+        const fi = Math.round(Number(wf?.faceIndex));
+        if (!(Number.isFinite(fi) && fi >= 1)) continue;
+        const loop = (wf?.loop ?? [])
+          .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (loop.length < 3) continue;
+        for (const pt of loop) {
+          const d2v = dist2(pt, pW);
+          if (d2v <= tol2 && (!best || d2v < best.d2)) {
+            best = { kind: 'planned', faceIndex: fi, point: pt, d2: d2v, dims: computeDimsFromLoop(loop) };
+          }
+        }
+      }
+      return best;
+    };
+
+    const hitImport = findHoverImport();
+    const hitPlanned = hitImport ? null : findHoverPlanned();
+    const hit = hitImport || hitPlanned;
+
+    const rect = mainMapContainerRef.current?.getBoundingClientRect?.();
+    const rx = rect ? (Number(evt?.clientX) - rect.left) : (Number(evt?.clientX) || 0);
+    const ry = rect ? (Number(evt?.clientY) - rect.top) : (Number(evt?.clientY) || 0);
+    if (!hit) {
+      setCoWorkfaceHover((prev) => (prev ? null : prev));
+      return;
+    }
+
+    setCoWorkfaceHover((prev) => {
+      const next = {
+        ...hit,
+        x: Number.isFinite(rx) ? rx : 0,
+        y: Number.isFinite(ry) ? ry : 0,
+      };
+      if (!prev) return next;
+      const same = (prev.kind === next.kind)
+        && (prev.kind === 'import' ? Number(prev.no) === Number(next.no) : Number(prev.faceIndex) === Number(next.faceIndex));
+      if (!same) return next;
+      // 同一对象：只更新位置/点位（避免抖动时丢 tooltip）
+      return { ...prev, point: next.point, dims: next.dims, x: next.x, y: next.y };
+    });
   };
 
   const handleMainMapMouseLeave = () => {
     setCrosshair((p) => (p.active ? { ...p, active: false } : p));
     setPlanningWorkfaceHover(null);
+    setCoWorkfaceHover(null);
   };
 
   const handleMainMapClick = (evt) => {
-    if (!measureEnabled) return;
     const pos = getSvgCoordsFromMouseEvent(evt);
     if (!pos || !spatialBounds) return;
 
@@ -12048,12 +14305,103 @@ const App = () => {
     const wy = spatialBounds.minY + ((y1 - sy) / ((y1 - y0) || 1)) * spatialBounds.rangeY;
     if (!Number.isFinite(wx) || !Number.isFinite(wy)) return;
 
-    const nextPoint = { sx, sy, wx, wy };
-    setMeasurePoints((prev) => {
-      const arr = Array.isArray(prev) ? prev : [];
-      if (arr.length >= 2) return [nextPoint];
-      return [...arr, nextPoint];
-    });
+    // 1) 测量模式优先
+    if (measureEnabled) {
+      const nextPoint = { sx, sy, wx, wy };
+      setMeasurePoints((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        if (arr.length >= 2) return [nextPoint];
+        return [...arr, nextPoint];
+      });
+      return;
+    }
+
+    // 2) 协同调控：点选工作面（导入面/规划面）
+    const canPickWorkface = mainViewMode === 'cocontrol' || (Array.isArray(activeAccordion) && activeAccordion.includes('cocontrol'));
+    if (!canPickWorkface) return;
+
+    // 命中检测统一用“世界坐标”(wx/wy)做点内/近边判断，避免屏幕/归一化口径不一致导致无法选中。
+    const hitTolPx = 10;
+    const pxToWorldX = spatialBounds.rangeX / ((x1 - x0) || 1);
+    const pxToWorldY = spatialBounds.rangeY / ((y1 - y0) || 1);
+    const hitTolWorld = hitTolPx * Math.max(pxToWorldX, pxToWorldY);
+    const pW = { x: wx, y: wy };
+
+    // 2.1) 仅当 hover 信息框出现时：点击“定位点”回填输入框并自动选中（优先导入面）
+    if (coWorkfaceHover?.point && coWorkfaceHover?.dims) {
+      const hp = coWorkfaceHover.point;
+      const dx = pW.x - Number(hp.x);
+      const dy = pW.y - Number(hp.y);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (Number.isFinite(d) && d <= hitTolWorld) {
+        const t = (coWorkfaceHover.kind === 'import')
+          ? { kind: 'import', no: Number(coWorkfaceHover.no) }
+          : { kind: 'planned', faceIndex: Number(coWorkfaceHover.faceIndex) };
+
+        coApplyPickTarget(t);
+        coUpdateEntry(t, (entry) => ({
+          ...entry,
+          layout: {
+            ...entry.layout,
+            workfaceWidthM: sanitizeCoIntStr(coWorkfaceHover.dims.widthM),
+            advanceLengthM: sanitizeCoIntStr(coWorkfaceHover.dims.advanceLengthM),
+          },
+        }));
+        return;
+      }
+    }
+
+    const pickHitImport = () => {
+      const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+      const nFaces = Math.floor(src.length / 4);
+      for (let no = 1; no <= nFaces; no++) {
+        const base = (no - 1) * 4;
+        const cornersRaw = src.slice(base, base + 4)
+          .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (cornersRaw.length !== 4) continue;
+        const corners = sortQuadByAngle(cornersRaw);
+        if (polygonContainsPoint(corners, pW)) return { kind: 'import', no };
+        const d = minDistToPolyEdges(pW, corners);
+        if (Number.isFinite(d) && d <= hitTolWorld) return { kind: 'import', no };
+      }
+      return null;
+    };
+
+    const pickHitPlanned = () => {
+      const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+      for (const wf of src) {
+        const fi = Math.round(Number(wf?.faceIndex));
+        if (!(Number.isFinite(fi) && fi >= 1)) continue;
+        const loop = (wf?.loop ?? [])
+          .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (loop.length < 3) continue;
+        if (polygonContainsPoint(loop, pW)) return { kind: 'planned', faceIndex: fi };
+        const d = minDistToPolyEdges(pW, loop);
+        if (Number.isFinite(d) && d <= hitTolWorld) return { kind: 'planned', faceIndex: fi };
+      }
+      return null;
+    };
+
+    const hitImport = pickHitImport();
+    const hitPlanned = pickHitPlanned();
+    if (!hitImport && !hitPlanned) return;
+
+    if (hitImport && hitPlanned) {
+      const rect = mainMapContainerRef.current?.getBoundingClientRect?.();
+      const rx = rect ? (Number(evt?.clientX) - rect.left) : (Number(evt?.clientX) || 0);
+      const ry = rect ? (Number(evt?.clientY) - rect.top) : (Number(evt?.clientY) || 0);
+      setCoPickPopup({
+        x: Number.isFinite(rx) ? rx : 0,
+        y: Number.isFinite(ry) ? ry : 0,
+        importNo: Number(hitImport.no),
+        plannedFaceIndex: Number(hitPlanned.faceIndex),
+      });
+      return;
+    }
+
+    coApplyPickTarget(hitImport || hitPlanned);
   };
 
   useEffect(() => {
@@ -14059,18 +16407,19 @@ const App = () => {
       const points = parseBoundaryText(text);
 
       // 导入/更新输入后：先不自动计算，等待用户点击“启动智能采区规划”。
-      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false });
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false, weighted: false });
       try {
-        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '' };
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '', weighted: '' };
       } catch {
         // ignore
       }
-      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true });
+      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true, weighted: true });
       try {
         setPlanningEfficiencySelectedSig('');
         setPlanningRecoverySelectedSig('');
         setPlanningEfficiencyResult(null);
         setPlanningRecoveryResult(null);
+        setPlanningWeightedResult(null);
       } catch {
         // ignore
       }
@@ -14095,18 +16444,19 @@ const App = () => {
       const text = String(reader.result ?? '');
       const points = parseBoundaryText(text);
 
-      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false });
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false, weighted: false });
       try {
-        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '' };
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '', weighted: '' };
       } catch {
         // ignore
       }
-      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true });
+      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true, weighted: true });
       try {
         setPlanningEfficiencySelectedSig('');
         setPlanningRecoverySelectedSig('');
         setPlanningEfficiencyResult(null);
         setPlanningRecoveryResult(null);
+        setPlanningWeightedResult(null);
       } catch {
         // ignore
       }
@@ -14134,18 +16484,19 @@ const App = () => {
 
     try {
       // 导入/更新输入后：先不自动计算，等待用户点击“启动智能采区规划”。
-      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false });
+      setPlanningComputeEnabledByMode({ efficiency: false, recovery: false, disturbance: false, weighted: false });
       try {
-        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '' };
+        planningLastComputedCacheKeyRef.current = { efficiency: '', recovery: '', disturbance: '', weighted: '' };
       } catch {
         // ignore
       }
-      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true });
+      setPlanningDirtyByMode({ efficiency: true, recovery: true, disturbance: true, weighted: true });
       try {
         setPlanningEfficiencySelectedSig('');
         setPlanningRecoverySelectedSig('');
         setPlanningEfficiencyResult(null);
         setPlanningRecoveryResult(null);
+        setPlanningWeightedResult(null);
       } catch {
         // ignore
       }
@@ -15090,6 +17441,135 @@ const App = () => {
                   </div>
                 )}
 
+                {/* 协同调控：悬停到工作面“边界点”时的信息框（实时宽度 + 推进长度） */}
+                {(mainViewMode === 'cocontrol' || (Array.isArray(activeAccordion) && activeAccordion.includes('cocontrol'))) && coWorkfaceHover?.dims && (
+                  <div
+                    className="absolute z-40 pointer-events-none"
+                    style={{
+                      left: 0,
+                      top: 0,
+                      transform: `translate3d(${Math.max(8, Number(coWorkfaceHover?.x ?? 0) + 12)}px, ${Math.max(8, Number(coWorkfaceHover?.y ?? 0) + 12)}px, 0)`,
+                    }}
+                  >
+                    <div className="bg-white/95 backdrop-blur-sm border border-slate-200 rounded-xl shadow-lg px-3 py-2 inline-block w-fit max-w-[360px]">
+                      <div className="text-[11px] text-slate-700 font-mono whitespace-nowrap">
+                        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                          <span className="text-slate-500">对象：</span>
+                          <span className="text-left">
+                            {coWorkfaceHover.kind === 'import'
+                              ? `导入面 No.${Number(coWorkfaceHover.no)}`
+                              : `规划面 No.${Number(coWorkfaceHover.faceIndex)}`}
+                          </span>
+
+                          <span className="text-slate-500">实时宽度（m）：</span>
+                          <span className="text-left">{fmtOrDash(coWorkfaceHover.dims.widthM, 2)}</span>
+
+                          <span className="text-slate-500">推进长度（m）：</span>
+                          <span className="text-left">{fmtOrDash(coWorkfaceHover.dims.advanceLengthM, 2)}</span>
+                        </div>
+                        <div className="mt-1 text-[10px] text-slate-500">点击该定位点：回填右侧输入框并选中</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 协同调控：点选工作面时的“命中冲突”选择（导入面 vs 规划面） */}
+                {coPickPopup && (
+                  <div
+                    className="absolute z-50"
+                    style={{
+                      left: 0,
+                      top: 0,
+                      transform: `translate3d(${Math.max(8, Number(coPickPopup?.x ?? 0))}px, ${Math.max(8, Number(coPickPopup?.y ?? 0))}px, 0)`,
+                    }}
+                  >
+                    <div className="bg-white/95 backdrop-blur-sm border border-slate-200 rounded-xl shadow-lg px-3 py-2 w-[260px]">
+                      <div className="text-[11px] text-slate-700 font-bold">同时命中两个工作面</div>
+                      <div className="mt-1 text-[10px] text-slate-500">请选择要编辑的对象：</div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <button
+                          className="py-2 rounded-lg text-[11px] font-bold border bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50 transition-colors"
+                          onClick={() => coApplyPickTarget({ kind: 'import', no: Number(coPickPopup.importNo) })}
+                          type="button"
+                        >
+                          编辑导入面
+                        </button>
+                        <button
+                          className="py-2 rounded-lg text-[11px] font-bold border bg-white border-blue-200 text-blue-700 hover:border-blue-400 hover:bg-blue-50 transition-colors"
+                          onClick={() => coApplyPickTarget({ kind: 'planned', faceIndex: Number(coPickPopup.plannedFaceIndex) })}
+                          type="button"
+                        >
+                          编辑规划面
+                        </button>
+                      </div>
+                      <button
+                        className="mt-2 w-full py-2 rounded-lg text-[11px] font-bold border bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+                        onClick={() => setCoPickPopup(null)}
+                        type="button"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 协同调控：ws 基准工作面选择（同侧多个相邻面候选时弹出） */}
+                {coWsPickPopup && (
+                  <div
+                    className="absolute z-50"
+                    style={{
+                      left: 0,
+                      top: 0,
+                      transform: `translate3d(${Math.max(8, Number(coWsPickPopup?.x ?? 0))}px, ${Math.max(8, Number(coWsPickPopup?.y ?? 0))}px, 0)`,
+                    }}
+                  >
+                    <div className="bg-white/95 backdrop-blur-sm border border-slate-200 rounded-xl shadow-lg px-3 py-2 w-[320px]">
+                      <div className="text-[11px] text-slate-700 font-bold">选择 ws 基准工作面</div>
+                      <div className="mt-1 text-[10px] text-slate-500">
+                        同侧存在多个相邻工作面候选，请选择一个作为基准（按 gap 从小到大排序）。
+                      </div>
+                      <div className="mt-2 space-y-2 max-h-[220px] overflow-y-auto custom-scrollbar">
+                        {(coWsPickPopup.options ?? []).map((opt) => (
+                          <button
+                            key={`${opt.kind}:${opt.key}`}
+                            className="w-full py-2 px-2 rounded-lg text-[11px] font-bold border bg-white border-slate-200 text-slate-700 hover:border-emerald-300 hover:bg-emerald-50 transition-colors flex items-center justify-between"
+                            onClick={() => {
+                              const t = coWsPickPopup?.target;
+                              if (!t) return;
+                              const desired = String(coWsPickPopup?.desiredWs ?? '').trim();
+                              coUpdateEntry(t, (cur) => ({
+                                ...cur,
+                                layout: {
+                                  ...cur.layout,
+                                  sectionPillarWidthM: desired ? sanitizeCoIntStr(desired) : sanitizeCoIntStr(opt.gap),
+                                  wsBaselineNeighborKey: `${opt.kind}:${opt.key}`,
+                                },
+                              }));
+                              setCoWsPickPopup(null);
+
+                              if (desired) {
+                                // 选择基准邻面后，按目标 ws 平移一次
+                                coApplyWsShiftForSelected(t, desired);
+                              }
+                            }}
+                            type="button"
+                          >
+                            <span className="truncate">{opt.label}</span>
+                            <span className="ml-2 text-[10px] font-mono text-slate-500">gap={fmtOrDash(opt.gap, 2)}m</span>
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        className="mt-2 w-full py-2 rounded-lg text-[11px] font-bold border bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+                        onClick={() => setCoWsPickPopup(null)}
+                        type="button"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* 图显示容器：仅包裹 SVG，本次仅增加 bottom spacing（不移动下部图例、不改父级布局、不用 transform） */}
                 <div className="flex items-center justify-center w-full h-full mb-6 pl-6">
                   <svg
@@ -15403,6 +17883,49 @@ const App = () => {
                         </g>
                       )}
 
+                      {/* 协同调控：幽灵工作面轮廓（显示原有最大范围，半透明虚线） */}
+                      {mainViewMode === 'planning' ? 
+                        // 规划模式下的幽灵
+                        Object.entries(coWorkfaceGhosts)
+                           .filter(([k]) => k.startsWith('planned-'))
+                           .map(([k, pts]) => {
+                               if (!pts || pts.length < 2) return null;
+                               const norm = normalizeCoords(pts, combinedPointsForBounds);
+                               const d = norm.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`).join(' ') + ' Z';
+                               return (
+                                 <path 
+                                    key={`ghost-${k}`} 
+                                    d={d} 
+                                    fill="none" 
+                                    stroke="#94a3b8" 
+                                    strokeWidth="1.5" 
+                                    strokeDasharray="4 4" 
+                                    strokeOpacity="0.5" 
+                                 />
+                               );
+                           })
+                        : 
+                        // 导入模式下的幽灵
+                        Object.entries(coWorkfaceGhosts)
+                           .filter(([k]) => k.startsWith('import-'))
+                           .map(([k, pts]) => {
+                               if (!pts || pts.length < 2) return null;
+                               const norm = normalizeCoords(pts, combinedPointsForBounds);
+                               const d = norm.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`).join(' ') + ' Z';
+                               return (
+                                 <path 
+                                    key={`ghost-${k}`} 
+                                    d={d} 
+                                    fill="none" 
+                                    stroke="#94a3b8" 
+                                    strokeWidth="1.5" 
+                                    strokeDasharray="4 4" 
+                                    strokeOpacity="0.5" 
+                                 />
+                               );
+                           })
+                      }
+
                       {/* 十字准星（实时坐标与即时插值） */}
                       {showMainMapCoordinates && crosshair.active && (
                         <g pointerEvents="none">
@@ -15587,6 +18110,7 @@ const App = () => {
                             if (!hasWorkingFaceData) return;
                             setShowMainMapExportMenu(false);
                             setShowMainMapLabelsMenu(false);
+                            setShowMainMapEvalMenu(false);
                             setShowWorkfaceOutline((v) => !v);
                           }}
                           disabled={!hasWorkingFaceData}
@@ -15670,69 +18194,136 @@ const App = () => {
                             >
                               钻孔
                             </button>
-                            <div className="flex items-center gap-1">
+                            <div className="relative" onClick={(e) => e.stopPropagation()}>
                               <button
+                                data-main-map-eval-button
                                 className={`p-1.5 rounded text-[10px] font-bold uppercase tracking-tighter border border-slate-200 px-3 transition-colors ${
                                   showLayerEvalPoints ? 'bg-slate-900 text-white' : 'bg-white/70 text-slate-700 hover:bg-white'
                                 }`}
-                                onClick={() =>
-                                  setShowLayerEvalPoints((v) => {
+                                onClick={() => {
+                                  setShowMainMapExportMenu(false);
+                                  setShowMainMapLabelsMenu(false);
+                                  setShowMainMapEvalMenu((v) => {
                                     const next = !v;
-                                    // “评价点”=四类评价点总开关：边界点/定位点/边线点/中心点
-                                    setShowEvalBoundaryPoints(next);
-                                    setShowEvalWorkfaceLocPoints(next);
-                                    setShowEvalEdgeCtrlPoints(next);
-                                    setShowEvalCenterCtrlPoints(next);
+                                    if (next) {
+                                      try {
+                                        const root = mainMapContainerRef.current;
+                                        const btn = root?.querySelector?.('[data-main-map-eval-button]');
+                                        const rect = btn?.getBoundingClientRect?.();
+                                        if (rect) {
+                                          const menuH = 210; // 估算高度：1 行总开关 + 2x2 子开关 + padding
+                                          const gap = 8;
+                                          const vh = (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : 800;
+                                          const spaceAbove = rect.top;
+                                          const spaceBelow = vh - rect.bottom;
+                                          const openUp = spaceAbove >= (menuH + gap) || spaceAbove >= spaceBelow;
+                                          setMainMapEvalMenuPos({ left: rect.right, top: openUp ? rect.top : rect.bottom, openUp });
+                                        }
+                                      } catch {
+                                        // ignore
+                                      }
+                                    }
                                     return next;
-                                  })
-                                }
-                                title="工作面评价点图层开关"
+                                  });
+                                }}
+                                title="评价点图层设置（下拉面板）"
                                 type="button"
                               >
                                 评价点
                               </button>
-                              {showLayerEvalPoints && (
-                                <div className="flex items-center gap-1">
+
+                              {showMainMapEvalMenu && (
+                                <div
+                                  data-main-map-eval-menu
+                                  className="fixed w-56 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                                  style={{
+                                    left: Number(mainMapEvalMenuPos?.left) || 0,
+                                    top: (() => {
+                                      const base = Number(mainMapEvalMenuPos?.top) || 0;
+                                      const gap = 8;
+                                      if (mainMapEvalMenuPos?.openUp) return Math.max(8, base - gap);
+                                      return base + gap;
+                                    })(),
+                                    transform: mainMapEvalMenuPos?.openUp
+                                      ? 'translateX(-100%) translateY(-100%)'
+                                      : 'translateX(-100%)',
+                                  }}
+                                >
                                   <button
-                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                      showEvalBoundaryPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                    }`}
-                                    onClick={() => setShowEvalBoundaryPoints((v) => !v)}
-                                    title="评价点：边界点（灰）"
+                                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 flex items-center justify-between"
+                                    onClick={() =>
+                                      setShowLayerEvalPoints((v) => {
+                                        const next = !v;
+                                        // “评价点”=四类评价点总开关：边界点/定位点/边线点/中心点
+                                        setShowEvalBoundaryPoints(next);
+                                        setShowEvalWorkfaceLocPoints(next);
+                                        setShowEvalEdgeCtrlPoints(next);
+                                        setShowEvalCenterCtrlPoints(next);
+                                        return next;
+                                      })
+                                    }
                                     type="button"
                                   >
-                                    边界点
+                                    <span>总开关</span>
+                                    <span className="text-[10px] text-slate-400">{showLayerEvalPoints ? '显示' : '隐藏'}</span>
                                   </button>
-                                  <button
-                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                      showEvalWorkfaceLocPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                    }`}
-                                    onClick={() => setShowEvalWorkfaceLocPoints((v) => !v)}
-                                    title="评价点：工作面定位点（粉）"
-                                    type="button"
-                                  >
-                                    定位点
-                                  </button>
-                                  <button
-                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                      showEvalEdgeCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                    }`}
-                                    onClick={() => setShowEvalEdgeCtrlPoints((v) => !v)}
-                                    title="评价点：边线控制点（绿）"
-                                    type="button"
-                                  >
-                                    边线点
-                                  </button>
-                                  <button
-                                    className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
-                                      showEvalCenterCtrlPoints ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
-                                    }`}
-                                    onClick={() => setShowEvalCenterCtrlPoints((v) => !v)}
-                                    title="评价点：中心控制点（红）"
-                                    type="button"
-                                  >
-                                    中心点
-                                  </button>
+
+                                  <div className="px-3 py-2 border-t border-slate-100">
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <button
+                                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                          (showLayerEvalPoints && showEvalBoundaryPoints) ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                        }`}
+                                        onClick={() => {
+                                          if (!showLayerEvalPoints) setShowLayerEvalPoints(true);
+                                          setShowEvalBoundaryPoints((v) => !v);
+                                        }}
+                                        title="评价点：边界点（灰）"
+                                        type="button"
+                                      >
+                                        边界点
+                                      </button>
+                                      <button
+                                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                          (showLayerEvalPoints && showEvalWorkfaceLocPoints) ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                        }`}
+                                        onClick={() => {
+                                          if (!showLayerEvalPoints) setShowLayerEvalPoints(true);
+                                          setShowEvalWorkfaceLocPoints((v) => !v);
+                                        }}
+                                        title="评价点：工作面定位点（粉）"
+                                        type="button"
+                                      >
+                                        定位点
+                                      </button>
+                                      <button
+                                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                          (showLayerEvalPoints && showEvalEdgeCtrlPoints) ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                        }`}
+                                        onClick={() => {
+                                          if (!showLayerEvalPoints) setShowLayerEvalPoints(true);
+                                          setShowEvalEdgeCtrlPoints((v) => !v);
+                                        }}
+                                        title="评价点：边线控制点（绿）"
+                                        type="button"
+                                      >
+                                        边线点
+                                      </button>
+                                      <button
+                                        className={`px-2 py-1 rounded text-[10px] font-bold border border-slate-200 transition-colors ${
+                                          (showLayerEvalPoints && showEvalCenterCtrlPoints) ? 'bg-white text-slate-700 hover:bg-slate-50' : 'bg-slate-100 text-slate-400 hover:bg-slate-50'
+                                        }`}
+                                        onClick={() => {
+                                          if (!showLayerEvalPoints) setShowLayerEvalPoints(true);
+                                          setShowEvalCenterCtrlPoints((v) => !v);
+                                        }}
+                                        title="评价点：中心控制点（红）"
+                                        type="button"
+                                      >
+                                        中心点
+                                      </button>
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -18256,165 +20847,530 @@ const App = () => {
 
           <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('cocontrol') ? 'max-h-[calc(100vh-120px)]' : 'max-h-0'}`}>
             <div className="p-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
-              <div className="space-y-5">
-                {/* 摘要 */}
-                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
-                  <div className="flex items-center justify-between">
-                    <div className="text-xs font-black text-slate-700">统一标尺 ODI*</div>
-                    <label className="flex items-center gap-2 text-xs text-slate-600 select-none">
-                      <input
-                        type="checkbox"
-                        checked={coControlEnabled}
-                        onChange={(e) => setCoControlEnabled(Boolean(e.target.checked))}
-                      />
-                      启用
-                    </label>
-                  </div>
-                  {(() => {
-                    const geoReady = Boolean(paramExtractionGeoResult?.points?.length);
-                    const fullReady = Boolean(paramExtractionFullResult?.points?.length);
-                    const scaleReady = Boolean(coScalePack && coOdiUnionResult && !coScaleDirty);
-                    const canUseUnified = Boolean(coControlEnabled && scaleReady);
-                    return (
-                      <div className="mt-2 text-[10px] text-slate-500 leading-relaxed">
-                        标尺口径：联合样本（含地质-only）+ 分位数截断（P5/P95）映射到 0~1。
-                        {!geoReady && (
-                          <div className="mt-1 text-[10px] text-amber-700">门禁：请先完成“地质插值提取”（生成 S_geo）。</div>
-                        )}
-                        {!fullReady && (
-                          <div className="mt-1 text-[10px] text-amber-700">门禁：请先完成“全参插值提取”（生成 S_full）。</div>
-                        )}
-                        {coControlEnabled && !scaleReady && geoReady && fullReady && (
-                          <div className="mt-1 text-[10px] text-amber-700">已启用但标尺未就绪：请先点击“计算/更新统一标尺”。</div>
-                        )}
-                        {canUseUnified && (
-                          <div className="mt-1 text-[10px] text-emerald-700">当前主图与扰动采样：使用 ODI*（统一标尺）。</div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* A) 标尺与样本集 */}
-                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Grid size={14} className="text-emerald-600" />
-                      <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">标尺与样本集</span>
-                    </div>
-                    <div className={`text-[10px] font-mono ${coScaleDirty ? 'text-amber-600' : 'text-emerald-700'}`}>
-                      {coScaleDirty ? '输入已变更' : '已就绪'}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">分位数下界 qLo</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        max="0.5"
-                        value={coScaleConfig.qLo}
-                        onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), qLo: Number(e.target.value) }))}
-                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">分位数上界 qHi</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0.5"
-                        max="1"
-                        value={coScaleConfig.qHi}
-                        onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), qHi: Number(e.target.value) }))}
-                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
-                    </div>
-                  </div>
-
-                  <label className="flex items-center gap-2 text-xs text-slate-600 select-none">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(coScaleConfig.includeGeoOnly)}
-                      onChange={(e) => setCoScaleConfig((p) => ({ ...(p ?? {}), includeGeoOnly: Boolean(e.target.checked) }))}
-                    />
-                    纳入地质-only 点（稳定标尺）
-                  </label>
-
-                  {(() => {
-                    const canComputeScale = Boolean(paramExtractionGeoResult?.points?.length && paramExtractionFullResult?.points?.length);
-                    return (
-                      <button
-                        className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${canComputeScale ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600' : 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'}`}
-                        onClick={handleComputeUnifiedOdiScale}
-                        disabled={!canComputeScale}
-                        type="button"
-                        title={canComputeScale ? '基于 geo-only + full 联合样本计算 qLo/qHi，并生成 ODI* 供主图/扰动采样使用' : '请先完成：地质插值提取 + 全参插值提取'}
-                      >
-                        计算/更新统一标尺
-                      </button>
-                    );
-                  })()}
-
-                  <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
-                    <div className="text-[11px] text-slate-500 font-bold mb-2">标尺统计（只读）</div>
-                    <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-600">
-                      <div className="flex items-center justify-between"><span>qLo/qHi</span><span className="font-mono">{Number(coScaleConfig.qLo).toFixed(2)}/{Number(coScaleConfig.qHi).toFixed(2)}</span></div>
-                      <div className="flex items-center justify-between"><span>q 值</span><span className="font-mono">{coScalePack ? `${coScalePack.qLowValue.toFixed(3)}~${coScalePack.qHighValue.toFixed(3)}` : '--'}</span></div>
-                      <div className="flex items-center justify-between"><span>|S_geo|</span><span className="font-mono">{coScalePack?.counts?.geo ?? 0}</span></div>
-                      <div className="flex items-center justify-between"><span>|S_full|</span><span className="font-mono">{coScalePack?.counts?.full ?? 0}</span></div>
-                      <div className="flex items-center justify-between"><span>|S_union|</span><span className="font-mono">{coScalePack?.counts?.union ?? 0}</span></div>
-                      <div className="flex items-center justify-between"><span>计算时间</span><span className="font-mono">{coScalePack?.computedAt ? String(coScalePack.computedAt).slice(11, 19) : '--'}</span></div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* B) 推进阶段（预留：当前不引入推进速度，仅提供离散段数与段位） */}
-                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Layers size={14} className="text-emerald-600" />
-                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">推进阶段（预留）</span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">段数 N</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="20"
-                        value={coStageN}
-                        onChange={(e) => {
-                          const v = Math.max(1, Math.min(20, Math.round(Number(e.target.value) || 1)));
-                          setCoStageN(v);
-                          setCoStageK((k) => Math.max(1, Math.min(v, Number(k) || 1)));
-                        }}
-                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">当前段 k</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max={coStageN}
-                        value={coStageK}
-                        onChange={(e) => {
-                          const v = Math.max(1, Math.min(coStageN, Math.round(Number(e.target.value) || 1)));
-                          setCoStageK(v);
-                        }}
-                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="text-[10px] text-slate-500 leading-relaxed">
-                    当前版本：阶段仅作为 UI/口径占位；不影响 ODI* 的计算（后续会按工作面序号/段位生成分段快照）。
-                  </div>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="text-[11px] text-slate-500 font-bold">面板缩放</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={65}
+                    max={100}
+                    step={1}
+                    value={coPanelScalePct}
+                    onChange={(e) => setCoPanelScalePct(Math.max(65, Math.min(100, Math.round(Number(e.target.value) || 100))))}
+                    className="w-28"
+                    title="缩小以便在一个窗口内显示更多内容"
+                  />
+                  <div className="text-[11px] text-slate-600 font-mono w-10 text-right">{coPanelScalePct}%</div>
+                  <button
+                    className="px-2 py-1 rounded text-[10px] font-bold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    onClick={() => setCoPanelScalePct(100)}
+                    type="button"
+                    title="重置为 100%"
+                  >
+                    重置
+                  </button>
                 </div>
               </div>
+
+              {(() => {
+                const scale = Math.max(0.65, Math.min(1, (Number(coPanelScalePct) || 100) / 100));
+                return (
+                  <div
+                    style={{
+                      transform: `scale(${scale})`,
+                      transformOrigin: 'top left',
+                      width: `${100 / scale}%`,
+                      willChange: 'transform',
+                    }}
+                  >
+                    <div className="space-y-5">
+                      {(() => {
+                  const hasOdiInterpolation = Boolean(odiFieldPack?.field);
+
+                  const t = coSelectedTarget;
+                  const entry = getCoEntryForTarget(t);
+                  const layout = entry?.layout ?? coDefaultLayout;
+                  const production = entry?.production ?? coDefaultProduction;
+                  const layoutConfirmed = Boolean(entry?.layoutConfirmed);
+                  const layoutNeedsReconfirm = Boolean(entry?.layoutNeedsReconfirm);
+                  const hasSelected = Boolean(t);
+
+                  const faceBBox = hasSelected ? coGetFaceBBoxForTarget(t) : null;
+                  const axis = (hasSelected && faceBBox) ? coResolveAxis(faceBBox, layout) : 'x';
+                  const wsSideOptions = coGetWsSideOptions(axis);
+                  const advEndOptions = coGetAdvanceEndOptions(axis);
+
+                      return (
+                        <>
+                      {/* 1) 原设计方案参数 */}
+                      <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Settings size={14} className="text-emerald-600" />
+                            <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">原设计方案参数</span>
+                          </div>
+                          <div className={`text-[10px] font-mono ${hasOdiInterpolation ? 'text-emerald-700' : 'text-amber-700'}`}>
+                            {hasOdiInterpolation ? 'ODI 插值已就绪' : '未检测到 ODI 插值'}
+                          </div>
+                        </div>
+
+                        {!hasOdiInterpolation && (
+                          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                            <div className="text-[11px] text-amber-800 font-bold">未检测到 ODI 插值结果</div>
+                            <div className="mt-1 text-[10px] text-amber-700 leading-relaxed">
+                              请先在“综合扰动结果”中完成 ODI 计算并生成插值场，然后再进行协同调控参数设置。
+                            </div>
+                            <button
+                              className="mt-3 w-full py-2 rounded-xl font-bold text-xs border bg-white border-amber-200 text-amber-800 hover:border-blue-500 hover:text-blue-600 transition-colors"
+                              onClick={() => switchMainViewModeWithRightPanel('odi')}
+                              type="button"
+                            >
+                              前往综合扰动结果（并展开综合评价）
+                            </button>
+                          </div>
+                        )}
+
+                        <div className="text-[10px] text-slate-500 leading-relaxed">
+                          该板块用于展示/关联原方案关键参数（后续按你定义的字段补齐）。
+                        </div>
+                      </div>
+
+                      {/* 2) 协同调控参数 - 布局层 */}
+                      <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Grid size={14} className="text-emerald-600" />
+                            <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">协同调控参数（布局层）</span>
+                          </div>
+                          <div className={`text-[10px] font-mono ${layoutConfirmed ? 'text-emerald-700' : 'text-slate-500'}`}>
+                            {layoutConfirmed ? '已确认' : '未确认'}
+                          </div>
+                        </div>
+
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="text-[11px] text-slate-700 font-bold truncate">当前编辑：{coSelectedLabel}</div>
+                              <div className="mt-1 text-[10px] text-slate-500 leading-relaxed">
+                                点击主图中的工作面轮廓进行选择；如导入面与规划面同时命中，会弹出选择。
+                              </div>
+                            </div>
+                            <button
+                              className="px-3 py-2 rounded-xl font-bold text-[11px] border bg-white border-slate-200 text-slate-700 hover:border-emerald-400 hover:text-emerald-700 transition-colors"
+                              onClick={() => setShowWorkfaceOutline(true)}
+                              type="button"
+                              title="显示工作面轮廓，便于点选"
+                            >
+                              显示轮廓
+                            </button>
+                          </div>
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <button
+                              className="py-2 rounded-xl font-bold text-[11px] border bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50 transition-colors"
+                              onClick={handleWorkingFaceImportClick}
+                              type="button"
+                            >
+                              导入设计工作面坐标
+                            </button>
+                            <button
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!drillholeData?.length || !workingFaceData?.length) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50'}`}
+                              onClick={() => {
+                                if (!drillholeData?.length || !workingFaceData?.length) return;
+                                handleGeneratePoints();
+                              }}
+                              type="button"
+                              disabled={!drillholeData?.length || !workingFaceData?.length}
+                              title={(!drillholeData?.length || !workingFaceData?.length) ? '请先导入钻孔坐标与工作面坐标' : `生成评价点（步长=${stepLength}）`}
+                            >
+                              生成评价点
+                            </button>
+                          </div>
+
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <button
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected || t?.kind !== 'import') ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50'}`}
+                              onClick={() => {
+                                if (!hasSelected || t?.kind !== 'import') return;
+                                handleCoRestoreSelectedWorkface();
+                              }}
+                              type="button"
+                              disabled={!hasSelected || t?.kind !== 'import'}
+                              title={(t?.kind !== 'import') ? '仅支持导入工作面' : '恢复该工作面的初始导入数据'}
+                            >
+                              还原工作面
+                            </button>
+                            <button
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected || t?.kind !== 'import') ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50'}`}
+                              onClick={() => {
+                                if (!hasSelected || t?.kind !== 'import') return;
+                                handleCoDeleteSelectedWorkface();
+                              }}
+                              type="button"
+                              disabled={!hasSelected || t?.kind !== 'import'}
+                              title={(t?.kind !== 'import') ? '仅支持导入工作面' : '删除该工作面（会重排后续 No 编号）'}
+                            >
+                              删除工作面
+                            </button>
+                          </div>
+
+                          <button
+                            className="mt-2 w-full py-2 rounded-xl font-bold text-[11px] border bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
+                            onClick={handleCocontrolComputeOdiAll}
+                            type="button"
+                            title="执行：全参提取（含钻孔点+评价点）→ ODI 计算 → ODI 插值场自动更新（固定默认权重）"
+                          >
+                            ODI计算（全参提取 + 插值）
+                          </button>
+                          <div className="mt-2 text-[10px] text-slate-500">
+                            导入面数量：{workfaceCount}；评价点：{generatedPoints?.totalPoints ?? 0}
+                          </div>
+                        </div>
+
+                        {layoutNeedsReconfirm && (
+                          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[10px] text-amber-700">
+                            布局参数已变更，生产层已重新锁定，请重新点击“布局确认”。
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">工作面宽度（m）</label>
+                            <input
+                              type="number"
+                              step="1"
+                              min="0"
+                              value={layout.workfaceWidthM}
+                              onChange={(e) => coUpdateLayoutForSelected({ workfaceWidthM: e.target.value })}
+                              disabled={!hasSelected}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-[12px] font-black text-slate-400">区段煤柱宽度（m）</label>
+                            <input
+                              type="number"
+                              step="1"
+                              min="0"
+                              value={layout.sectionPillarWidthM}
+                              onChange={(e) => {
+                                if (!hasSelected) return;
+                                const v = e.target.value;
+                                // 允许输入时实时展示，但最终以“平移后满足 gap”的结果为准
+                                coUpdateEntry(t, (cur) => ({
+                                  ...cur,
+                                  layout: {
+                                    ...cur.layout,
+                                    sectionPillarWidthM: sanitizeCoIntStr(v),
+                                  },
+                                }));
+                              }}
+                              onBlur={(e) => {
+                                if (!hasSelected) return;
+                                coApplyWsShiftForSelected(t, e.target.value);
+                              }}
+                              disabled={!hasSelected}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3 items-end">
+                          <div className="space-y-2 min-w-0">
+                            <label className="text-[12px] font-black text-slate-400 whitespace-nowrap">煤柱基准侧</label>
+                            <select
+                              value={wsSideOptions.some((o) => o.value === layout.wsBaselineSide) ? layout.wsBaselineSide : (wsSideOptions[0]?.value ?? '')}
+                              onChange={(e) => {
+                                if (!hasSelected) return;
+                                const nextSide = String(e.target.value || '');
+                                coUpdateLayoutForSelected({ wsBaselineSide: nextSide, wsBaselineNeighborKey: '' });
+                                coRecomputeWsForTarget(t, { triggerPopup: true });
+                              }}
+                              disabled={!hasSelected}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                            >
+                              {wsSideOptions.map((o) => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="space-y-2 min-w-0">
+                            <label className="text-[12px] font-black text-slate-400 whitespace-nowrap">布置方向</label>
+                            <div className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold text-slate-700">
+                              {axis === 'x' ? '沿 X 轴' : '沿 Y 轴'}
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 min-w-0">
+                            <label className="text-[12px] font-black text-slate-400 opacity-0 select-none whitespace-nowrap">翻转</label>
+                            <button
+                              type="button"
+                              className={`w-full px-4 py-3 rounded-2xl text-sm font-black border transition-colors ${!hasSelected ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:border-emerald-400 hover:text-emerald-700'}`}
+                              onClick={() => {
+                                if (!hasSelected) return;
+                                const nextAxis = (axis === 'x') ? 'y' : 'x';
+                                coUpdateLayoutForSelected({
+                                  axisLocked: true,
+                                  axisFixed: nextAxis,
+                                  wsBaselineSide: '',
+                                  wsBaselineNeighborKey: '',
+                                });
+                                coRecomputeWsForTarget(t, { triggerPopup: true });
+                              }}
+                              disabled={!hasSelected}
+                              title="翻转布置方向"
+                            >
+                              翻转
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 items-end">
+                          <div className="space-y-2 min-w-0">
+                            <label className="text-[12px] font-black text-slate-400">设计推进长度（m）</label>
+                            <input
+                              type="number"
+                              step="1"
+                              min="0"
+                              value={layout.advanceLengthM}
+                              onChange={(e) => coUpdateLayoutForSelected({ advanceLengthM: e.target.value })}
+                              disabled={!hasSelected}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                            />
+                          </div>
+                          <div className="space-y-2 min-w-0">
+                            <label className="text-[12px] font-black text-slate-400">基准端</label>
+                            <select
+                              value={advEndOptions.some((o) => o.value === layout.advanceBaselineEnd) ? layout.advanceBaselineEnd : (advEndOptions[0]?.value ?? 'min')}
+                              onChange={(e) => {
+                                if (!hasSelected) return;
+                                const v = String(e.target.value || '');
+                                coUpdateLayoutForSelected({ advanceBaselineEnd: v });
+                              }}
+                              disabled={!hasSelected}
+                              className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                            >
+                              {advEndOptions.map((o) => (
+                                <option key={o.value} value={o.value}>{o.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+
+                        <button
+                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
+                          onClick={() => {
+                            if (!hasSelected) return;
+                            coConfirmLayoutForSelected();
+                          }}
+                          type="button"
+                          disabled={!hasSelected}
+                        >
+                          布局确认
+                        </button>
+                      </div>
+
+                      {/* 3) 协同调控参数 - 生产层 */}
+                      <div className={`bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4 ${!layoutConfirmed ? 'opacity-60' : ''}`}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Layers size={14} className="text-emerald-600" />
+                            <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">协同调控参数（生产层）</span>
+                          </div>
+                          {!layoutConfirmed && (
+                            <div className="text-[10px] font-mono text-amber-700">布局确认后解锁</div>
+                          )}
+                        </div>
+
+                        {(() => {
+                          const dims = hasSelected ? coComputeDimsForTarget(t) : null;
+                          const Ltotal0 = toCoIntOrNull(layout?.advanceLengthM);
+                          const Ltotal = (Number.isFinite(Ltotal0) && Ltotal0 > 0)
+                            ? Ltotal0
+                            : (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0 ? Math.round(dims.advanceLengthM) : null);
+
+                          const dynEnabled = Boolean(layoutConfirmed && hasSelected && Number.isFinite(Ltotal) && Ltotal >= 0);
+                          const stepM = Math.max(1, Math.round(Number(production?.advanceStepM) || 25));
+                          const end0 = String(production?.advanceBaselineEnd ?? '').trim();
+                          const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'min';
+
+                          return (
+                            <div className="space-y-3">
+                              <div className="space-y-2">
+                                <label className="text-[12px] font-black text-slate-400">设计采高（m）</label>
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={production.miningHeightM}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    coUpdateProductionForSelected({ miningHeightM: v });
+                                    const entryNext = {
+                                      layout,
+                                      production: { ...(production ?? {}), miningHeightM: String(v ?? '') },
+                                      layoutConfirmed,
+                                    };
+                                    const keyOverride = coBuildAutoOdiKey(t, entryNext);
+                                    coRequestAutoOdi({ reason: 'miningHeight-change', keyOverride });
+                                  }}
+                                  disabled={!layoutConfirmed || !hasSelected}
+                                  className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                                />
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-3 items-end">
+                                <div className="space-y-2">
+                                  <label className="text-[12px] font-black text-slate-400">步长（m）</label>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    min="1"
+                                    value={String(production.advanceStepM ?? '')}
+                                    onChange={(e) => coUpdateProductionForSelected({ advanceStepM: e.target.value })}
+                                    onBlur={(e) => {
+                                      if (!dynEnabled) return;
+                                      const step0 = Math.max(1, Math.round(Number(e.target.value) || 25));
+                                      coUpdateProductionForSelected({ advanceStepM: String(step0) });
+                                      coInvalidateDerivedAfterWorkfaceChange();
+                                      const entryNext = {
+                                        layout,
+                                        production: { ...(production ?? {}), advanceStepM: String(step0) },
+                                        layoutConfirmed,
+                                      };
+                                      const keyOverride = coBuildAutoOdiKey(t, entryNext);
+                                      coRequestAutoOdi({ reason: 'step-change', stepOverrideM: step0, forceRegenPoints: true, keyOverride });
+                                    }}
+                                    disabled={!dynEnabled}
+                                    className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                                    placeholder="25"
+                                  />
+                                </div>
+
+                                <div className="space-y-2">
+                                  <label className="text-[12px] font-black text-slate-400">基准端</label>
+                                  <select
+                                    value={advEndOptions.some((o) => o.value === endPick) ? endPick : (advEndOptions[0]?.value ?? 'min')}
+                                    onChange={(e) => {
+                                      if (!dynEnabled) return;
+                                      const v = String(e.target.value || 'min');
+                                      coUpdateProductionForSelected({ advanceBaselineEnd: v });
+                                      coApplyDynamicAdvanceForSelected({ nextLengthStr: production.advanceLengthM, nextEnd: v, reason: 'dyn-end-change' });
+                                    }}
+                                    disabled={!dynEnabled}
+                                    className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100"
+                                  >
+                                    {advEndOptions.map((o) => (
+                                      <option key={o.value} value={o.value}>{o.label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="space-y-2">
+                                <label className="text-[12px] font-black text-slate-400">动态推进长度（m）</label>
+                                <div className="flex items-center gap-3">
+                                  {/* 滑块：拖动仅更新数值；松手再应用到几何并自动计算（3C） */}
+                                  <div className="flex-1">
+                                    <input
+                                      type="range"
+                                      min={0}
+                                      max={Number.isFinite(Ltotal) ? Number(Ltotal) : 0}
+                                      step={stepM}
+                                      value={(() => {
+                                        const v0 = Number(production?.advanceLengthM);
+                                        const v = Number.isFinite(v0) ? v0 : (Number.isFinite(Ltotal) ? Number(Ltotal) : 0);
+                                        const hi = Number.isFinite(Ltotal) ? Number(Ltotal) : 0;
+                                        return Math.max(0, Math.min(hi, v));
+                                      })()}
+                                      onChange={(e) => {
+                                        if (!dynEnabled) return;
+                                        const v = Math.max(0, Math.round(Number(e.target.value) || 0));
+                                        coUpdateProductionForSelected({ advanceLengthM: String(v) });
+                                      }}
+                                      onMouseUp={(e) => {
+                                        if (!dynEnabled) return;
+                                        coApplyDynamicAdvanceForSelected({ nextLengthStr: e.currentTarget.value, nextEnd: endPick, reason: 'dyn-length-slider-up' });
+                                      }}
+                                      onTouchEnd={(e) => {
+                                        if (!dynEnabled) return;
+                                        coApplyDynamicAdvanceForSelected({ nextLengthStr: e.currentTarget.value, nextEnd: endPick, reason: 'dyn-length-slider-up' });
+                                      }}
+                                      disabled={!dynEnabled}
+                                      className="w-full h-8 cursor-pointer"
+                                      title={Number.isFinite(Ltotal) ? `0~${String(Ltotal)}，步长=${String(stepM)}` : `步长=${String(stepM)}`}
+                                    />
+                                  </div>
+
+                                  <input
+                                    type="number"
+                                    step={stepM}
+                                    min="0"
+                                    max={Number.isFinite(Ltotal) ? String(Ltotal) : undefined}
+                                    value={String(production.advanceLengthM ?? '')}
+                                    onChange={(e) => coUpdateProductionForSelected({ advanceLengthM: e.target.value })}
+                                    onBlur={(e) => {
+                                      if (!dynEnabled) return;
+                                      coApplyDynamicAdvanceForSelected({ nextLengthStr: e.target.value, nextEnd: endPick, reason: 'dyn-length-blur' });
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key !== 'Enter') return;
+                                      if (!dynEnabled) return;
+                                      coApplyDynamicAdvanceForSelected({ nextLengthStr: e.currentTarget.value, nextEnd: endPick, reason: 'dyn-length-enter' });
+                                    }}
+                                    disabled={!dynEnabled}
+                                    className="w-24 bg-slate-50 border border-slate-200 px-2 py-2 rounded-xl text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:bg-slate-100 text-center"
+                                    placeholder={Number.isFinite(Ltotal) ? String(Ltotal) : ''}
+                                  />
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                disabled={!dynEnabled}
+                                onClick={() => {
+                                  if (!dynEnabled) return;
+                                  // 手动兜底：若没有评价点则先生成
+                                  if (!generatedPoints) {
+                                    const step0 = Math.max(1, Math.round(Number(production?.advanceStepM) || 25));
+                                    generatePoints({ silent: true, stepOverrideM: step0 });
+                                  }
+                                  handleCocontrolComputeOdiAll();
+                                }}
+                                className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
+                                title="按当前调控参数重新提取并计算 ODI（手动兜底）"
+                              >
+                                ODI计算
+                              </button>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* 底部操作 */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-slate-900 hover:bg-slate-800 text-white border-slate-900"
+                          onClick={coSaveAll}
+                          type="button"
+                        >
+                          保存
+                        </button>
+                        <button
+                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-white hover:bg-slate-50 text-slate-700 border-slate-200"
+                          onClick={coResetAll}
+                          type="button"
+                        >
+                          重置
+                        </button>
+                      </div>
+                        </>
+                      );
+                    })()}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
