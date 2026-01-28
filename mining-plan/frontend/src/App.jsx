@@ -6398,16 +6398,814 @@ const App = () => {
   const [showMeasuredMapping, setShowMeasuredMapping] = useState(true);
   const [activeAccordion, setActiveAccordion] = useState(['summary']);
 
+  // 协同调控：ODI 分析板块（中部主图下方；默认展开；折叠状态本地记忆）
+  const COCONTROL_ANALYSIS_COLLAPSED_KEY = 'miningplan.cocontrol.analysis.collapsed';
+  const [coAnalysisCollapsed, setCoAnalysisCollapsed] = useState(() => {
+    try {
+      return String(window?.localStorage?.getItem(COCONTROL_ANALYSIS_COLLAPSED_KEY) ?? '') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setCoAnalysisCollapsedPersist = (nextOrUpdater) => {
+    setCoAnalysisCollapsed((prev) => {
+      const next = (typeof nextOrUpdater === 'function') ? Boolean(nextOrUpdater(prev)) : Boolean(nextOrUpdater);
+      try {
+        window?.localStorage?.setItem(COCONTROL_ANALYSIS_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+  const [coOdiAnalysisResult, setCoOdiAnalysisResult] = useState(null);
+  const [coOdiAnalysisSelectedKey, setCoOdiAnalysisSelectedKey] = useState('');
+  const [coOdiAnalysisCheckedKeys, setCoOdiAnalysisCheckedKeys] = useState([]);
+  const [coOdiAnalysisGridStepM, setCoOdiAnalysisGridStepM] = useState(25);
+  const [coOdiAnalysisThresholds, setCoOdiAnalysisThresholds] = useState({ t1: 0.65, t2: 0.85, t3: 0.90 });
+  const [coOdiAnalysisPercents, setCoOdiAnalysisPercents] = useState([0, 25, 50, 75, 100]);
+  const [coOdiAnalysisSortKey, setCoOdiAnalysisSortKey] = useState('p90'); // p90|p95|mean|exceedT2|exceedT3
+  const [coOdiAnalysisSortDesc, setCoOdiAnalysisSortDesc] = useState(true);
+  const [coOdiAnalysisBusy, setCoOdiAnalysisBusy] = useState(false);
+  const [coOdiAnalysisLastError, setCoOdiAnalysisLastError] = useState('');
+  const [coOdiAnalysisDebugOpen, setCoOdiAnalysisDebugOpen] = useState(false);
+  const [coOdiAnalysisDebugCopyStatus, setCoOdiAnalysisDebugCopyStatus] = useState('');
+  const [coOdiAnalysisExportOpen, setCoOdiAnalysisExportOpen] = useState(false);
+  const [coOdiAnalysisExportOptions, setCoOdiAnalysisExportOptions] = useState({
+    includeSelectedHistogram: true,
+    includeSelectedCurve: true,
+  });
+  const [coOdiAnalysisExportCopyStatus, setCoOdiAnalysisExportCopyStatus] = useState('');
+
   const lastAutoSeamThicknessRef = useRef(null);
   const mainCenterScrollRef = useRef(null);
   const planningOptPanelAnchorRef = useRef(null);
   const planningEfficiencySectionRef = useRef(null);
   const planningRecoverySectionRef = useRef(null);
   const cocontrolSectionRef = useRef(null);
+  const coAnalysisSectionRef = useRef(null);
 
   const openCocontrolPanel = () => {
     setActiveAccordion((prev) => (prev.includes('cocontrol') ? prev : [...prev, 'cocontrol']));
     setTimeout(() => cocontrolSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
+  };
+
+  const openCoAnalysisPanel = () => {
+    setCoAnalysisCollapsedPersist(false);
+    setTimeout(() => coAnalysisSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
+  };
+
+  const sanitize01 = (v, fallback) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return clamp(n, 0, 1);
+  };
+
+  const copyTextToClipboard = async (text) => {
+    const t = String(text ?? '');
+    if (!t) return false;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(t);
+        return true;
+      }
+    } catch {
+      // fallback
+    }
+    try {
+      const el = document.createElement('textarea');
+      el.value = t;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.top = '-1000px';
+      el.style.left = '-1000px';
+      document.body.appendChild(el);
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return Boolean(ok);
+    } catch {
+      return false;
+    }
+  };
+
+  const coBuildOdiAnalysisDebugText = () => {
+    const safeNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+    const safeLen = (arr) => (Array.isArray(arr) ? arr.length : 0);
+    const listKeys = (obj, limit = 30) => {
+      const ks = obj && typeof obj === 'object' ? Object.keys(obj) : [];
+      return ks.slice(0, limit);
+    };
+    const uniqNums = (arr) => {
+      const xs = (arr ?? []).map((v) => Math.round(Number(v))).filter((v) => Number.isFinite(v) && v >= 1);
+      return Array.from(new Set(xs)).sort((a, b) => a - b);
+    };
+
+    const importCount = Math.max(0, Math.floor(Number(workfaceCount) || 0));
+    const plannedLoops = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    const genFaces = (generatedPoints?.faces ?? []).filter((f) => f?.corners?.length === 4);
+    const genFaceIndices = uniqNums(genFaces.map((f) => f.faceIndex));
+    const targets = (() => {
+      try { return coAnalysisAllFaceTargets(); } catch { return []; }
+    })();
+
+    const sampleTarget = targets?.[0] ?? null;
+    const samplePoly = sampleTarget
+      ? (sampleTarget.kind === 'import' ? coGetImportFacePointsWorld(sampleTarget.no) : coGetPlannedFacePointsWorld(sampleTarget.faceIndex))
+      : null;
+    const sampleBBox = samplePoly ? coGetBBoxFromPoints(samplePoly) : null;
+
+    const thresholds = {
+      t1: sanitize01(coOdiAnalysisThresholds?.t1, 0.65),
+      t2: sanitize01(coOdiAnalysisThresholds?.t2, 0.85),
+      t3: sanitize01(coOdiAnalysisThresholds?.t3, 0.90),
+    };
+
+    const payload = {
+      ts: new Date().toISOString(),
+      view: { mainViewMode, activeTab, selectedCoal },
+      analysisUI: {
+        gridStepM: Math.max(1, Math.round(Number(coOdiAnalysisGridStepM) || 25)),
+        percents: (coOdiAnalysisPercents ?? []).map((p) => Math.round(Number(p))).filter((p) => Number.isFinite(p)),
+        thresholds,
+        sort: { key: coOdiAnalysisSortKey, desc: coOdiAnalysisSortDesc },
+        busy: coOdiAnalysisBusy,
+        lastError: coOdiAnalysisLastError,
+      },
+      workfaces: {
+        import: {
+          workfaceCount,
+          importCount,
+          workingFaceDataLen: safeLen(workingFaceData),
+        },
+        planned: {
+          plannedWorkfaceLoopsWorldLen: safeLen(plannedLoops),
+          plannedFaceIndices: uniqNums(plannedLoops.map((w) => w?.faceIndex)),
+        },
+        generatedFromSmartPlanning: {
+          generatedPointsFacesLen: safeLen(generatedPoints?.faces),
+          generatedFacesWithCornersLen: safeLen(genFaces),
+          generatedFaceIndices: genFaceIndices,
+        },
+        cocontrolParams: {
+          coImportParamsKeys: listKeys(coImportParamsByNo, 50),
+          coPlannedParamsKeys: listKeys(coPlannedParamsByFaceIndex, 50),
+          coSelectedTarget,
+        },
+      },
+      odiStar: {
+        coScalePack: coScalePack
+          ? {
+            computedAt: coScalePack?.computedAt,
+            scaleMode: coScalePack?.scaleMode ?? null,
+            qLo: safeNum(coScalePack?.qLo),
+            qHi: safeNum(coScalePack?.qHi),
+            qLowValue: safeNum(coScalePack?.qLowValue),
+            qHighValue: safeNum(coScalePack?.qHighValue),
+            includeGeoOnly: Boolean(coScalePack?.includeGeoOnly),
+            counts: coScalePack?.counts ?? null,
+            keptFactorKeys: coScalePack?.keptFactorKeys ?? [],
+            scaleKeyHead: String(coScalePack?.scaleKey ?? '').slice(0, 220),
+          }
+          : null,
+        coScaleDirty: Boolean(coScaleDirty),
+        odiScaleReference,
+        unionResult: {
+          computedAt: coOdiUnionResult?.computedAt ?? null,
+          pointsLen: safeLen(coOdiUnionResult?.points),
+          geoPointsLen: safeLen(coOdiUnionResult?.geoPoints),
+          fullPointsLen: safeLen(coOdiUnionResult?.fullPoints),
+        },
+        extraction: {
+          geo: { doneAt: paramExtractionGeoResult?.doneAt ?? null, pointsLen: safeLen(paramExtractionGeoResult?.points) },
+          full: { doneAt: paramExtractionFullResult?.doneAt ?? null, pointsLen: safeLen(paramExtractionFullResult?.points) },
+        },
+      },
+      targets: {
+        count: safeLen(targets),
+        items: (targets ?? []).slice(0, 50),
+        sampleTarget,
+        samplePolyLen: safeLen(samplePoly),
+        sampleBBox,
+      },
+      lastResult: coOdiAnalysisResult
+        ? {
+          ok: Boolean(coOdiAnalysisResult?.ok),
+          computedAt: coOdiAnalysisResult?.computedAt ?? null,
+          facesLen: safeLen(coOdiAnalysisResult?.faces),
+          config: coOdiAnalysisResult?.config ?? null,
+        }
+        : null,
+      hints: (() => {
+        const tips = [];
+        if (!importCount && !plannedLoops.length && !genFaces.length) {
+          tips.push('未检测到工作面来源：workfaceCount=0 且 plannedWorkfaceLoopsWorld 为空 且 generatedPoints.faces 为空。');
+        }
+        if (importCount > 0 && safeLen(workingFaceData) < importCount * 4) {
+          tips.push('导入面数量存在，但 workingFaceData 点数不足（应为 4 点/面）。');
+        }
+        if (!plannedLoops.length && genFaces.length) {
+          tips.push('plannedWorkfaceLoopsWorld 为空，但检测到 generatedPoints.faces：分析会回退使用该来源。');
+        }
+        if (safeLen(targets) === 0) {
+          tips.push('targets=0：分析无法确定任何工作面目标。');
+        }
+        if (sampleTarget && !samplePoly) {
+          tips.push('存在 target 但无法取到多边形坐标（poly=null）。');
+        }
+        return tips;
+      })(),
+    };
+
+    try {
+      return JSON.stringify(payload, null, 2);
+    } catch {
+      return String(payload);
+    }
+  };
+
+  const coAnalysisGetWorldBounds = () => {
+    const plannedPts = (plannedWorkfaceLoopsWorld ?? [])
+      .flatMap((w) => (w?.loop ?? []))
+      .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    const ptsAll = [
+      ...(boundaryData ?? []),
+      ...(drillholeData ?? []),
+      ...((workingFaceData ?? []) || []),
+      ...plannedPts,
+      ...((measuredConstraintData ?? []) || []),
+    ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (!ptsAll.length) return null;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of ptsAll) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) return null;
+    if (maxX <= minX || maxY <= minY) return null;
+    return { minX, maxX, minY, maxY };
+  };
+
+  const coAnalysisBuildFieldPack = (samples, worldBounds) => {
+    if (!samples?.length || !worldBounds) return null;
+    // 与主图保持一致：含水层用自然邻域，其它用 IDW
+    if (activeTab === 'aquifer') {
+      return computeFieldNaturalNeighbor(samples, 500, 400, boundaryData, worldBounds, {
+        pad: 18,
+        clampRange: { min: 0, max: 1 },
+        kNearest: 32,
+        smoothPasses: aquiferOdiSmoothPasses,
+      });
+    }
+    return computeFieldIdwWorld(samples, 500, 400, worldBounds, {
+      pad: 18,
+      clampRange: { min: 0, max: 1 },
+      kNearest: 24,
+    });
+  };
+
+  const coAnalysisQuantile = (values01, q) => quantile(values01, q);
+
+  const coAnalysisStats = (values01, thresholds) => {
+    const xs = (values01 ?? []).filter((v) => Number.isFinite(v));
+    const n = xs.length;
+    if (!n) {
+      return {
+        n: 0,
+        min: null,
+        mean: null,
+        meanTop10: null,
+        p50: null,
+        p90: null,
+        p95: null,
+        max: null,
+        exceedT1: null,
+        exceedT2: null,
+        exceedT3: null,
+      };
+    }
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let c1 = 0;
+    let c2 = 0;
+    let c3 = 0;
+    const t1 = sanitize01(thresholds?.t1, 0.65);
+    const t2 = sanitize01(thresholds?.t2, 0.85);
+    const t3 = sanitize01(thresholds?.t3, 0.90);
+    for (const v of xs) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+      sum += v;
+      if (v >= t1) c1++;
+      if (v >= t2) c2++;
+      if (v >= t3) c3++;
+    }
+    const mean = sum / n;
+
+    // 上尾强度：最高 10% 点均值（至少取 1 个点）
+    const topN = Math.max(1, Math.ceil(n * 0.10));
+    const xsDesc = [...xs].sort((a, b) => b - a);
+    let topSum = 0;
+    for (let i = 0; i < topN; i++) topSum += xsDesc[i];
+    const meanTop10 = topSum / topN;
+
+    return {
+      n,
+      min,
+      mean,
+      meanTop10,
+      p50: coAnalysisQuantile(xs, 0.50),
+      p90: coAnalysisQuantile(xs, 0.90),
+      p95: coAnalysisQuantile(xs, 0.95),
+      max,
+      exceedT1: c1 / n,
+      exceedT2: c2 / n,
+      exceedT3: c3 / n,
+    };
+  };
+
+  const coAnalysisHistogram = (values01, { binCount = 20 } = {}) => {
+    const xs = (values01 ?? []).filter((v) => Number.isFinite(v));
+    const n = xs.length;
+    const bins = Math.max(5, Math.min(60, Math.round(Number(binCount) || 20)));
+    const counts = Array.from({ length: bins }, () => 0);
+    for (const v0 of xs) {
+      const v = clamp(Number(v0), 0, 1);
+      const idx = Math.min(bins - 1, Math.max(0, Math.floor(v * bins)));
+      counts[idx]++;
+    }
+    const data = counts.map((c, i) => {
+      const lo = i / bins;
+      const hi = (i + 1) / bins;
+      return {
+        bin: `${lo.toFixed(2)}-${hi.toFixed(2)}`,
+        lo,
+        hi,
+        count: c,
+        ratio: n ? c / n : 0,
+      };
+    });
+    return { n, bins, data };
+  };
+
+  const coAnalysisBuildPercentSlicePredicate = (axis, baselineEnd, bbox, pct) => {
+    const p = clamp(Number(pct) / 100, 0, 1);
+    const end = String(baselineEnd ?? '').trim();
+    const ax = (axis === 'y') ? 'y' : 'x';
+    if (!bbox) return () => true;
+    if (ax === 'x') {
+      const lo0 = Number(bbox.minX);
+      const hi0 = Number(bbox.maxX);
+      const L = (hi0 - lo0) || 0;
+      const span = p * L;
+      if (!(L > 1e-9)) return () => false;
+      if (end === 'max') {
+        const lo = hi0 - span;
+        const hi = hi0;
+        return (pt) => Number(pt?.x) >= lo && Number(pt?.x) <= hi;
+      }
+      const lo = lo0;
+      const hi = lo0 + span;
+      return (pt) => Number(pt?.x) >= lo && Number(pt?.x) <= hi;
+    }
+    const lo0 = Number(bbox.minY);
+    const hi0 = Number(bbox.maxY);
+    const L = (hi0 - lo0) || 0;
+    const span = p * L;
+    if (!(L > 1e-9)) return () => false;
+    if (end === 'max') {
+      const lo = hi0 - span;
+      const hi = hi0;
+      return (pt) => Number(pt?.y) >= lo && Number(pt?.y) <= hi;
+    }
+    const lo = lo0;
+    const hi = lo0 + span;
+    return (pt) => Number(pt?.y) >= lo && Number(pt?.y) <= hi;
+  };
+
+  const coAnalysisAllFaceTargets = () => {
+    const out = [];
+    const importCount = Math.max(0, Math.floor(Number(workfaceCount) || 0));
+    for (let no = 1; no <= importCount; no++) {
+      out.push({ kind: 'import', no });
+    }
+    const planned = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    for (const w of planned) {
+      const fi = Number(w?.faceIndex);
+      if (!Number.isFinite(fi) || fi < 1) continue;
+      out.push({ kind: 'planned', faceIndex: Math.round(fi) });
+    }
+
+    // 兼容：从“智能规划”切到协同调控时，规划工作面可能仅存在于 generatedPoints.faces，
+    // 此时 plannedWorkfaceLoopsWorld 为空，分析会误判“没有工作面”。
+    if (!out.length) {
+      const faces = (generatedPoints?.faces ?? []).filter((f) => f?.corners?.length === 4);
+      const seen = new Set();
+      for (const f of faces) {
+        const fi = Number(f?.faceIndex);
+        if (!Number.isFinite(fi) || fi < 1) continue;
+        const k = String(Math.round(fi));
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push({ kind: 'planned', faceIndex: Math.round(fi) });
+      }
+    }
+    return out;
+  };
+
+  const coAnalysisFmt01 = (v, digits = 3) => (Number.isFinite(Number(v)) ? Number(v).toFixed(digits) : '--');
+  const coAnalysisFmtPct = (v, digits = 1) => (Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(digits)}%` : '--');
+
+  const handleCocontrolOdiGlobalCompute = () => {
+    // 一键：基于 unionPoints 计算全局统一标尺 ODI*（允许主图可视化 renorm，但统计按 ODI* 绝对值）
+    // 口径约束：按钮强制走默认口径（不需要用户调整任何参数）
+    const includeGeoOnly = true;
+    let geoRes = paramExtractionGeoResult;
+    let fullRes = paramExtractionFullResult;
+
+    // 缺前置时：自动执行对应提取（不跳转到“综合扰动结果”）
+    const needGeo = includeGeoOnly && !((geoRes?.points ?? []).length);
+    const needFull = !((fullRes?.points ?? []).length);
+    if (needGeo || needFull) {
+      if (needGeo) geoRes = handleExtractGeologyInterpolatedParams() ?? geoRes;
+      if (needFull) fullRes = handleExtractHighPrecisionParams() ?? fullRes;
+    }
+
+    const geoPts0 = geoRes?.points ?? [];
+    const fullPts0 = fullRes?.points ?? [];
+
+    const missing = [];
+    if (!fullPts0.length) missing.push('全参插值提取');
+    if (includeGeoOnly && !geoPts0.length) missing.push('地质插值提取');
+    if (missing.length) {
+      window.alert(`ODI全局计算失败：自动提取未完成（缺少：${missing.join(' / ')}）。\n\n请先检查：钻孔坐标/分层数据、采区边界、目标煤层、评价点生成等输入是否齐全，然后再点击“ODI全局计算”。`);
+      return;
+    }
+
+    // 统一标尺端点：彻底改为全局 min/max（严格 0-1 映射）
+    const qLo = 0;
+    const qHi = 1;
+
+    const unionPts = [
+      ...(includeGeoOnly ? geoPts0.map((p) => ({ ...p, __coSource: 'geo' })) : []),
+      ...fullPts0.map((p) => ({ ...p, __coSource: 'full' })),
+    ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    // 固定默认权重（与现有“ODI计算（全参提取 + 插值）”一致）
+    const computed = computeOdi(unionPts, { wd: 0.45, wo: 0.30, wf: 0.25 });
+    if (!computed || computed?.error) {
+      window.alert(computed?.error || 'ODI全局计算失败：ODI_raw 计算失败。');
+      return;
+    }
+
+    const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
+    if (raw.length < 3) {
+      window.alert('ODI全局计算失败：可用于计算标尺的 ODI_raw 样本不足（<3）。');
+      return;
+    }
+
+    const qLowValue = Math.min(...raw);
+    const qHighValue = Math.max(...raw);
+    if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue)) {
+      window.alert('ODI全局计算失败：min/max 计算失败。');
+      return;
+    }
+    if (qHighValue <= qLowValue) {
+      window.alert('ODI全局计算失败：ODI_raw 全局范围退化（max<=min），无法构建 0-1 映射标尺。');
+      return;
+    }
+
+    const stamp = new Date().toISOString();
+    const scaleKey = [
+      `tab=${String(activeTab ?? '')}`,
+      `coal=${String(selectedCoal ?? '')}`,
+      `geoAt=${String(geoRes?.doneAt ?? '')}`,
+      `fullAt=${String(fullRes?.doneAt ?? '')}`,
+      `q=${qLo}-${qHi}`,
+      'minmax=1',
+      `incGeo=${includeGeoOnly ? 1 : 0}`,
+      `wd=0.45;wo=0.30;wf=0.25`,
+    ].join('|');
+
+    const pack = {
+      computedAt: stamp,
+      scaleKey,
+      scaleMode: 'minmax',
+      qLo,
+      qHi,
+      qLowValue,
+      qHighValue,
+      includeGeoOnly,
+      counts: {
+        geo: includeGeoOnly ? geoPts0.length : 0,
+        full: fullPts0.length,
+        union: unionPts.length,
+        validOdiRaw: raw.length,
+      },
+      keptFactorKeys: computed.keptFactorKeys ?? [],
+    };
+
+    const ptsAll = computed.points ?? [];
+    const geoPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'geo');
+    const fullPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'full');
+
+    setCoScalePack(pack);
+    setCoOdiUnionResult({ computedAt: stamp, points: ptsAll, geoPoints, fullPoints });
+    setCoScaleDirty(false);
+    setCoControlEnabled(true);
+
+    switchMainViewModeWithRightPanel('cocontrol');
+  };
+
+  const handleCocontrolOdiAnalysis = async ({ force = true } = {}) => {
+    // 协同调控分析：ODI*（统一标尺）网格采样 + 工作面统计 + 推进曲线
+    if (coOdiAnalysisBusy) return;
+    setCoOdiAnalysisBusy(true);
+    setCoOdiAnalysisLastError('');
+    try {
+      const t1 = sanitize01(coOdiAnalysisThresholds?.t1, 0.65);
+      const t2 = sanitize01(coOdiAnalysisThresholds?.t2, 0.85);
+      const t3 = sanitize01(coOdiAnalysisThresholds?.t3, 0.90);
+      const thresholds = { t1, t2, t3 };
+
+      const stepM = Math.max(1, Math.round(Number(coOdiAnalysisGridStepM) || 25));
+      // 推进曲线档位：固定 0~100，每 5% 一档（共 21 个点）
+      const percents = Array.from({ length: 21 }, (_, i) => i * 5);
+
+      // 统一标尺 ODI* 前置：coScalePack + coOdiUnionResult。
+      // 历史上它需要用户手动点击“统一标尺计算”；但为了减少门槛，这里在必要时自动构建。
+      let scalePack = coScalePack;
+      let unionResult = coOdiUnionResult;
+      if (!scalePack || !unionResult) {
+        const geoPts0 = paramExtractionGeoResult?.points ?? [];
+        const fullPts0 = paramExtractionFullResult?.points ?? [];
+
+        const includeGeoOnly = Boolean(coScaleConfig?.includeGeoOnly);
+
+        const missing = [];
+        if (!fullPts0.length) missing.push('全参插值提取');
+        if (includeGeoOnly && !geoPts0.length) missing.push('地质插值提取');
+        if (missing.length) {
+          throw new Error(`未检测到统一标尺 ODI*：缺少“${missing.join(' / ')}”结果。请先在“综合扰动结果 → 覆岩扰动综合评价”里完成对应提取，再点击 ODI分析。`);
+        }
+
+        const qLo = clamp(Number(coScaleConfig?.qLo), 0, 1);
+        const qHi = clamp(Number(coScaleConfig?.qHi), 0, 1);
+        if (!Number.isFinite(qLo) || !Number.isFinite(qHi) || qHi <= qLo) {
+          throw new Error('未检测到统一标尺 ODI*：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
+        }
+
+        const unionPts = [
+          ...(includeGeoOnly ? geoPts0.map((p) => ({ ...p, __coSource: 'geo' })) : []),
+          ...fullPts0.map((p) => ({ ...p, __coSource: 'full' })),
+        ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+
+        const computed = computeOdi(unionPts, scenarioWeights);
+        if (!computed || computed?.error) {
+          throw new Error(computed?.error || '未检测到统一标尺 ODI*：ODI_raw 计算失败。');
+        }
+
+        const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
+        if (raw.length < 3) {
+          throw new Error('未检测到统一标尺 ODI*：可用于计算标尺的 ODI_raw 样本不足（<3）。');
+        }
+
+        const qLowValue = quantile(raw, qLo);
+        const qHighValue = quantile(raw, qHi);
+        if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue)) {
+          throw new Error('未检测到统一标尺 ODI*：分位数计算失败。');
+        }
+
+        const stamp = new Date().toISOString();
+        const scaleKey = [
+          `tab=${String(activeTab ?? '')}`,
+          `coal=${String(selectedCoal ?? '')}`,
+          `geoAt=${String(paramExtractionGeoResult?.doneAt ?? '')}`,
+          `fullAt=${String(paramExtractionFullResult?.doneAt ?? '')}`,
+          `q=${qLo}-${qHi}`,
+          `incGeo=${includeGeoOnly ? 1 : 0}`,
+          `wd=${Number(scenarioWeights?.wd)};wo=${Number(scenarioWeights?.wo)};wf=${Number(scenarioWeights?.wf)}`,
+        ].join('|');
+
+        scalePack = {
+          computedAt: stamp,
+          scaleKey,
+          scaleMode: 'quantile',
+          qLo,
+          qHi,
+          qLowValue,
+          qHighValue,
+          includeGeoOnly,
+          counts: {
+            geo: includeGeoOnly ? geoPts0.length : 0,
+            full: fullPts0.length,
+            union: unionPts.length,
+            validOdiRaw: raw.length,
+          },
+          keptFactorKeys: computed.keptFactorKeys ?? [],
+        };
+
+        const ptsAll = computed.points ?? [];
+        const geoPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'geo');
+        const fullPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'full');
+        unionResult = { computedAt: stamp, points: ptsAll, geoPoints, fullPoints };
+
+        // 同步写回 state：让主图（以及后续分析）都能直接使用 ODI*
+        setCoScalePack(scalePack);
+        setCoOdiUnionResult(unionResult);
+        setCoScaleDirty(false);
+        setCoControlEnabled(true);
+      }
+
+      const basePts = (unionResult?.fullPoints?.length ? unionResult.fullPoints : (unionResult?.points ?? []))
+        .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (basePts.length < 3) throw new Error('ODI* 样本点不足，无法构建插值场。');
+
+      const samples = basePts
+        .map((p) => {
+          const v = applyUnifiedScaleToOdiRaw(p?.odi, scalePack);
+          return Number.isFinite(v) ? ({ id: String(p?.id ?? ''), x: p.x, y: p.y, value: clamp(v, 0, 1) }) : null;
+        })
+        .filter((s) => s && Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.value));
+      if (samples.length < 3) throw new Error('ODI* 插值样本点不足（有效点<3）。');
+
+      const worldBounds = coAnalysisGetWorldBounds();
+      if (!worldBounds) throw new Error('无法确定插值域范围（worldBounds）。请先导入边界/钻孔/工作面等空间数据。');
+
+      const fieldPack = coAnalysisBuildFieldPack(samples, worldBounds);
+      if (!fieldPack?.field) throw new Error('ODI* 插值场构建失败。');
+
+      const faces = [];
+      const faceRaw = [];
+      const targets = coAnalysisAllFaceTargets();
+      if (!targets.length) throw new Error('未检测到任何工作面（导入面或规划面）。');
+
+      const maxSamplesPerFace = 20000;
+
+      // 归一化口径（分析用）：在“所有工作面采样点”范围内再次做 min/max 映射到 0~1
+      // 目的：避免插值场/网格未命中极值导致统计分布整体偏低（例如基本 <0.7）。
+      let globalVMin = Infinity;
+      let globalVMax = -Infinity;
+
+      for (const t of targets) {
+        const no = (t.kind === 'import') ? Number(t.no) : null;
+        const faceIndex = (t.kind === 'planned') ? Number(t.faceIndex) : null;
+        const key = (t.kind === 'import') ? `import:No.${Number(t.no)}` : `planned:${Number(t.faceIndex)}`;
+        const label = (t.kind === 'import') ? `导入面 No.${Number(t.no)}` : `规划面 No.${Number(t.faceIndex)}`;
+        const poly = (t.kind === 'import') ? coGetImportFacePointsWorld(t.no) : coGetPlannedFacePointsWorld(t.faceIndex);
+        if (!poly || poly.length < 3) continue;
+        const bbox = coGetBBoxFromPoints(poly);
+        if (!bbox) continue;
+
+        // 读取该工作面的生产层配置（推进基准端）+ 布局配置（用于 axis 判定）
+        const entry = getCoEntryForTarget(t);
+        const layout = entry?.layout ?? coDefaultLayout;
+        const production = entry?.production ?? coDefaultProduction;
+        const axis = coResolveAxis(bbox, layout);
+        const baselineEnd = String(production?.advanceBaselineEnd ?? 'min').trim();
+
+        // 1) 先采样“面内网格点 + 场值”作为基线点集，后续推进曲线仅做切片过滤
+        const points = [];
+        const x0 = Math.floor(Number(bbox.minX) / stepM) * stepM;
+        const x1 = Math.ceil(Number(bbox.maxX) / stepM) * stepM;
+        const y0 = Math.floor(Number(bbox.minY) / stepM) * stepM;
+        const y1 = Math.ceil(Number(bbox.maxY) / stepM) * stepM;
+
+        for (let y = y0; y <= y1; y += stepM) {
+          for (let x = x0; x <= x1; x += stepM) {
+            if (points.length >= maxSamplesPerFace) break;
+            if (!polygonContainsPoint(poly, { x, y })) continue;
+            const v = sampleFieldAtWorldXY(fieldPack, x, y);
+            if (!Number.isFinite(v)) continue;
+            const vv = clamp(v, 0, 1);
+            if (vv < globalVMin) globalVMin = vv;
+            if (vv > globalVMax) globalVMax = vv;
+            points.push({ x, y, v: vv });
+          }
+          if (points.length >= maxSamplesPerFace) break;
+        }
+
+        faceRaw.push({
+          key,
+          kind: t.kind,
+          no,
+          faceIndex,
+          label,
+          axis,
+          baselineEnd,
+          stepM,
+          bbox,
+          points,
+        });
+      }
+
+      if (!faceRaw.length) throw new Error('未能从任何工作面采样到有效点（可能：工作面太小/步长过大/插值域不覆盖）。');
+      if (!Number.isFinite(globalVMin) || !Number.isFinite(globalVMax)) throw new Error('工作面采样值为空，无法统计。');
+      if (globalVMax <= globalVMin) throw new Error('工作面采样值范围退化（max<=min），无法进行 0-1 归一化。');
+
+      const denomAll = (globalVMax - globalVMin) || 1;
+      const map01 = (v) => clamp((Number(v) - globalVMin) / denomAll, 0, 1);
+
+      for (const f0 of faceRaw) {
+        const pts0 = f0.points ?? [];
+        const values = pts0.map((p) => map01(p.v));
+        const stats = coAnalysisStats(values, thresholds);
+        const hist = coAnalysisHistogram(values, { binCount: 20 });
+
+        const curve = percents.map((pct) => {
+          // 口径：推进进度为 0% 时按 0 记（不参与真实统计）
+          if (pct <= 0) {
+            return {
+              pct: 0,
+              n: 0,
+              mean: 0,
+              p90: 0,
+              p95: 0,
+              exceedT2: 0,
+              exceedT3: 0,
+            };
+          }
+          const pred = (pct >= 100)
+            ? (() => true)
+            : coAnalysisBuildPercentSlicePredicate(f0.axis, f0.baselineEnd, f0.bbox, pct);
+          const vals = pts0.filter((p) => pred(p)).map((p) => map01(p.v));
+          const st = coAnalysisStats(vals, thresholds);
+          return {
+            pct,
+            n: st.n,
+            mean: st.mean,
+            p90: st.p90,
+            p95: st.p95,
+            exceedT2: st.exceedT2,
+            exceedT3: st.exceedT3,
+          };
+        });
+
+        faces.push({
+          key: f0.key,
+          kind: f0.kind,
+          no: f0.no,
+          faceIndex: f0.faceIndex,
+          label: f0.label,
+          axis: f0.axis,
+          baselineEnd: f0.baselineEnd,
+          stepM: f0.stepM,
+          stats,
+          hist,
+          curve,
+        });
+      }
+
+      if (!faces.length) throw new Error('未能从任何工作面采样到有效点（可能：工作面太小/步长过大/插值域不覆盖）。');
+
+      const pickSortValue = (f) => {
+        const s = f?.stats ?? {};
+        if (coOdiAnalysisSortKey === 'p95') return Number(s?.p95);
+        if (coOdiAnalysisSortKey === 'mean') return Number(s?.mean);
+        if (coOdiAnalysisSortKey === 'exceedT2') return Number(s?.exceedT2);
+        if (coOdiAnalysisSortKey === 'exceedT3') return Number(s?.exceedT3);
+        return Number(s?.p90);
+      };
+      faces.sort((a, b) => {
+        const va = pickSortValue(a);
+        const vb = pickSortValue(b);
+        const aa = Number.isFinite(va) ? va : -Infinity;
+        const bb = Number.isFinite(vb) ? vb : -Infinity;
+        const d = aa - bb;
+        return coOdiAnalysisSortDesc ? (d < 0 ? 1 : (d > 0 ? -1 : 0)) : (d < 0 ? -1 : (d > 0 ? 1 : 0));
+      });
+
+      const selected = String(coOdiAnalysisSelectedKey || faces[0]?.key || '');
+      setCoOdiAnalysisSelectedKey(selected);
+      setCoOdiAnalysisResult({
+        ok: true,
+        computedAt: Date.now(),
+        config: {
+          thresholds,
+          stepM,
+          percents,
+          sortKey: coOdiAnalysisSortKey,
+          sortDesc: coOdiAnalysisSortDesc,
+          valueRenorm: { mode: 'workfaces', rawMin: globalVMin, rawMax: globalVMax },
+        },
+        faces,
+      });
+
+      // 确保切到协同调控视图（该视图才展示“分析板块”）
+      if (force) {
+        switchMainViewModeWithRightPanel('cocontrol');
+        setTimeout(() => openCoAnalysisPanel(), 0);
+      }
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      setCoOdiAnalysisLastError(msg);
+      setCoOdiAnalysisResult({ ok: false, computedAt: Date.now(), error: msg });
+    } finally {
+      setCoOdiAnalysisBusy(false);
+    }
   };
 
   const handleToggleEfficiencyCandidates = () => {
@@ -7058,7 +7856,16 @@ const App = () => {
     const loop = (hit?.loop ?? [])
       .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
       .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
-    return loop.length >= 3 ? loop : null;
+    if (loop.length >= 3) return loop;
+
+    // 兼容：智能规划切换到协同调控时，可能没有 plannedWorkfaceLoopsWorld，但 generatedPoints.faces 有 corners
+    const faces = (generatedPoints?.faces ?? []).filter((f) => f?.corners?.length === 4);
+    const fHit = faces.find((f) => Number(f?.faceIndex) === fi);
+    const corners = (fHit?.corners ?? [])
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (corners.length === 4) return sortQuadByAngle(corners);
+    return null;
   };
 
   const coGetFaceBBoxForTarget = (t) => {
@@ -9288,6 +10095,7 @@ const App = () => {
     return {
       activeTab,
       mainViewMode,
+      activeAccordion,
       showMainMap,
       showMeasuredMapping,
       showErrorAnalysis,
@@ -9300,12 +10108,45 @@ const App = () => {
       paramExtractionGeoResult: cloneJson(paramExtractionGeoResult),
       paramExtractionFullResult: cloneJson(paramExtractionFullResult),
       odiResult: cloneJson(odiResult),
+      odiScaleReference: cloneJson(odiScaleReference),
       showWorkfaceOutline,
+      // Measure
+      measureEnabled,
+      measurePoints: cloneJson(measurePoints),
       // Cocontrol v2
+      coWorkfaceGhosts: cloneJson(coWorkfaceGhosts),
+      coControlEnabled,
+      coScaleConfig: cloneJson(coScaleConfig),
+      coStageN,
+      coStageK,
+      coScalePack: cloneJson(coScalePack),
+      coOdiUnionResult: cloneJson(coOdiUnionResult),
+      coScaleDirty,
+      coPanelScalePct,
+      coProductionSummary: cloneJson(coProductionSummary),
+      coCoalThkHash,
       coImportParamsByNo: cloneJson(coImportParamsByNo),
       coPlannedParamsByFaceIndex: cloneJson(coPlannedParamsByFaceIndex),
       coSelectedTarget: cloneJson(coSelectedTarget),
       coPickPopup: cloneJson(coPickPopup),
+      coWsPickPopup: cloneJson(coWsPickPopup),
+      // Cocontrol analysis
+      coAnalysisCollapsed,
+      coOdiAnalysisResult: cloneJson(coOdiAnalysisResult),
+      coOdiAnalysisSelectedKey,
+      coOdiAnalysisCheckedKeys: cloneJson(coOdiAnalysisCheckedKeys),
+      coOdiAnalysisGridStepM,
+      coOdiAnalysisThresholds: cloneJson(coOdiAnalysisThresholds),
+      coOdiAnalysisPercents: cloneJson(coOdiAnalysisPercents),
+      coOdiAnalysisSortKey,
+      coOdiAnalysisSortDesc,
+      coOdiAnalysisBusy,
+      coOdiAnalysisLastError,
+      coOdiAnalysisDebugOpen,
+      coOdiAnalysisDebugCopyStatus,
+      coOdiAnalysisExportOpen,
+      coOdiAnalysisExportOptions: cloneJson(coOdiAnalysisExportOptions),
+      coOdiAnalysisExportCopyStatus,
       planningParams: cloneJson(planningParams),
       planningDisturbanceParams: cloneJson(planningDisturbanceParams),
       planningReverseSolutions: cloneJson(planningReverseSolutions),
@@ -9337,6 +10178,7 @@ const App = () => {
       const preservePlanningResults = Boolean(snap?.__preservePlanningResults);
 
       setMainViewMode(String(snap.mainViewMode ?? 'odi'));
+      setActiveAccordion(Array.isArray(snap.activeAccordion) ? snap.activeAccordion : ['summary']);
       setShowMainMap(Boolean(snap.showMainMap));
       setShowMeasuredMapping(Boolean(snap.showMeasuredMapping));
       setShowErrorAnalysis(Boolean(snap.showErrorAnalysis));
@@ -9355,12 +10197,45 @@ const App = () => {
       setParamExtractionGeoResult(snap.paramExtractionGeoResult ?? null);
       setParamExtractionFullResult(snap.paramExtractionFullResult ?? null);
       setOdiResult(snap.odiResult ?? null);
+      setOdiScaleReference(snap.odiScaleReference ?? null);
       setShowWorkfaceOutline(Boolean(snap.showWorkfaceOutline));
+      // Measure
+      setMeasureEnabled(Boolean(snap.measureEnabled));
+      setMeasurePoints(Array.isArray(snap.measurePoints) ? snap.measurePoints : []);
       // Cocontrol v2
+      setCoWorkfaceGhosts(snap.coWorkfaceGhosts ?? {});
+      setCoControlEnabled(Boolean(snap.coControlEnabled));
+      setCoScaleConfig(snap.coScaleConfig ? cloneJson(snap.coScaleConfig) : { qLo: 0.05, qHi: 0.95, includeGeoOnly: true });
+      setCoStageN(typeof snap.coStageN === 'number' ? snap.coStageN : 5);
+      setCoStageK(typeof snap.coStageK === 'number' ? snap.coStageK : 1);
+      setCoScalePack(snap.coScalePack ?? null);
+      setCoOdiUnionResult(snap.coOdiUnionResult ?? null);
+      setCoScaleDirty(Boolean(snap.coScaleDirty));
+      setCoPanelScalePct(typeof snap.coPanelScalePct === 'number' ? snap.coPanelScalePct : 100);
+      setCoProductionSummary(snap.coProductionSummary ?? null);
+      setCoCoalThkHash(String(snap.coCoalThkHash ?? ''));
       setCoImportParamsByNo(snap.coImportParamsByNo ?? {});
       setCoPlannedParamsByFaceIndex(snap.coPlannedParamsByFaceIndex ?? {});
       setCoSelectedTarget(snap.coSelectedTarget ?? null);
       setCoPickPopup(snap.coPickPopup ?? null);
+      setCoWsPickPopup(snap.coWsPickPopup ?? null);
+      // Cocontrol analysis
+      setCoAnalysisCollapsed(Boolean(snap.coAnalysisCollapsed));
+      setCoOdiAnalysisResult(snap.coOdiAnalysisResult ?? null);
+      setCoOdiAnalysisSelectedKey(String(snap.coOdiAnalysisSelectedKey ?? ''));
+      setCoOdiAnalysisCheckedKeys(Array.isArray(snap.coOdiAnalysisCheckedKeys) ? snap.coOdiAnalysisCheckedKeys : []);
+      setCoOdiAnalysisGridStepM(typeof snap.coOdiAnalysisGridStepM === 'number' ? snap.coOdiAnalysisGridStepM : 25);
+      setCoOdiAnalysisThresholds(snap.coOdiAnalysisThresholds ? cloneJson(snap.coOdiAnalysisThresholds) : { t1: 0.65, t2: 0.85, t3: 0.90 });
+      setCoOdiAnalysisPercents(Array.isArray(snap.coOdiAnalysisPercents) ? snap.coOdiAnalysisPercents : [0, 25, 50, 75, 100]);
+      setCoOdiAnalysisSortKey(String(snap.coOdiAnalysisSortKey ?? 'p90'));
+      setCoOdiAnalysisSortDesc(Boolean(snap.coOdiAnalysisSortDesc));
+      setCoOdiAnalysisBusy(Boolean(snap.coOdiAnalysisBusy));
+      setCoOdiAnalysisLastError(String(snap.coOdiAnalysisLastError ?? ''));
+      setCoOdiAnalysisDebugOpen(Boolean(snap.coOdiAnalysisDebugOpen));
+      setCoOdiAnalysisDebugCopyStatus(String(snap.coOdiAnalysisDebugCopyStatus ?? ''));
+      setCoOdiAnalysisExportOpen(Boolean(snap.coOdiAnalysisExportOpen));
+      setCoOdiAnalysisExportOptions(snap.coOdiAnalysisExportOptions ? cloneJson(snap.coOdiAnalysisExportOptions) : { includeSelectedHistogram: true, includeSelectedCurve: true });
+      setCoOdiAnalysisExportCopyStatus(String(snap.coOdiAnalysisExportCopyStatus ?? ''));
       setPlanningParams(snap.planningParams ? cloneJson(snap.planningParams) : { ...DEFAULT_PLANNING_PARAMS });
       setPlanningDisturbanceParams(snap.planningDisturbanceParams ? cloneJson(snap.planningDisturbanceParams) : { ...DEFAULT_DISTURBANCE_PARAMS });
       setPlanningReverseSolutions(snap.planningReverseSolutions ?? []);
@@ -9472,47 +10347,64 @@ const App = () => {
   const handleClearAll = () => {
     const current = getAppSnapshot();
 
-    // 若当前已有“智能规划”产物，则优先回退到“启动智能规划”点击前的规划快照（只影响规划模块，不清空场景输入）
-    const hasPlanningArtifacts = Boolean(
-      current.showPlanningBoundaryOverlay
-      || (Array.isArray(current.plannedWorkfaceLoopsWorld) && current.plannedWorkfaceLoopsWorld.length)
-      || (Array.isArray(current.plannedWorkfaceUnionLoopsWorld) && current.plannedWorkfaceUnionLoopsWorld.length)
-      || (Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions.length)
-      || (!Array.isArray(current.planningReverseSolutions) && current.planningReverseSolutions)
-      || current.hasInitializedFaceWidthRange
-      || String(current?.planningParams?.faceCountSelected ?? '').trim()
-      || String(current?.planningParams?.faceCountSuggestedMin ?? '').trim()
-      || String(current?.planningParams?.faceCountSuggestedMax ?? '').trim()
-    );
-
-    if (hasPlanningArtifacts && planningPreStartSnapshot) {
-      const nextSnap = {
-        ...current,
-        planningParams: cloneJson(planningPreStartSnapshot.planningParams ?? current.planningParams),
-        planningReverseSolutions: cloneJson(planningPreStartSnapshot.planningReverseSolutions ?? current.planningReverseSolutions),
-        planningAdvanceAxis: String(planningPreStartSnapshot.planningAdvanceAxis ?? current.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x',
-        plannedWorkfaceLoopsWorld: cloneJson(planningPreStartSnapshot.plannedWorkfaceLoopsWorld ?? []),
-        plannedWorkfaceUnionLoopsWorld: cloneJson(planningPreStartSnapshot.plannedWorkfaceUnionLoopsWorld ?? []),
-        showPlanningBoundaryOverlay: Boolean(planningPreStartSnapshot.showPlanningBoundaryOverlay),
-        hasInitializedFaceWidthRange: Boolean(planningPreStartSnapshot.hasInitializedFaceWidthRange),
-        planningPreStartSnapshot: null,
-      };
-      pushHistoryFromCurrentTo(nextSnap);
-      applyAppSnapshot(nextSnap);
-      setPlanningPreStartSnapshot(null);
-      setMeasureEnabled(false);
-      setMeasurePoints([]);
-      return;
-    }
-
     const tab = String(current.activeTab ?? activeTab);
     const merged = cloneJson(current.scenarioParamsById ?? {});
     merged[tab] = cloneJson(scenarioDefaultsById?.[tab] ?? scenarioDefaultsById.surface);
-    // 清空：同时重置智能规划模块，且支持撤回
+    // 清空：该场景所有板块回到初始状态（支持撤回）
     const nextSnap = {
       ...current,
       scenarioParamsById: merged,
       activeTab: tab,
+      mainViewMode: 'odi',
+      activeAccordion: ['summary'],
+      showMainMap: true,
+      showMeasuredMapping: true,
+      showErrorAnalysis: true,
+      drillholeData: null,
+      workingFaceData: [],
+      stepLength: 5,
+      generatedPoints: null,
+      paramExtractionResult: null,
+      paramExtractionGeoResult: null,
+      paramExtractionFullResult: null,
+      odiResult: null,
+      odiScaleReference: null,
+      showWorkfaceOutline: false,
+      measureEnabled: false,
+      measurePoints: [],
+      // Cocontrol reset
+      coWorkfaceGhosts: {},
+      coControlEnabled: false,
+      coScaleConfig: { qLo: 0.05, qHi: 0.95, includeGeoOnly: true },
+      coStageN: 5,
+      coStageK: 1,
+      coScalePack: null,
+      coOdiUnionResult: null,
+      coScaleDirty: true,
+      coPanelScalePct: 100,
+      coProductionSummary: null,
+      coCoalThkHash: '',
+      coImportParamsByNo: {},
+      coPlannedParamsByFaceIndex: {},
+      coSelectedTarget: null,
+      coPickPopup: null,
+      coWsPickPopup: null,
+      coAnalysisCollapsed: false,
+      coOdiAnalysisResult: null,
+      coOdiAnalysisSelectedKey: '',
+      coOdiAnalysisCheckedKeys: [],
+      coOdiAnalysisGridStepM: 25,
+      coOdiAnalysisThresholds: { t1: 0.65, t2: 0.85, t3: 0.90 },
+      coOdiAnalysisPercents: [0, 25, 50, 75, 100],
+      coOdiAnalysisSortKey: 'p90',
+      coOdiAnalysisSortDesc: true,
+      coOdiAnalysisBusy: false,
+      coOdiAnalysisLastError: '',
+      coOdiAnalysisDebugOpen: false,
+      coOdiAnalysisDebugCopyStatus: '',
+      coOdiAnalysisExportOpen: false,
+      coOdiAnalysisExportOptions: { includeSelectedHistogram: true, includeSelectedCurve: true },
+      coOdiAnalysisExportCopyStatus: '',
       planningParams: { ...DEFAULT_PLANNING_PARAMS },
       planningReverseSolutions: [],
       planningAdvanceAxis: 'x',
@@ -9525,8 +10417,6 @@ const App = () => {
     pushHistoryFromCurrentTo(nextSnap);
     applyAppSnapshot(nextSnap);
     setPlanningPreStartSnapshot(null);
-    setMeasureEnabled(false);
-    setMeasurePoints([]);
   };
 
   // 自动记录：把用户操作形成的状态变化纳入历史栈（防止每次输入都刷屏，做一个短暂 debounce）
@@ -11500,6 +12390,70 @@ const App = () => {
       return { ...pack, field: field01, min: 0, max: 1 };
     };
 
+    const renormField01ByRange = (pack, vMin, vMax) => {
+      if (!pack?.field) return pack;
+      const a = Number(vMin);
+      const b = Number(vMax);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return pack;
+      const denom = (b - a) || 1;
+      const field01 = pack.field.map((row) => {
+        if (!Array.isArray(row)) return row;
+        return row.map((vv) => {
+          const v = Number(vv);
+          if (!Number.isFinite(v)) return vv;
+          return clamp((v - a) / denom, 0, 1);
+        });
+      });
+      return { ...pack, field: field01, min: 0, max: 1 };
+    };
+
+    const computeWorkfacesValueRange01 = (fieldPack, stepM0 = 25) => {
+      // 在所有工作面内部按网格采样插值场，得到 v 的全局 min/max（v 已是 0~1）
+      const stepM = Math.max(1, Math.round(Number(stepM0) || 25));
+      const targets = (() => {
+        try { return coAnalysisAllFaceTargets(); } catch { return []; }
+      })();
+      if (!targets?.length) return null;
+
+      const maxTotalSamples = 80000;
+      const maxPerFace = 25000;
+      let total = 0;
+      let vMin = Infinity;
+      let vMax = -Infinity;
+
+      for (const t of targets) {
+        if (total >= maxTotalSamples) break;
+        const poly = (t.kind === 'import') ? coGetImportFacePointsWorld(t.no) : coGetPlannedFacePointsWorld(t.faceIndex);
+        if (!poly || poly.length < 3) continue;
+        const bbox = coGetBBoxFromPoints(poly);
+        if (!bbox) continue;
+
+        const x0 = Math.floor(Number(bbox.minX) / stepM) * stepM;
+        const x1 = Math.ceil(Number(bbox.maxX) / stepM) * stepM;
+        const y0 = Math.floor(Number(bbox.minY) / stepM) * stepM;
+        const y1 = Math.ceil(Number(bbox.maxY) / stepM) * stepM;
+
+        let faceSamples = 0;
+        for (let y = y0; y <= y1; y += stepM) {
+          for (let x = x0; x <= x1; x += stepM) {
+            if (total >= maxTotalSamples || faceSamples >= maxPerFace) break;
+            if (!polygonContainsPoint(poly, { x, y })) continue;
+            const v = sampleFieldAtWorldXY(fieldPack, x, y);
+            if (!Number.isFinite(v)) continue;
+            const vv = clamp(v, 0, 1);
+            if (vv < vMin) vMin = vv;
+            if (vv > vMax) vMax = vv;
+            total++;
+            faceSamples++;
+          }
+          if (total >= maxTotalSamples || faceSamples >= maxPerFace) break;
+        }
+      }
+
+      if (!Number.isFinite(vMin) || !Number.isFinite(vMax) || vMax <= vMin) return null;
+      return { min: vMin, max: vMax, total };
+    };
+
     const useUnified = Boolean(coControlEnabled && coScalePack && coOdiUnionResult);
     const basePts = useUnified
       ? (coOdiUnionResult?.fullPoints?.length ? coOdiUnionResult.fullPoints : (coOdiUnionResult?.points ?? []))
@@ -11557,9 +12511,17 @@ const App = () => {
     // 可视化口径：插值场按“场自身 min/max”再次归一化到 0~1，使色标/热力图覆盖完整区间
     // 注意：这会改变“场值”的绝对语义（从样本归一化 → 场归一化），但更符合“最大值要看到 1”的展示诉求。
     // 修正：动态推演时（存在 odiScaleReference）必须禁止场再次归一化，否则会导致峰值颜色随面积缩小而漂移。
-    if (odiScaleReference) return pack;
+    // 但协同调控（ODI* 统一标尺）主图希望按“工作面范围”拉伸到 0~1，因此不能被 odiScaleReference 误伤。
+    if (odiScaleReference && !(useUnified && mainViewMode === 'cocontrol')) return pack;
+
+    // 协同调控主图：按“工作面采样范围”归一化（与 ODI 分析口径一致）
+    if (useUnified && mainViewMode === 'cocontrol') {
+      const range = computeWorkfacesValueRange01(pack, coOdiAnalysisGridStepM);
+      if (range) return renormField01ByRange(pack, range.min, range.max);
+    }
+
     return renormField01(pack);
-  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, odiScaleReference]);
+  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, odiScaleReference, mainViewMode, workfaceCount, plannedWorkfaceLoopsWorld, generatedPoints, coOdiAnalysisGridStepM]);
 
   // disturbance 模式：只要已有 efficiency 结果，就应确保派生 disturbance pack。
   // 兜底场景：compute 回包时用户切走了模式/视图，导致 handleComputeResult 内 wantDisturbance=false。
@@ -13870,7 +14832,7 @@ const App = () => {
     };
   }
 
-  const sampleFieldAtWorldXY = (fieldPack, worldX, worldY) => {
+  function sampleFieldAtWorldXY(fieldPack, worldX, worldY) {
     if (!fieldPack?.field || !fieldPack.gridW || !fieldPack.gridH) return null;
     const b = fieldPack?.bounds;
     if (!b || !Number.isFinite(b.minX) || !Number.isFinite(b.maxX) || !Number.isFinite(b.minY) || !Number.isFinite(b.maxY)) return null;
@@ -13906,7 +14868,7 @@ const App = () => {
     const v1 = v01 * (1 - tx) + v11 * tx;
     const v = v0 * (1 - ty) + v1 * ty;
     return Number.isFinite(v) ? v : null;
-  };
+  }
 
   const contourData = useMemo(() => {
     return {
@@ -13928,19 +14890,19 @@ const App = () => {
     // - Mi：插值提取目标煤层厚度（煤厚）
     if (!(drillholeData?.length >= 3) || Object.keys(drillholeLayersById ?? {}).length === 0) {
       window.alert('请先导入“钻孔坐标数据”和“钻孔分层数据”。');
-      return;
+      return null;
     }
     if (!(boundaryData?.length >= 1)) {
       window.alert('请先导入“采区边界坐标”。');
-      return;
+      return null;
     }
     if (!(boreholeParamSamples?.Ti?.length >= 3) || !(boreholeParamSamples?.Di?.length >= 3) || !(boreholeParamSamples?.Ei?.length >= 3)) {
       window.alert('地质插值提取需要足够的钻孔样本（Ti/Di/Ei 至少 3 个有效点）。');
-      return;
+      return null;
     }
     if (!(boreholeParamSamples?.CoalThk?.length >= 3)) {
       window.alert('地质插值提取需要“目标煤层厚度（煤厚）”样本：请先确认已选择目标煤层且钻孔分层中含该煤层。');
-      return;
+      return null;
     }
 
     const ts = new Date();
@@ -14018,6 +14980,8 @@ const App = () => {
     setCoOdiUnionResult(null);
     setCoScaleDirty(true);
     setOdiResult(null);
+
+    return next;
   };
 
   const handleExtractHighPrecisionParams = () => {
@@ -14586,6 +15550,7 @@ const App = () => {
     const pack = {
       computedAt: stamp,
       scaleKey,
+      scaleMode: 'quantile',
       qLo,
       qHi,
       qLowValue,
@@ -14609,8 +15574,29 @@ const App = () => {
   };
 
   useEffect(() => {
-    // 只要标尺相关输入发生变化，就标记为 dirty（不强制立刻清空，避免用户需要手动对比）
-    setCoScaleDirty(true);
+    // 标尺 dirty 判定：当前输入对应的“期望标尺 key”与已计算 pack 是否一致
+    const buildGlobalMinMaxKey = () => {
+      const includeGeoOnly = true;
+      const qLo = 0;
+      const qHi = 1;
+      const geoAt = String(paramExtractionGeoResult?.doneAt ?? '');
+      const fullAt = String(paramExtractionFullResult?.doneAt ?? '');
+      return [
+        `tab=${String(activeTab ?? '')}`,
+        `coal=${String(selectedCoal ?? '')}`,
+        `geoAt=${geoAt}`,
+        `fullAt=${fullAt}`,
+        `q=${qLo}-${qHi}`,
+        'minmax=1',
+        `incGeo=${includeGeoOnly ? 1 : 0}`,
+        'wd=0.45;wo=0.30;wf=0.25',
+      ].join('|');
+    };
+
+    const pack = coScalePack;
+    const expectedKey = (pack?.scaleMode === 'minmax') ? buildGlobalMinMaxKey() : buildCoScaleKey();
+    const dirty = !pack || String(pack?.scaleKey ?? '') !== String(expectedKey ?? '');
+    setCoScaleDirty(dirty);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeTab,
@@ -14623,6 +15609,8 @@ const App = () => {
     coScaleConfig?.qLo,
     coScaleConfig?.qHi,
     coScaleConfig?.includeGeoOnly,
+    coScalePack?.scaleKey,
+    coScalePack?.scaleMode,
   ]);
 
   const normalizeCoords = (points, boundsPoints = points) => {
@@ -18201,7 +19189,11 @@ const App = () => {
           </div>
         </div>
 
-        <div ref={mainCenterScrollRef} className="flex-1 flex flex-col p-6 space-y-6 overflow-y-auto">
+        <div
+          ref={mainCenterScrollRef}
+          className="flex-1 flex flex-col p-6 space-y-6 overflow-y-scroll"
+          style={{ scrollbarGutter: 'stable' }}
+        >
           {mainViewMode === 'geology' ? (
             <>
               <div className="flex items-center justify-between">
@@ -18349,9 +19341,8 @@ const App = () => {
                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-sm">
                     {mainViewMode === 'planning'
                       ? '采区规划图'
-                      : (mainViewMode === 'cocontrol' ? '协同调控（ODI* 统一标尺）' : '覆岩扰动 (ODI) 分布图')}
+                      : (mainViewMode === 'cocontrol' ? '协同调控' : '覆岩扰动 (ODI) 分布图')}
                  </h3>
-                 {showMainMap && null}
                </div>
                <div className="flex gap-2 items-center">
                  {showMainMap && (
@@ -20916,6 +21907,693 @@ const App = () => {
           </section>
             </>
           )}
+
+          {mainViewMode === 'cocontrol' && (
+            <section
+              ref={coAnalysisSectionRef}
+              className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${coAnalysisCollapsed ? 'h-14 overflow-hidden' : 'h-auto'}`}
+            >
+              <div
+                className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50"
+                onClick={() => setCoAnalysisCollapsedPersist((v) => !v)}
+              >
+                <h3 className="font-bold text-slate-700 flex items-center gap-2 text-base">
+                  <BarChart3 size={16} className="text-indigo-600" /> ODI 分析
+                </h3>
+                <div className="flex items-center gap-3">
+                  {!coAnalysisCollapsed && (
+                    <div className="hidden lg:flex flex-wrap items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        网格步长
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={coOdiAnalysisGridStepM}
+                          onChange={(e) => setCoOdiAnalysisGridStepM(Number(e.target.value))}
+                        />
+                        m
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        阈值
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t1}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t1: Number(e.target.value) }))}
+                        />
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t2}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t2: Number(e.target.value) }))}
+                        />
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t3}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t3: Number(e.target.value) }))}
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        排序
+                        <select
+                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          value={coOdiAnalysisSortKey}
+                          onChange={(e) => setCoOdiAnalysisSortKey(e.target.value)}
+                        >
+                          <option value="p90">P90</option>
+                          <option value="p95">P95</option>
+                          <option value="mean">Mean</option>
+                          <option value="exceedT2">≥T2</option>
+                          <option value="exceedT3">≥T3</option>
+                        </select>
+                        <button
+                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-100"
+                          type="button"
+                          onClick={() => setCoOdiAnalysisSortDesc((v) => !v)}
+                        >
+                          {coOdiAnalysisSortDesc ? '降序' : '升序'}
+                        </button>
+                      </div>
+
+                      <button
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border ${coOdiAnalysisBusy ? 'bg-slate-200 text-slate-500 border-slate-200' : 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700'}`}
+                        type="button"
+                        disabled={coOdiAnalysisBusy}
+                        onClick={() => handleCocontrolOdiAnalysis({ force: false })}
+                      >
+                        {coOdiAnalysisBusy ? '计算中…' : '刷新分析'}
+                      </button>
+
+                      <button
+                        className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
+                        type="button"
+                        onClick={() => { setCoOdiAnalysisDebugOpen(true); setCoOdiAnalysisDebugCopyStatus(''); }}
+                      >
+                        计算过程
+                      </button>
+                    </div>
+                  )}
+                  {!coAnalysisCollapsed && (
+                    <div className="text-[10px] text-slate-400 font-mono" onClick={(e) => e.stopPropagation()}>
+                      {coOdiAnalysisResult?.ok ? '已生成' : '未生成'}
+                    </div>
+                  )}
+                  <button
+                    className="p-1 hover:bg-slate-200 rounded transition-colors"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCoAnalysisCollapsedPersist((v) => !v);
+                    }}
+                  >
+                    {!coAnalysisCollapsed ? <ChevronDown size={16} className="text-slate-500" /> : <ChevronUp size={16} className="text-slate-500" />}
+                  </button>
+                </div>
+              </div>
+
+              {!coAnalysisCollapsed && (
+                <div className="p-4">
+                  <div className="lg:hidden mb-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        网格步长
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={coOdiAnalysisGridStepM}
+                          onChange={(e) => setCoOdiAnalysisGridStepM(Number(e.target.value))}
+                        />
+                        m
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        阈值
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t1}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t1: Number(e.target.value) }))}
+                        />
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t2}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t2: Number(e.target.value) }))}
+                        />
+                        <input
+                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          value={coOdiAnalysisThresholds.t3}
+                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t3: Number(e.target.value) }))}
+                        />
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        排序
+                        <select
+                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                          value={coOdiAnalysisSortKey}
+                          onChange={(e) => setCoOdiAnalysisSortKey(e.target.value)}
+                        >
+                          <option value="p90">P90</option>
+                          <option value="p95">P95</option>
+                          <option value="mean">Mean</option>
+                          <option value="exceedT2">≥T2</option>
+                          <option value="exceedT3">≥T3</option>
+                        </select>
+                        <button
+                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-100"
+                          type="button"
+                          onClick={() => setCoOdiAnalysisSortDesc((v) => !v)}
+                        >
+                          {coOdiAnalysisSortDesc ? '降序' : '升序'}
+                        </button>
+                      </div>
+                      <button
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border ${coOdiAnalysisBusy ? 'bg-slate-200 text-slate-500 border-slate-200' : 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700'}`}
+                        type="button"
+                        disabled={coOdiAnalysisBusy}
+                        onClick={() => handleCocontrolOdiAnalysis({ force: false })}
+                      >
+                        {coOdiAnalysisBusy ? '计算中…' : '刷新分析'}
+                      </button>
+                      <button
+                        className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
+                        type="button"
+                        onClick={() => { setCoOdiAnalysisDebugOpen(true); setCoOdiAnalysisDebugCopyStatus(''); }}
+                      >
+                        计算过程
+                      </button>
+                    </div>
+                  </div>
+
+                  {coOdiAnalysisDebugOpen && (
+                      <div
+                        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4"
+                        onClick={() => { setCoOdiAnalysisDebugOpen(false); setCoOdiAnalysisDebugCopyStatus(''); }}
+                      >
+                        <div
+                          className="w-full max-w-4xl rounded-xl bg-white shadow-xl border border-slate-200"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+                            <div>
+                              <div className="text-[13px] font-bold text-slate-800">ODI 分析 · 计算过程（调试信息）</div>
+                              <div className="text-[11px] text-slate-500 mt-0.5">用于排查“未检测到工作面/采样为空/标尺缺失”等问题</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {coOdiAnalysisDebugCopyStatus && (
+                                <div className="text-[11px] text-slate-500">{coOdiAnalysisDebugCopyStatus}</div>
+                              )}
+                              <button
+                                className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
+                                type="button"
+                                onClick={async () => {
+                                  const txt = coBuildOdiAnalysisDebugText();
+                                  const ok = await copyTextToClipboard(txt);
+                                  setCoOdiAnalysisDebugCopyStatus(ok ? '已复制' : '复制失败（浏览器限制）');
+                                }}
+                              >
+                                一键复制
+                              </button>
+                              <button
+                                className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
+                                type="button"
+                                onClick={() => { setCoOdiAnalysisDebugOpen(false); setCoOdiAnalysisDebugCopyStatus(''); }}
+                              >
+                                关闭
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="px-4 py-3">
+                            <pre className="w-full max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-[11px] leading-4 font-mono whitespace-pre-wrap">
+                              {coBuildOdiAnalysisDebugText()}
+                            </pre>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {coOdiAnalysisLastError && (
+                      <div className="mt-3 text-[11px] text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                        {coOdiAnalysisLastError}
+                      </div>
+                    )}
+
+                  {!coOdiAnalysisResult?.ok ? (
+                      <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-[11px] text-slate-500">
+                        暂无分析数据：请点击右侧“ODI分析”或此处“刷新分析”。
+                      </div>
+                    ) : (
+                      <>
+                        {(() => {
+                          const facesRaw = Array.isArray(coOdiAnalysisResult?.faces) ? coOdiAnalysisResult.faces : [];
+                          const faces = [...facesRaw];
+                          const pick = (f) => {
+                            const s = f?.stats ?? {};
+                            if (coOdiAnalysisSortKey === 'p95') return Number(s?.p95);
+                            if (coOdiAnalysisSortKey === 'mean') return Number(s?.mean);
+                            if (coOdiAnalysisSortKey === 'exceedT2') return Number(s?.exceedT2);
+                            if (coOdiAnalysisSortKey === 'exceedT3') return Number(s?.exceedT3);
+                            return Number(s?.p90);
+                          };
+                          faces.sort((a, b) => {
+                            const va = pick(a);
+                            const vb = pick(b);
+                            const aa = Number.isFinite(va) ? va : -Infinity;
+                            const bb = Number.isFinite(vb) ? vb : -Infinity;
+                            const d = aa - bb;
+                            return coOdiAnalysisSortDesc ? (d < 0 ? 1 : (d > 0 ? -1 : 0)) : (d < 0 ? -1 : (d > 0 ? 1 : 0));
+                          });
+
+                          const checkedKeys = Array.isArray(coOdiAnalysisCheckedKeys) ? coOdiAnalysisCheckedKeys : [];
+                          const effectiveSelectedKey = String(checkedKeys[0] || coOdiAnalysisSelectedKey || faces[0]?.key || '');
+                          const selected = faces.find((f) => String(f?.key) === effectiveSelectedKey) || faces[0] || null;
+
+                          return (
+                            <div className="mt-0 space-y-4">
+                              {/* 方案 B：先排行表（整行），再两图并排 */}
+                              <div className="rounded-lg border border-slate-200 bg-white p-4">
+                                <div className="flex items-center justify-between">
+                                  <div className="text-[11px] font-bold text-slate-700">工作面排行表</div>
+                                  <div className="text-[10px] text-slate-400">点击行查看详情</div>
+                                </div>
+
+                                <div className="mt-2 overflow-x-auto">
+                                  <table className="w-full table-auto text-[11px] whitespace-nowrap">
+                                    <thead>
+                                      <tr className="text-slate-500">
+                                        <th className="text-center py-1 px-2 w-16">方案选择</th>
+                                        <th className="text-center py-1 px-2">工作面编号</th>
+                                        <th className="text-center py-1 px-2">来源</th>
+                                        <th className="text-center py-1 px-2">最大值</th>
+                                        <th className="text-center py-1 px-2">P90</th>
+                                        <th className="text-center py-1 px-2">P95</th>
+                                        <th className="text-center py-1 px-2">平均值</th>
+                                        <th className="text-center py-1 px-2">Top10%</th>
+                                        <th className="text-center py-1 px-2">≥T1</th>
+                                        <th className="text-center py-1 px-2">≥T2</th>
+                                        <th className="text-center py-1 px-2">≥T3</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {faces.map((f) => {
+                                        const s = f?.stats ?? {};
+                                        const isSel = String(f?.key) === String(selected?.key);
+                                        const sourceLabel = (String(f?.kind) === 'import') ? '导入' : '规划';
+                                        const faceNo = (String(f?.kind) === 'import') ? f?.no : f?.faceIndex;
+                                        const rowKey = String(f?.key);
+                                        const isChecked = checkedKeys.includes(rowKey);
+                                        return (
+                                          <tr
+                                            key={String(f?.key)}
+                                            className={`border-t border-slate-100 cursor-pointer ${isSel ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
+                                            onClick={() => {
+                                              setCoOdiAnalysisSelectedKey(rowKey);
+                                              setCoOdiAnalysisCheckedKeys([rowKey]);
+                                            }}
+                                          >
+                                            <td className="py-1 px-2 text-center">
+                                              <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onClick={(e) => e.stopPropagation()}
+                                                onChange={(e) => {
+                                                  const checked = Boolean(e.target.checked);
+                                                  setCoOdiAnalysisCheckedKeys((prev) => {
+                                                    const arr = Array.isArray(prev) ? prev : [];
+                                                    if (checked) return [rowKey];
+                                                    return arr.filter((k) => k !== rowKey);
+                                                  });
+                                                  if (checked) setCoOdiAnalysisSelectedKey(rowKey);
+                                                }}
+                                              />
+                                            </td>
+                                            <td className="py-1 px-2 text-slate-700 font-bold text-center">
+                                              No.{Number.isFinite(Number(faceNo)) ? Number(faceNo) : '--'}
+                                            </td>
+                                            <td className="py-1 px-2 text-slate-600 text-center">{sourceLabel}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmt01(s?.max, 3)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmt01(s?.p90, 3)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmt01(s?.p95, 3)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmt01(s?.mean, 3)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmt01(s?.meanTop10, 3)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmtPct(s?.exceedT1, 1)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmtPct(s?.exceedT2, 1)}</td>
+                                            <td className="py-1 px-2 text-center font-mono text-slate-600">{coAnalysisFmtPct(s?.exceedT3, 1)}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+
+                              <div className="rounded-lg border border-slate-200 bg-white p-4">
+                                <div className="flex items-center justify-between">
+                                  <div className="text-[11px] font-bold text-slate-700">{selected?.label || '工作面详情'}</div>
+                                  <div className="flex items-center gap-2">
+                                    {coOdiAnalysisExportCopyStatus ? (
+                                      <div className="text-[10px] text-emerald-600">{coOdiAnalysisExportCopyStatus}</div>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="text-[10px] px-2 py-1 rounded border border-slate-200 bg-white text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                                      onClick={() => {
+                                        setCoOdiAnalysisExportCopyStatus('');
+                                        setCoOdiAnalysisExportOpen(true);
+                                      }}
+                                    >
+                                      导出
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {selected ? (
+                                  <>
+                                    <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:justify-center lg:items-end">
+                                      <div className="mx-auto lg:mx-0 w-full max-w-[560px]">
+                                        <div className="text-[11px] text-slate-600 font-bold text-center"></div>
+                                        <div className="mt-1 h-64">
+                                          <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={selected?.hist?.data ?? []}>
+                                              <CartesianGrid strokeDasharray="3 3" />
+                                              <XAxis
+                                                dataKey="lo"
+                                                type="number"
+                                                domain={[0, 1]}
+                                                ticks={[0, 0.2, 0.4, 0.6, 0.8, 1]}
+                                                tick={{ fontSize: 10 }}
+                                                tickFormatter={(v) => Number(v).toFixed(1)}
+                                              />
+                                              <YAxis
+                                                domain={[0, 'auto']}
+                                                tick={{ fontSize: 10 }}
+                                                label={{
+                                                  value: 'ODI',
+                                                  angle: -90,
+                                                  position: 'insideLeft',
+                                                  style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' },
+                                                }}
+                                              />
+                                              <Tooltip
+                                                formatter={(value, name) => {
+                                                  if (name === 'ratio') return [coAnalysisFmtPct(value, 2), '比例'];
+                                                  if (name === 'count') return [Number(value) || 0, '计数'];
+                                                  return [value, name];
+                                                }}
+                                              />
+                                              <Bar dataKey="ratio" fill="#93c5fd" name="ratio" radius={[4, 4, 0, 0]} barSize={10} />
+                                            </ComposedChart>
+                                          </ResponsiveContainer>
+                                        </div>
+                                        <div className="mt-1 text-[12px] text-slate-600 font-medium text-center">工作面ODI分布直方图</div>
+                                      </div>
+
+                                      <div className="mx-auto lg:mx-0 w-full max-w-[560px]">
+                                        <div className="relative flex items-center justify-end gap-2">
+                                          <div className="flex flex-wrap items-center justify-end gap-3 text-[10px] text-slate-500">
+                                            <div className="flex items-center gap-1">
+                                              <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#ef4444' }} />
+                                              <span>P90</span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                              <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#f59e0b' }} />
+                                              <span>P95</span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
+                                              <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#3b82f6' }} />
+                                              <span>平均值</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="mt-1 h-64">
+                                          <ResponsiveContainer width="100%" height="100%">
+                                            <ComposedChart data={selected?.curve ?? []}>
+                                              <CartesianGrid strokeDasharray="3 3" />
+                                              <XAxis
+                                                dataKey="pct"
+                                                type="number"
+                                                domain={[0, 100]}
+                                                ticks={Array.from({ length: 11 }, (_, i) => i * 10)}
+                                                interval={0}
+                                                allowDecimals={false}
+                                                tick={{ fontSize: 10 }}
+                                                tickFormatter={(v) => `${Number(v)}%`}
+                                              />
+                                              <YAxis
+                                                domain={[0, 1]}
+                                                tick={{ fontSize: 10 }}
+                                                label={{
+                                                  value: 'ODI',
+                                                  angle: -90,
+                                                  position: 'insideLeft',
+                                                  style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' },
+                                                }}
+                                              />
+                                              <Tooltip
+                                                formatter={(value, name) => {
+                                                  if (name === 'p90' || name === 'p95' || name === 'mean') return [coAnalysisFmt01(value, 3), name];
+                                                  if (name === 'exceedT2') return [coAnalysisFmtPct(value, 1), '≥T2'];
+                                                  if (name === 'exceedT3') return [coAnalysisFmtPct(value, 1), '≥T3'];
+                                                  if (name === 'n') return [Number(value) || 0, 'N'];
+                                                  return [value, name];
+                                                }}
+                                              />
+                                              <Line type="monotone" dataKey="p90" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} />
+                                              <Line type="monotone" dataKey="p95" stroke="#f59e0b" strokeWidth={2} dot={{ r: 2 }} />
+                                              <Line type="monotone" dataKey="mean" stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />
+                                            </ComposedChart>
+                                          </ResponsiveContainer>
+                                        </div>
+                                        <div className="mt-1 text-[12px] text-slate-600 font-medium text-center">工作面推进ODI动态分布图</div>
+                                      </div>
+                                    </div>
+
+                                    {coOdiAnalysisExportOpen ? (
+                                      (() => {
+                                        const stamp = (() => {
+                                          try {
+                                            const d = new Date();
+                                            const pad2 = (n) => String(n).padStart(2, '0');
+                                            return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+                                          } catch {
+                                            return 'export';
+                                          }
+                                        })();
+
+                                        const opts = coOdiAnalysisExportOptions || {};
+                                        const csvCell = (v) => {
+                                          const s = String(v ?? '');
+                                          if (/[\r\n",]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+                                          return s;
+                                        };
+
+                                        const faceKey = String(selected?.key ?? '');
+                                        const faceLabel = String(selected?.label ?? '');
+
+                                        const histogramCsv = (() => {
+                                          if (!opts.includeSelectedHistogram) return '';
+                                          const rows = [];
+                                          rows.push(['faceKey', 'faceLabel', 'lo', 'hi', 'count', 'ratio'].map(csvCell).join(','));
+                                          const data = selected?.hist?.data ?? [];
+                                          for (const d of data) {
+                                            rows.push([
+                                              faceKey,
+                                              faceLabel,
+                                              Number.isFinite(Number(d?.lo)) ? Number(d.lo) : '',
+                                              Number.isFinite(Number(d?.hi)) ? Number(d.hi) : '',
+                                              Number.isFinite(Number(d?.count)) ? Number(d.count) : 0,
+                                              Number.isFinite(Number(d?.ratio)) ? Number(d.ratio) : 0,
+                                            ].map(csvCell).join(','));
+                                          }
+                                          return `\uFEFF${rows.join('\n')}\n`;
+                                        })();
+
+                                        const curveCsv = (() => {
+                                          if (!opts.includeSelectedCurve) return '';
+                                          const rows = [];
+                                          rows.push(['faceKey', 'faceLabel', 'pct', 'p90', 'p95', 'mean', 'exceedT2', 'exceedT3', 'n'].map(csvCell).join(','));
+                                          const data = selected?.curve ?? [];
+                                          for (const d of data) {
+                                            rows.push([
+                                              faceKey,
+                                              faceLabel,
+                                              Number.isFinite(Number(d?.pct)) ? Number(d.pct) : '',
+                                              Number.isFinite(Number(d?.p90)) ? Number(d.p90) : 0,
+                                              Number.isFinite(Number(d?.p95)) ? Number(d.p95) : 0,
+                                              Number.isFinite(Number(d?.mean)) ? Number(d.mean) : 0,
+                                              Number.isFinite(Number(d?.exceedT2)) ? Number(d.exceedT2) : 0,
+                                              Number.isFinite(Number(d?.exceedT3)) ? Number(d.exceedT3) : 0,
+                                              Number.isFinite(Number(d?.n)) ? Number(d.n) : 0,
+                                            ].map(csvCell).join(','));
+                                          }
+                                          return `\uFEFF${rows.join('\n')}\n`;
+                                        })();
+
+                                        return (
+                                          <div
+                                            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+                                            onClick={() => setCoOdiAnalysisExportOpen(false)}
+                                          >
+                                            <div
+                                              className="w-full max-w-3xl rounded-lg border border-slate-200 bg-white shadow-lg"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-3">
+                                                <div className="text-sm font-bold text-slate-700">导出 CSV</div>
+                                                <button
+                                                  type="button"
+                                                  className="text-xs px-2 py-1 rounded border border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                                                  onClick={() => setCoOdiAnalysisExportOpen(false)}
+                                                >
+                                                  关闭
+                                                </button>
+                                              </div>
+
+                                              <div className="p-4 space-y-3">
+                                                <div className="flex items-center gap-4 text-[12px] text-slate-700">
+                                                  <label className="flex items-center gap-2 select-none">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={Boolean(opts?.includeSelectedHistogram)}
+                                                      onChange={(e) => {
+                                                        const checked = Boolean(e.target.checked);
+                                                        setCoOdiAnalysisExportOptions((prev) => ({ ...(prev || {}), includeSelectedHistogram: checked }));
+                                                      }}
+                                                    />
+                                                    <span>直方图（当前工作面）</span>
+                                                  </label>
+                                                  <label className="flex items-center gap-2 select-none">
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={Boolean(opts?.includeSelectedCurve)}
+                                                      onChange={(e) => {
+                                                        const checked = Boolean(e.target.checked);
+                                                        setCoOdiAnalysisExportOptions((prev) => ({ ...(prev || {}), includeSelectedCurve: checked }));
+                                                      }}
+                                                    />
+                                                    <span>推进曲线（当前工作面）</span>
+                                                  </label>
+                                                </div>
+
+                                                {opts.includeSelectedHistogram ? (
+                                                  <div className="space-y-2">
+                                                    <div className="text-[12px] font-bold text-slate-700">直方图 CSV 预览</div>
+                                                    <textarea
+                                                      className="w-full h-40 rounded border border-slate-200 bg-slate-50 p-2 font-mono text-[11px] text-slate-700"
+                                                      readOnly
+                                                      value={histogramCsv}
+                                                    />
+                                                    <div className="flex items-center justify-end gap-2">
+                                                      <button
+                                                        type="button"
+                                                        className="text-xs px-3 py-1.5 rounded border border-slate-200 bg-white text-slate-600 hover:border-blue-400 hover:text-blue-600"
+                                                        onClick={async () => {
+                                                          const ok = await copyTextToClipboard(histogramCsv);
+                                                          setCoOdiAnalysisExportCopyStatus(ok ? '已复制' : '复制失败');
+                                                          setTimeout(() => setCoOdiAnalysisExportCopyStatus(''), 1200);
+                                                        }}
+                                                      >
+                                                        复制 CSV
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        className="text-xs px-3 py-1.5 rounded border border-slate-200 bg-blue-600 text-white hover:bg-blue-700"
+                                                        onClick={() => {
+                                                          try {
+                                                            downloadTextFile(`工作面ODI分布直方图_${stamp}.csv`, histogramCsv, 'text/csv;charset=utf-8');
+                                                          } catch {
+                                                            // ignore
+                                                          }
+                                                        }}
+                                                      >
+                                                        下载 CSV
+                                                      </button>
+                                                    </div>
+                                                  </div>
+                                                ) : null}
+
+                                                {opts.includeSelectedCurve ? (
+                                                  <div className="space-y-2">
+                                                    <div className="text-[12px] font-bold text-slate-700">推进曲线 CSV 预览</div>
+                                                    <textarea
+                                                      className="w-full h-40 rounded border border-slate-200 bg-slate-50 p-2 font-mono text-[11px] text-slate-700"
+                                                      readOnly
+                                                      value={curveCsv}
+                                                    />
+                                                    <div className="flex items-center justify-end gap-2">
+                                                      <button
+                                                        type="button"
+                                                        className="text-xs px-3 py-1.5 rounded border border-slate-200 bg-white text-slate-600 hover:border-blue-400 hover:text-blue-600"
+                                                        onClick={async () => {
+                                                          const ok = await copyTextToClipboard(curveCsv);
+                                                          setCoOdiAnalysisExportCopyStatus(ok ? '已复制' : '复制失败');
+                                                          setTimeout(() => setCoOdiAnalysisExportCopyStatus(''), 1200);
+                                                        }}
+                                                      >
+                                                        复制 CSV
+                                                      </button>
+                                                      <button
+                                                        type="button"
+                                                        className="text-xs px-3 py-1.5 rounded border border-slate-200 bg-blue-600 text-white hover:bg-blue-700"
+                                                        onClick={() => {
+                                                          try {
+                                                            downloadTextFile(`工作面推进ODI动态分布_${stamp}.csv`, curveCsv, 'text/csv;charset=utf-8');
+                                                          } catch {
+                                                            // ignore
+                                                          }
+                                                        }}
+                                                      >
+                                                        下载 CSV
+                                                      </button>
+                                                    </div>
+                                                  </div>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })()
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <div className="mt-2 text-[11px] text-slate-500">未选中工作面。</div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
+                    )}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </main>
 
@@ -22460,12 +24138,25 @@ const App = () => {
                                 disabled={!dynEnabled}
                                 onClick={() => {
                                   if (!dynEnabled) return;
-                                  handleCocontrolComputeOdiAll();
+                                  handleCocontrolOdiGlobalCompute();
                                 }}
                                 className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
-                                title="按当前调控参数重新提取并计算 ODI（手动兜底）"
+                                title="ODI全局计算：生成全局统一标尺 ODI*（缺少提取结果会提示并可跳转）"
                               >
-                                ODI计算
+                                ODI全局计算
+                              </button>
+
+                              <button
+                                type="button"
+                                disabled={!dynEnabled}
+                                onClick={() => {
+                                  if (!dynEnabled) return;
+                                  handleCocontrolOdiAnalysis();
+                                }}
+                                className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'}`}
+                                title="生成 ODI 分析（ODI* 网格采样：排行 + 分布 + 推进曲线）"
+                              >
+                                ODI分析
                               </button>
                             </div>
                           );
