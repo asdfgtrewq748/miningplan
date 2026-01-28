@@ -50,6 +50,25 @@ function GlobalErrorCatcher({ children }) {
   useEffect(() => {
     const onError = (event) => {
       const err = event?.error || event?.message || event;
+
+      // 过滤：React 18 + HMR/StrictMode 场景下偶发的 DOM 删除竞态。
+      // 该错误通常来自 ReactDOM 的 commitDeletionEffects，显示为：
+      // NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.
+      // 这类错误会被我们全局捕获器误判为“致命”，从而直接把页面切到 fatal UI。
+      // 这里选择忽略它，让应用继续运行（控制台仍可看到错误）。
+      try {
+        const msg = String(err?.message || err || '');
+        const name = String(err?.name || '');
+        const stack = String(err?.stack || '');
+        const isReactRemoveChild = (name === 'NotFoundError' || msg.includes('NotFoundError'))
+          && msg.includes("removeChild")
+          && msg.includes('not a child')
+          && (stack.includes('commitDeletionEffects') || stack.includes('removeChildFromContainer'));
+        if (isReactRemoveChild) return;
+      } catch {
+        // ignore
+      }
+
       setFatal({ kind: 'error', err });
     };
     const onRejection = (event) => {
@@ -83,11 +102,9 @@ function GlobalErrorCatcher({ children }) {
 }
 
 createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <GlobalErrorCatcher>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </GlobalErrorCatcher>
-  </React.StrictMode>
+  <GlobalErrorCatcher>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </GlobalErrorCatcher>
 )

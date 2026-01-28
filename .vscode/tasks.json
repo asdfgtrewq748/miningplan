@@ -63,6 +63,62 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "前端：构建dist（用于局域网访问3001）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\frontend'; npm.cmd run build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "前端：构建dist（用于局域网访问3001）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\frontend'; npm.cmd run build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "前端：构建dist（用于局域网访问3001）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\frontend'; npm.cmd run build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "前端：构建dist（用于局域网访问3001）",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"Set-Location 'G:\\桌面\\miningplan\\mining-plan\\frontend'; npm.cmd run build"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }

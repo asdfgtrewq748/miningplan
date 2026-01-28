@@ -6543,10 +6543,170 @@ const App = () => {
     }
   };
 
+  // 切换方案选卡时自动选中 Top1（2026-01-28）：避免导入/回包后出现“有表但未选中任何方案”。
+  // 注意：这里是“自动选中”，不应标记为 userTouched。
+  const planningAutoSelectTop1PendingModeRef = useRef('');
+  const tryAutoSelectPlanningTop1 = (mode, reason = '') => {
+    const m = String(mode ?? '').trim();
+    if (mainViewMode !== 'planning') return false;
+    if (m !== 'efficiency' && m !== 'disturbance' && m !== 'recovery' && m !== 'weighted') return false;
+
+    // weighted：用综合候选表第一行（signature + source）
+    if (m === 'weighted') {
+      const wr = planningWeightedResult;
+      if (!wr || typeof wr !== 'object' || !wr?.ok) return false;
+      const rows0 = wr?.table?.rows ?? [];
+      const topRow = rows0?.[0] ?? null;
+      const topSig = String(topRow?.signature ?? '').trim();
+      const topSrc = String(topRow?.source ?? '').trim();
+      if (!topSig || !topSrc) return false;
+      try {
+        // 复用现有入口：不标记 userTouched
+        handleSelectWeightedCandidate(topSig, topSrc);
+      } catch {
+        return false;
+      }
+      workerLog('[planning] auto-select top1', { mode: m, sig: topSig, source: topSrc, reason: String(reason || '') });
+      return true;
+    }
+
+    // recovery：从资源回收表第一行选中，并同步缓存 selectedSig（不标记 userTouched）
+    if (m === 'recovery') {
+      const rr = planningRecoveryResult;
+      if (!rr || typeof rr !== 'object' || !rr?.ok) return false;
+      const rows0 = rr?.table?.rows ?? [];
+      const topRowSig = String(rows0?.[0]?.signature ?? '').trim();
+      const fallback = String(rr?.bestSignature ?? rr?.bestKey ?? rr?.selectedCandidateKey ?? '').trim();
+      const cand0 = String(rr?.candidates?.[0]?.signature ?? '').trim();
+      const topSig = topRowSig || fallback || cand0 || '';
+      if (!topSig) return false;
+
+      try {
+        applyRecoveryCandidateBySignature(topSig, rr, { preferPatched: false });
+      } catch {
+        return false;
+      }
+
+      try {
+        const key = String(planningLastComputedCacheKeyRef.current?.recovery || planningRecoveryCacheKey || buildRecoveryCacheKey());
+        if (key) {
+          recoverySelectedSigByKeyRef.current.set(key, topSig);
+          const cached = recoveryCacheRef.current.get(key);
+          if (cached?.result?.ok && cached?.selectedSig !== topSig) {
+            recoveryCacheRef.current.set(key, { ...(cached ?? {}), selectedSig: topSig });
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      workerLog('[planning] auto-select top1', { mode: m, sig: topSig, reason: String(reason || '') });
+      return true;
+    }
+
+    // efficiency / disturbance：复用 planningEfficiencyResult
+    const r = planningEfficiencyResult;
+    if (!r || typeof r !== 'object') return false;
+    if (!r?.ok) return false;
+
+    const pickTopSig = () => {
+      if (m === 'disturbance') {
+        const rows0 = r?.disturbance?.table?.rows ?? [];
+        const topRowSig = String(rows0?.[0]?.signature ?? '').trim();
+        const fallback = String(r?.disturbance?.bestSignature ?? r?.disturbance?.bestKey ?? '').trim();
+        if (topRowSig) return topRowSig;
+        if (fallback) return fallback;
+      }
+      const rows0 = r?.table?.rows ?? [];
+      const topRowSig = String(rows0?.[0]?.signature ?? '').trim();
+      const fallback = String(r?.bestSignature ?? r?.bestKey ?? r?.selectedCandidateKey ?? '').trim();
+      const cand0 = String(r?.candidates?.[0]?.signature ?? '').trim();
+      return topRowSig || fallback || cand0 || '';
+    };
+
+    const topSig = pickTopSig();
+    if (!topSig) return false;
+
+    try {
+      applyEfficiencyCandidateBySignature(topSig, r);
+    } catch {
+      return false;
+    }
+
+    // 同步到缓存的 selectedSig（但不标记 userTouched）
+    try {
+      const key = String(
+        (m === 'disturbance')
+          ? (planningLastComputedCacheKeyRef.current?.disturbance || planningEfficiencyCacheKey || buildDisturbanceCacheKey())
+          : (planningEfficiencyCacheKey || buildEfficiencyCacheKey())
+      );
+      if (key) {
+        efficiencySelectedSigByKeyRef.current.set(key, topSig);
+        const cached = efficiencyCacheRef.current.get(key);
+        if (cached?.result?.ok && cached?.selectedSig !== topSig) {
+          efficiencyCacheRef.current.set(key, { ...(cached ?? {}), selectedSig: topSig });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    workerLog('[planning] auto-select top1', { mode: m, sig: topSig, reason: String(reason || '') });
+    return true;
+  };
+
+  // 1) 点击选卡导致 mode 变化：优先立即选中 Top1；若结果还没就绪则挂起等待。
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    const m = String(planningOptMode ?? '').trim();
+    if (m !== 'efficiency' && m !== 'disturbance' && m !== 'recovery' && m !== 'weighted') return;
+    const ok = tryAutoSelectPlanningTop1(m, 'mode-change');
+    planningAutoSelectTop1PendingModeRef.current = ok ? '' : m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningOptMode, mainViewMode]);
+
+  // 2) 结果晚到（导入/首次计算/缓存回填）：若处于挂起状态则补一次 Top1 选中。
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    const pending = String(planningAutoSelectTop1PendingModeRef.current ?? '').trim();
+    if (!pending) return;
+    const ok = tryAutoSelectPlanningTop1(pending, 'result-ready');
+    if (ok) planningAutoSelectTop1PendingModeRef.current = '';
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningEfficiencyResult, planningRecoveryResult, planningWeightedResult, mainViewMode]);
+
   const switchMainViewModeWithRightPanel = (mode) => {
+    // 需求：从协同调控跳转回智能规划时，自动关闭“评价点”显示，避免点云遮挡。
+    try {
+      if (mainViewMode === 'cocontrol' && mode === 'planning') {
+        setShowLayerEvalPoints(false);
+      }
+      // 需求：协同调控板块默认应显示评价点。
+      if (mode === 'cocontrol') {
+        setShowLayerEvalPoints(true);
+      }
+    } catch {
+      // ignore
+    }
+
+    // 需求：从协同调控回到智能规划时，不要把“协同调控注入的规划面”带回规划视图显示。
+    if (mode === 'planning' && cocontrolInjectedPlannedWorkfacesRef.current && cocontrolPlannedWorkfacesBackupRef.current) {
+      try {
+        const bak = cocontrolPlannedWorkfacesBackupRef.current;
+        setPlannedWorkfaceLoopsWorld(cloneJson(bak?.loops ?? []));
+        setPlannedWorkfaceUnionLoopsWorld(cloneJson(bak?.unionLoops ?? []));
+        setShowWorkfaceOutline(Boolean(bak?.showWorkfaceOutline));
+      } catch {
+        // ignore
+      }
+      cocontrolInjectedPlannedWorkfacesRef.current = false;
+      cocontrolPlannedWorkfacesBackupRef.current = null;
+    }
+
     setMainViewMode(mode);
     if (mode === 'planning') openRightPanelOnly('planning');
     if (mode === 'odi') openRightPanelOnly('summary');
+    if (mode === 'geology') openRightPanelOnly('summary');
     if (mode === 'cocontrol') openRightPanelOnly('cocontrol');
   };
 
@@ -6587,6 +6747,10 @@ const App = () => {
   const [plannedWorkfaceLoopsWorld, setPlannedWorkfaceLoopsWorld] = useState([]); // [{ faceIndex, loop: [{x,y}...] }]
   // 智能规划：规划工作面“合并后外轮廓”（世界坐标；用于避免相邻面共享边形成重线）
   const [plannedWorkfaceUnionLoopsWorld, setPlannedWorkfaceUnionLoopsWorld] = useState([]); // [[{x,y}...]]
+  // 协同调控：启动时会注入 plannedWorkfaceLoopsWorld（用于仅显示定位点）。
+  // 为避免“回到智能规划”时显示协同调控工作面，这里做一次规划视图的备份/恢复。
+  const cocontrolInjectedPlannedWorkfacesRef = useRef(false);
+  const cocontrolPlannedWorkfacesBackupRef = useRef(null); // { loops, unionLoops, showWorkfaceOutline }
   // 智能规划：工作面悬停 Tooltip（仅 UI 派生，不触发任何重算；位置固定，避免 mousemove 频繁 setState）
   const [planningWorkfaceHover, setPlanningWorkfaceHover] = useState(null); // { faceIndex:number }
   const planningWorkfaceTooltipRef = useRef(null);
@@ -6726,6 +6890,9 @@ const App = () => {
   // 记录“导入工作面”的初始点位，用于单面还原（按 4 点一组，与 workingFaceData 同序）
   const workingFaceDataOriginalRef = useRef([]);
 
+  // 记录“规划工作面”的初始 loops，用于 planned 单面还原/删除后的编号重排（faceIndex=1..N）
+  const plannedWorkfaceLoopsOriginalRef = useRef([]);
+
   const coSelectedLabel = useMemo(() => {
     if (!coSelectedTarget) return '未选择工作面';
     if (coSelectedTarget.kind === 'import') return `导入面 No.${Number(coSelectedTarget.no)}`;
@@ -6777,6 +6944,14 @@ const App = () => {
     const n = Math.round(Number(s));
     if (!Number.isFinite(n)) return '';
     return String(n);
+  };
+  // 允许小数：用于采高等需要精度的输入（保持用户输入字符串，避免自动 key 与 state 不一致）
+  const sanitizeCoNumStr = (v) => {
+    const s = String(v ?? '').trim();
+    if (s === '') return '';
+    const n = Number(s);
+    if (!Number.isFinite(n)) return '';
+    return s;
   };
   const toCoIntOrNull = (v) => {
     const s = String(v ?? '').trim();
@@ -7647,6 +7822,7 @@ const App = () => {
     setCoPickPopup(null);
     setCoWsPickPopup(null);
     workingFaceDataOriginalRef.current = [];
+    plannedWorkfaceLoopsOriginalRef.current = [];
     try {
       window.localStorage.removeItem(COCONTROL_STORAGE_KEY_V2);
     } catch {
@@ -7662,6 +7838,17 @@ const App = () => {
     if (!(Number.isFinite(n) && Number.isFinite(deletedNo))) return s;
     if (n === deletedNo) return '';
     if (n > deletedNo) return `import:No.${n - 1}`;
+    return s;
+  };
+
+  const coRemapNeighborKeyAfterPlannedDelete = (nk, deletedFaceIndex) => {
+    const s = String(nk ?? '').trim();
+    const m = s.match(/^planned:(\d+)$/);
+    if (!m) return s;
+    const n = Number(m[1]);
+    if (!(Number.isFinite(n) && Number.isFinite(deletedFaceIndex))) return s;
+    if (n === deletedFaceIndex) return '';
+    if (n > deletedFaceIndex) return `planned:${n - 1}`;
     return s;
   };
 
@@ -7682,53 +7869,104 @@ const App = () => {
       window.alert('请先在主图中选择一个工作面。');
       return;
     }
-    if (t.kind !== 'import') {
-      window.alert('“还原工作面”当前仅支持导入工作面。');
-      return;
-    }
-    const no = Math.round(Number(t.no));
-    if (!(Number.isFinite(no) && no >= 1)) return;
-    const base = (no - 1) * 4;
-    const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
-    if (base + 3 >= orig.length) {
-      const cur = Array.isArray(workingFaceData) ? workingFaceData : [];
-      if (base + 3 < cur.length) {
-        const ok = window.confirm('未找到该工作面的“初始导入快照”（可能是该工作面在本功能上线前就已导入/从旧快照恢复）。\n\n是否将“当前工作面坐标”设置为可还原基线？\n（设置后可用“还原工作面”回到当前这一版，但无法回到更早的初始导入版。）');
-        if (ok) {
-          workingFaceDataOriginalRef.current = cur.map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
-          window.alert('已设置当前数据为可还原基线。你可以再次点击“还原工作面”。');
+    if (t.kind === 'import') {
+      const no = Math.round(Number(t.no));
+      if (!(Number.isFinite(no) && no >= 1)) return;
+      const base = (no - 1) * 4;
+      const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+      if (base + 3 >= orig.length) {
+        const cur = Array.isArray(workingFaceData) ? workingFaceData : [];
+        if (base + 3 < cur.length) {
+          const ok = window.confirm('未找到该工作面的“初始导入快照”（可能是该工作面在本功能上线前就已导入/从旧快照恢复）。\n\n是否将“当前工作面坐标”设置为可还原基线？\n（设置后可用“还原工作面”回到当前这一版，但无法回到更早的初始导入版。）');
+          if (ok) {
+            workingFaceDataOriginalRef.current = cur.map((p) => ({ ...p, x: Number(p?.x), y: Number(p?.y) }));
+            window.alert('已设置当前数据为可还原基线。你可以再次点击“还原工作面”。');
+          }
+        } else {
+          window.alert('未找到该工作面的初始导入数据，无法还原。');
         }
-      } else {
-        window.alert('未找到该工作面的初始导入数据，无法还原。');
+        return;
       }
-      return;
-    }
 
-    const origSlice = orig.slice(base, base + 4).map((p) => ({ x: Number(p?.x), y: Number(p?.y) }));
-    if (origSlice.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-      window.alert('初始导入数据存在无效坐标，无法还原。');
-      return;
-    }
+      const origSlice = orig.slice(base, base + 4).map((p) => ({ x: Number(p?.x), y: Number(p?.y) }));
+      if (origSlice.some((p) => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+        window.alert('初始导入数据存在无效坐标，无法还原。');
+        return;
+      }
 
-    setWorkingFaceData((prev) => {
-      const cur = Array.isArray(prev) ? prev : [];
-      if (base + 3 >= cur.length) return cur;
-      return cur.map((p, idx) => {
-        if (idx < base || idx > base + 3) return p;
-        const q = origSlice[idx - base];
-        return { ...p, x: q.x, y: q.y };
+      setWorkingFaceData((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        if (base + 3 >= cur.length) return cur;
+        return cur.map((p, idx) => {
+          if (idx < base || idx > base + 3) return p;
+          const q = origSlice[idx - base];
+          return { ...p, x: q.x, y: q.y };
+        });
       });
-    });
 
-    coInvalidateDerivedAfterWorkfaceChange();
-    // ws 自动回填 effect 只看长度，不看坐标，这里手动触发一次
-    setTimeout(() => {
-      try {
-        coRecomputeWsForTarget(t, { triggerPopup: true });
-      } catch {
-        // ignore
+      // 还原到基线后，幽灵轮廓应清除
+      setCoWorkfaceGhosts((prev) => {
+        const n = { ...(prev ?? {}) };
+        delete n[`import-${no}`];
+        return n;
+      });
+
+      coInvalidateDerivedAfterWorkfaceChange();
+      // ws 自动回填 effect 只看长度，不看坐标，这里手动触发一次
+      setTimeout(() => {
+        try {
+          coRecomputeWsForTarget(t, { triggerPopup: true });
+        } catch {
+          // ignore
+        }
+      }, 0);
+      return;
+    }
+
+    // planned：还原规划面 loops（从“启动协同调控”注入时的基线）
+    if (t.kind === 'planned') {
+      const fi = Math.round(Number(t.faceIndex));
+      if (!(Number.isFinite(fi) && fi >= 1)) return;
+      const orig = Array.isArray(plannedWorkfaceLoopsOriginalRef.current) ? plannedWorkfaceLoopsOriginalRef.current : [];
+      const origHit = orig.find((w) => Math.round(Number(w?.faceIndex)) === fi);
+      if (!origHit?.loop?.length) {
+        const cur = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+        if (cur.length) {
+          const ok = window.confirm('未找到该规划面的“注入基线快照”（可能是从旧快照恢复/或注入前未记录）。\n\n是否将“当前规划面坐标”设置为可还原基线？\n（设置后可用“还原工作面”回到当前这一版。）');
+          if (ok) {
+            plannedWorkfaceLoopsOriginalRef.current = cloneJson(cur);
+            window.alert('已设置当前数据为可还原基线。你可以再次点击“还原工作面”。');
+          }
+        } else {
+          window.alert('当前没有规划面坐标，无法还原。');
+        }
+        return;
       }
-    }, 0);
+
+      setPlannedWorkfaceLoopsWorld((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        const idx = cur.findIndex((w) => Math.round(Number(w?.faceIndex)) === fi);
+        if (idx < 0) return cur;
+        const next = [...cur];
+        next[idx] = { ...cur[idx], faceIndex: fi, loop: cloneJson(origHit.loop) };
+        return next;
+      });
+
+      setCoWorkfaceGhosts((prev) => {
+        const n = { ...(prev ?? {}) };
+        delete n[`planned-${fi}`];
+        return n;
+      });
+
+      coInvalidateDerivedAfterWorkfaceChange();
+      setTimeout(() => {
+        try {
+          coRecomputeWsForTarget(t, { triggerPopup: true });
+        } catch {
+          // ignore
+        }
+      }, 0);
+    }
   };
 
   const handleCoDeleteSelectedWorkface = () => {
@@ -7737,91 +7975,214 @@ const App = () => {
       window.alert('请先在主图中选择一个工作面。');
       return;
     }
-    if (t.kind !== 'import') {
-      window.alert('“删除工作面”当前仅支持导入工作面。');
+    if (t.kind === 'import') {
+      const no = Math.round(Number(t.no));
+      if (!(Number.isFinite(no) && no >= 1)) return;
+      if (!window.confirm(`确认删除导入面 No.${no} 吗？此操作会重新编号后续导入面，并可能影响已设置的协同调控参数与邻面基准。`)) return;
+
+      const base = (no - 1) * 4;
+      setWorkingFaceData((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        if (base + 3 >= cur.length) return cur;
+        const next = [...cur.slice(0, base), ...cur.slice(base + 4)];
+        return next;
+      });
+
+      // 同步删除初始快照中的该面
+      const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
+      if (base + 3 < orig.length) {
+        workingFaceDataOriginalRef.current = [...orig.slice(0, base), ...orig.slice(base + 4)];
+      }
+
+      // 删除并重排导入面的协同调控分表条目（No.k）
+      setCoImportParamsByNo((prev) => {
+        const src = prev ?? {};
+        const entries = Object.entries(src);
+        const out = {};
+        for (const [k, v] of entries) {
+          const m = String(k).match(/^No\.(\d+)$/);
+          if (!m) {
+            out[k] = v;
+            continue;
+          }
+          const n = Number(m[1]);
+          if (!(Number.isFinite(n) && n >= 1)) {
+            out[k] = v;
+            continue;
+          }
+          if (n === no) continue;
+          const nn = n > no ? (n - 1) : n;
+          const nextKey = `No.${nn}`;
+          const cur = makeCoEntry(v);
+          const remapped = {
+            ...cur,
+            layout: {
+              ...cur.layout,
+              wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
+            },
+          };
+          out[nextKey] = remapped;
+        }
+        return out;
+      });
+
+      // 规划面分表里也可能引用 import:No.k 作为邻面基准：需要同步修正
+      setCoPlannedParamsByFaceIndex((prev) => {
+        const src = prev ?? {};
+        const out = {};
+        for (const [k, v] of Object.entries(src)) {
+          const cur = makeCoEntry(v);
+          out[k] = {
+            ...cur,
+            layout: {
+              ...cur.layout,
+              wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
+            },
+          };
+        }
+        return out;
+      });
+
+      // ghost keys：import-*
+      setCoWorkfaceGhosts((prev) => {
+        const src = prev ?? {};
+        const out = {};
+        for (const [k, v] of Object.entries(src)) {
+          const m = String(k).match(/^import-(\d+)$/);
+          if (!m) {
+            out[k] = v;
+            continue;
+          }
+          const n = Number(m[1]);
+          if (!(Number.isFinite(n) && n >= 1)) {
+            out[k] = v;
+            continue;
+          }
+          if (n === no) continue;
+          const nn = n > no ? (n - 1) : n;
+          out[`import-${nn}`] = v;
+        }
+        return out;
+      });
+
+      // 更新选择：删除当前面则清空；删除前面的面则编号 -1
+      setCoSelectedTarget((prevSel) => {
+        if (!prevSel) return prevSel;
+        if (prevSel.kind !== 'import') return prevSel;
+        const n = Math.round(Number(prevSel.no));
+        if (!(Number.isFinite(n) && n >= 1)) return null;
+        if (n === no) return null;
+        if (n > no) return { ...prevSel, no: n - 1 };
+        return prevSel;
+      });
+      setCoPickPopup(null);
+      setCoWsPickPopup(null);
+
+      coInvalidateDerivedAfterWorkfaceChange();
       return;
     }
-    const no = Math.round(Number(t.no));
-    if (!(Number.isFinite(no) && no >= 1)) return;
-    if (!window.confirm(`确认删除导入面 No.${no} 吗？此操作会重新编号后续导入面，并可能影响已设置的协同调控参数与邻面基准。`)) return;
 
-    const base = (no - 1) * 4;
-    setWorkingFaceData((prev) => {
-      const cur = Array.isArray(prev) ? prev : [];
-      if (base + 3 >= cur.length) return cur;
-      const next = [...cur.slice(0, base), ...cur.slice(base + 4)];
-      return next;
-    });
+    // planned：删除规划面（重排 faceIndex / 分表 / 邻面基准 / ghost）
+    if (t.kind === 'planned') {
+      const fi = Math.round(Number(t.faceIndex));
+      if (!(Number.isFinite(fi) && fi >= 1)) return;
+      if (!window.confirm(`确认删除规划面 No.${fi} 吗？此操作会重新编号后续规划面，并可能影响已设置的协同调控参数与邻面基准。`)) return;
 
-    // 同步删除初始快照中的该面
-    const orig = Array.isArray(workingFaceDataOriginalRef.current) ? workingFaceDataOriginalRef.current : [];
-    if (base + 3 < orig.length) {
-      workingFaceDataOriginalRef.current = [...orig.slice(0, base), ...orig.slice(base + 4)];
+      setPlannedWorkfaceLoopsWorld((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        const kept = cur.filter((w) => Math.round(Number(w?.faceIndex)) !== fi);
+        // 重排 faceIndex 为 1..N
+        return kept.map((w, idx) => ({ ...w, faceIndex: idx + 1 }));
+      });
+
+      // 同步删除/重排规划面基线快照
+      try {
+        const orig = Array.isArray(plannedWorkfaceLoopsOriginalRef.current) ? plannedWorkfaceLoopsOriginalRef.current : [];
+        const kept = orig.filter((w) => Math.round(Number(w?.faceIndex)) !== fi);
+        plannedWorkfaceLoopsOriginalRef.current = kept.map((w, idx) => ({ ...w, faceIndex: idx + 1 }));
+      } catch {
+        // ignore
+      }
+
+      // 删除并重排规划面的协同调控分表条目（faceIndex）
+      setCoPlannedParamsByFaceIndex((prev) => {
+        const src = prev ?? {};
+        const out = {};
+        for (const [k, v] of Object.entries(src)) {
+          const n = Number(k);
+          if (!(Number.isFinite(n) && n >= 1)) {
+            out[k] = v;
+            continue;
+          }
+          if (n === fi) continue;
+          const nn = n > fi ? (n - 1) : n;
+          const nextKey = String(nn);
+          const cur = makeCoEntry(v);
+          out[nextKey] = {
+            ...cur,
+            layout: {
+              ...cur.layout,
+              wsBaselineNeighborKey: coRemapNeighborKeyAfterPlannedDelete(cur.layout.wsBaselineNeighborKey, fi),
+            },
+          };
+        }
+        return out;
+      });
+
+      // 导入面分表也可能引用 planned:k 作为邻面基准：需要同步修正
+      setCoImportParamsByNo((prev) => {
+        const src = prev ?? {};
+        const out = {};
+        for (const [k, v] of Object.entries(src)) {
+          const cur = makeCoEntry(v);
+          out[k] = {
+            ...cur,
+            layout: {
+              ...cur.layout,
+              wsBaselineNeighborKey: coRemapNeighborKeyAfterPlannedDelete(cur.layout.wsBaselineNeighborKey, fi),
+            },
+          };
+        }
+        return out;
+      });
+
+      // ghost keys：planned-*
+      setCoWorkfaceGhosts((prev) => {
+        const src = prev ?? {};
+        const out = {};
+        for (const [k, v] of Object.entries(src)) {
+          const m = String(k).match(/^planned-(\d+)$/);
+          if (!m) {
+            out[k] = v;
+            continue;
+          }
+          const n = Number(m[1]);
+          if (!(Number.isFinite(n) && n >= 1)) {
+            out[k] = v;
+            continue;
+          }
+          if (n === fi) continue;
+          const nn = n > fi ? (n - 1) : n;
+          out[`planned-${nn}`] = v;
+        }
+        return out;
+      });
+
+      // 更新选择：删除当前面则清空；删除前面的面则编号 -1
+      setCoSelectedTarget((prevSel) => {
+        if (!prevSel) return prevSel;
+        if (prevSel.kind !== 'planned') return prevSel;
+        const n = Math.round(Number(prevSel.faceIndex));
+        if (!(Number.isFinite(n) && n >= 1)) return null;
+        if (n === fi) return null;
+        if (n > fi) return { ...prevSel, faceIndex: n - 1 };
+        return prevSel;
+      });
+      setCoPickPopup(null);
+      setCoWsPickPopup(null);
+
+      coInvalidateDerivedAfterWorkfaceChange();
     }
-
-    // 删除并重排导入面的协同调控分表条目（No.k）
-    setCoImportParamsByNo((prev) => {
-      const src = prev ?? {};
-      const entries = Object.entries(src);
-      const out = {};
-      for (const [k, v] of entries) {
-        const m = String(k).match(/^No\.(\d+)$/);
-        if (!m) {
-          out[k] = v;
-          continue;
-        }
-        const n = Number(m[1]);
-        if (!(Number.isFinite(n) && n >= 1)) {
-          out[k] = v;
-          continue;
-        }
-        if (n === no) continue;
-        const nn = n > no ? (n - 1) : n;
-        const nextKey = `No.${nn}`;
-        const cur = makeCoEntry(v);
-        const remapped = {
-          ...cur,
-          layout: {
-            ...cur.layout,
-            wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
-          },
-        };
-        out[nextKey] = remapped;
-      }
-      return out;
-    });
-
-    // 规划面分表里也可能引用 import:No.k 作为邻面基准：需要同步修正
-    setCoPlannedParamsByFaceIndex((prev) => {
-      const src = prev ?? {};
-      const out = {};
-      for (const [k, v] of Object.entries(src)) {
-        const cur = makeCoEntry(v);
-        out[k] = {
-          ...cur,
-          layout: {
-            ...cur.layout,
-            wsBaselineNeighborKey: coRemapNeighborKeyAfterImportDelete(cur.layout.wsBaselineNeighborKey, no),
-          },
-        };
-      }
-      return out;
-    });
-
-    // 更新选择：删除当前面则清空；删除前面的面则编号 -1
-    setCoSelectedTarget((prevSel) => {
-      if (!prevSel) return prevSel;
-      if (prevSel.kind !== 'import') return prevSel;
-      const n = Math.round(Number(prevSel.no));
-      if (!(Number.isFinite(n) && n >= 1)) return null;
-      if (n === no) return null;
-      if (n > no) return { ...prevSel, no: n - 1 };
-      return prevSel;
-    });
-    setCoPickPopup(null);
-    setCoWsPickPopup(null);
-
-    coInvalidateDerivedAfterWorkfaceChange();
   };
 
   const coConfirmLayoutForSelected = () => {
@@ -8294,13 +8655,25 @@ const App = () => {
     coUpdateEntry(t, (entry) => ({
       ...entry,
       production: {
-        miningHeightM: Object.prototype.hasOwnProperty.call(patch, 'miningHeightM') ? sanitizeCoIntStr(patch.miningHeightM) : entry.production.miningHeightM,
+        miningHeightM: Object.prototype.hasOwnProperty.call(patch, 'miningHeightM') ? sanitizeCoNumStr(patch.miningHeightM) : entry.production.miningHeightM,
         advanceLengthM: Object.prototype.hasOwnProperty.call(patch, 'advanceLengthM') ? sanitizeCoIntStr(patch.advanceLengthM) : entry.production.advanceLengthM,
         advanceStepM: Object.prototype.hasOwnProperty.call(patch, 'advanceStepM') ? sanitizeCoIntStr(patch.advanceStepM) : entry.production.advanceStepM,
         advanceBaselineEnd: Object.prototype.hasOwnProperty.call(patch, 'advanceBaselineEnd') ? String(patch.advanceBaselineEnd ?? '') : entry.production.advanceBaselineEnd,
         advanceSpeedPerShift: Object.prototype.hasOwnProperty.call(patch, 'advanceSpeedPerShift') ? sanitizeCoIntStr(patch.advanceSpeedPerShift) : entry.production.advanceSpeedPerShift,
       },
     }));
+
+    // 采高变化会影响 Mi=min(煤厚,采高) 等派生参数与 ODI；必须作废缓存，避免显示/计算复用旧值。
+    if (Object.prototype.hasOwnProperty.call(patch, 'miningHeightM')) {
+      setParamExtractionResult(null);
+      setParamExtractionGeoResult(null);
+      setParamExtractionFullResult(null);
+      setOdiResult(null);
+      setCoScalePack(null);
+      setCoOdiUnionResult(null);
+      setCoScaleDirty(true);
+      setOdiScaleReference(null);
+    }
   };
 
   // 协同调控：3C 自动计算开关（默认开启；仅影响自动触发，不影响手动按钮）
@@ -8343,7 +8716,12 @@ const App = () => {
 
     const entry = getCoEntryForTarget(t);
     if (!Boolean(entry?.layoutConfirmed)) return;
-    if (!drillholeData?.length || !workingFaceData?.length) return;
+    const wfPick = Array.isArray(workingFaceDataOverride) ? workingFaceDataOverride : workingFaceData;
+    const hasWf = Array.isArray(wfPick) && wfPick.length;
+    const plannedFallback = (t.kind === 'planned' && Array.isArray(plannedWorkfaceLoopsWorld)) ? plannedWorkfaceLoopsWorld : null;
+    const plannedPick = Array.isArray(plannedWorkfaceLoopsOverride) ? plannedWorkfaceLoopsOverride : plannedFallback;
+    const hasPlannedLoops = Array.isArray(plannedPick) && plannedPick.length;
+    if (!drillholeData?.length || (!hasWf && !hasPlannedLoops)) return;
 
     const stepOverride0 = Number(stepOverrideM);
     const stepM0 = Math.max(1, Math.round((Number.isFinite(stepOverride0) && stepOverride0 > 0) ? stepOverride0 : (Number(entry?.production?.advanceStepM) || 25)));
@@ -8361,7 +8739,7 @@ const App = () => {
       // 先确保有评价点（自动算口径：必要时强制重生成；否则没有就生成，有则复用）
       if (forceRegenPoints || !generatedPoints) {
         try {
-          generatePoints({ silent: true, stepOverrideM: stepM0, workingFaceDataOverride, plannedWorkfaceLoopsOverride });
+          generatePoints({ silent: true, stepOverrideM: stepM0, workingFaceDataOverride, plannedWorkfaceLoopsOverride: plannedPick });
         } catch {
           // ignore
         }
@@ -8887,6 +9265,7 @@ const App = () => {
   // 全局：清空当前场景 / 撤回 / 前进一步（重做）
   const HISTORY_MAX = 30;
   const isRestoringRef = useRef(false);
+  const restoringClearTimerRef = useRef(null);
   const historyPastRef = useRef([]);
   const historyFutureRef = useRef([]);
   const lastSnapshotRef = useRef(null);
@@ -8942,6 +9321,14 @@ const App = () => {
 
   const applyAppSnapshot = (snap) => {
     if (!snap) return;
+    if (restoringClearTimerRef.current) {
+      try {
+        clearTimeout(restoringClearTimerRef.current);
+      } catch {
+        // ignore
+      }
+      restoringClearTimerRef.current = null;
+    }
     isRestoringRef.current = true;
     try {
       const tab = String(snap.activeTab ?? 'surface');
@@ -8987,10 +9374,12 @@ const App = () => {
       applyScenarioParams(nextScenarioParams, { invalidatePlanning: !preservePlanningResults });
       setActiveTab(tab);
     } finally {
-      // 让 React 完成本次恢复后再允许记录
-      setTimeout(() => {
+      // 让 React 先完成本次恢复相关的 render + effect，再允许后续“boundaryLoopWorld 变化 => 清空规划结果”的副作用触发。
+      // 重要：导入工程时边界通常会变化；如果这里过早解除 restoring，下面的 useEffect([boundaryLoopWorld]) 会把刚恢复的规划候选表清空。
+      restoringClearTimerRef.current = setTimeout(() => {
         isRestoringRef.current = false;
-      }, 0);
+        restoringClearTimerRef.current = null;
+      }, 220);
     }
   };
 
@@ -10266,6 +10655,121 @@ const App = () => {
     return { faces, pink, green, red };
   };
 
+  const deriveWorkingFacePointsFromPlannedLoops = (plannedLoops0) => {
+    // 将“规划面 loop（任意多边形）”转换为“4 点一面”的 workingFaceData 结构，
+    // 以便复用 buildWorkfacePointSets / 评价点生成链路。
+    // 策略：
+    // - 若 loop 接近矩形（4 点），直接使用；
+    // - 否则用 PCA 主轴拟合一个“旋转外接矩形”，取 4 角点。
+    const src = Array.isArray(plannedLoops0) ? plannedLoops0 : [];
+    const toXY = (p) => {
+      if (Array.isArray(p) && p.length >= 2) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+      }
+      const x = Number(p?.x ?? p?.nx);
+      const y = Number(p?.y ?? p?.ny);
+      return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+    };
+    const removeClosure = (pts0) => {
+      const pts = Array.isArray(pts0) ? pts0.slice() : [];
+      if (pts.length >= 2) {
+        const a = pts[0];
+        const b = pts[pts.length - 1];
+        if (Math.abs(a.x - b.x) <= 1e-12 && Math.abs(a.y - b.y) <= 1e-12) pts.pop();
+      }
+      return pts;
+    };
+    const pcaRectCorners = (pts0) => {
+      const pts = removeClosure(pts0).filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+      if (pts.length < 3) return null;
+
+      // centroid
+      let cx = 0;
+      let cy = 0;
+      for (const p of pts) {
+        cx += p.x;
+        cy += p.y;
+      }
+      cx /= pts.length;
+      cy /= pts.length;
+
+      // covariance
+      let a = 0;
+      let b = 0;
+      let c = 0;
+      for (const p of pts) {
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        a += dx * dx;
+        b += dx * dy;
+        c += dy * dy;
+      }
+      a /= pts.length;
+      b /= pts.length;
+      c /= pts.length;
+
+      // principal axis angle (2x2 symmetric matrix)
+      let theta = 0;
+      const eps = 1e-12;
+      if (Math.abs(b) > eps || Math.abs(a - c) > eps) {
+        theta = 0.5 * Math.atan2(2 * b, a - c);
+      }
+      const cos = Math.cos(theta);
+      const sin = Math.sin(theta);
+      const rot = (p) => {
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        // rotate by -theta
+        return { x: dx * cos + dy * sin, y: -dx * sin + dy * cos };
+      };
+      const unrot = (p) => ({ x: cx + p.x * cos - p.y * sin, y: cy + p.x * sin + p.y * cos });
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of pts) {
+        const r = rot(p);
+        if (r.x < minX) minX = r.x;
+        if (r.x > maxX) maxX = r.x;
+        if (r.y < minY) minY = r.y;
+        if (r.y > maxY) maxY = r.y;
+      }
+      if (!(Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY))) return null;
+      const cornersR = [
+        { x: minX, y: minY },
+        { x: maxX, y: minY },
+        { x: maxX, y: maxY },
+        { x: minX, y: maxY },
+      ];
+      return cornersR.map(unrot);
+    };
+
+    const out = [];
+    for (let i = 0; i < src.length; i++) {
+      const it0 = src[i];
+      const isPlainLoop = Array.isArray(it0);
+      const loop0 = isPlainLoop ? it0 : (Array.isArray(it0?.loop) ? it0.loop : []);
+      const pts = removeClosure(loop0.map(toXY).filter(Boolean));
+      if (pts.length < 3) continue;
+
+      const corners = (pts.length === 4)
+        ? pts
+        : pcaRectCorners(pts);
+      if (!corners || corners.length !== 4) continue;
+
+      const faceNo = i + 1;
+      for (let k = 0; k < 4; k++) {
+        const p = corners[k];
+        if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
+        out.push({ id: `PLAN-${faceNo}-P${k + 1}`, x: p.x, y: p.y });
+      }
+    }
+    return out;
+  };
+
   const handleWorkingFaceImportClick = () => {
     workingFaceFileInputRef.current?.click();
   };
@@ -10307,8 +10811,12 @@ const App = () => {
   };
 
   const generatePoints = ({ silent = false, stepOverrideM = null, workingFaceDataOverride = null, plannedWorkfaceLoopsOverride = null } = {}) => {
-    // 自动算时传入了最新的 geometry override，优先使用
-    const activeWfData = Array.isArray(workingFaceDataOverride) ? workingFaceDataOverride : workingFaceData;
+    // 自动算时传入了最新的 geometry override，优先使用；
+    // 若没有 workingFaceData，但有规划面 loops，则从 loops 推导出 4 点一面的结构。
+    const activeWfData0 = Array.isArray(workingFaceDataOverride) ? workingFaceDataOverride : workingFaceData;
+    const activeWfData = (Array.isArray(activeWfData0) && activeWfData0.length)
+      ? activeWfData0
+      : (Array.isArray(plannedWorkfaceLoopsOverride) && plannedWorkfaceLoopsOverride.length ? deriveWorkingFacePointsFromPlannedLoops(plannedWorkfaceLoopsOverride) : activeWfData0);
     
     if (!drillholeData?.length) {
       if (!silent) console.warn('生成评价点需要先导入钻孔坐标数据');
@@ -10316,7 +10824,7 @@ const App = () => {
     }
     if (!activeWfData?.length) {
       if (!silent) console.warn('生成评价点需要先导入工作面坐标数据');
-      // 注意：如果是 planning 模式且 override 为空，可能会走到这里；暂不处理 planning 模式自动算（除非手动传入了 override）
+      // 注意：协同调控可能只存在“规划面 loops”，此时应通过 plannedWorkfaceLoopsOverride 走推导；若仍为空则提示用户。
       return null;
     }
 
@@ -10356,6 +10864,12 @@ const App = () => {
   };
 
   const handleGeneratePoints = () => {
+    // 协同调控：若未导入 workingFaceData，但已注入规划面 loops，则允许一键生成评价点。
+    if (!workingFaceData?.length && mainViewMode === 'cocontrol' && Array.isArray(plannedWorkfaceLoopsWorld) && plannedWorkfaceLoopsWorld.length) {
+      const wfOverride = deriveWorkingFacePointsFromPlannedLoops(plannedWorkfaceLoopsWorld);
+      generatePoints({ silent: false, workingFaceDataOverride: wfOverride, plannedWorkfaceLoopsOverride: plannedWorkfaceLoopsWorld });
+      return;
+    }
     generatePoints({ silent: false });
   };
 
@@ -10366,12 +10880,12 @@ const App = () => {
       if (!silent) window.alert('请先导入钻孔坐标/分层数据（用于全参提取与煤厚插值）。');
       return null;
     }
-    if (!workingFaceData?.length) {
-      if (!silent) window.alert('请先导入设计工作面坐标。');
-      return null;
-    }
     if (!generatedPoints) {
       if (!silent) window.alert('请先点击“生成评价点”，再进行“全参提取 + ODI 计算”。');
+      return null;
+    }
+    if (!workingFaceData?.length && !(generatedPoints?.faces?.length > 0)) {
+      if (!silent) window.alert('请先导入设计工作面坐标，或从规划面生成评价点。');
       return null;
     }
 
@@ -10401,6 +10915,29 @@ const App = () => {
   };
 
   const handleCocontrolComputeOdiAll = () => {
+    // 兜底：协同调控里修改几何/步长后经常会把 generatedPoints 作废。
+    // 若当前没有评价点，则先按可用数据源自动生成，再继续全参提取 + ODI。
+    if (!generatedPoints) {
+      try {
+        const entry = getCoEntryForTarget(coSelectedTarget);
+        const step0 = Math.max(1, Math.round(Number(entry?.production?.advanceStepM) || Number(stepLength) || 25));
+
+        if (!workingFaceData?.length && mainViewMode === 'cocontrol' && Array.isArray(plannedWorkfaceLoopsWorld) && plannedWorkfaceLoopsWorld.length) {
+          const wfOverride = deriveWorkingFacePointsFromPlannedLoops(plannedWorkfaceLoopsWorld);
+          generatePoints({
+            silent: true,
+            stepOverrideM: step0,
+            workingFaceDataOverride: wfOverride,
+            plannedWorkfaceLoopsOverride: plannedWorkfaceLoopsWorld,
+          });
+        } else {
+          generatePoints({ silent: true, stepOverrideM: step0 });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     cocontrolComputeOdiAll({ silent: false });
   };
 
@@ -11882,9 +12419,55 @@ const App = () => {
             : (planningEfficiencyResult ? cloneJson(planningEfficiencyResult) : null);
           const recResult = lastR ? (pullRecFromCache(lastR) ?? (planningRecoveryResult ? cloneJson(planningRecoveryResult) : null))
             : (planningRecoveryResult ? cloneJson(planningRecoveryResult) : null);
-          const distResult = lastD ? (pullEffFromCache(lastD) ?? null) : null;
+          const distFromCache = lastD ? (pullEffFromCache(lastD) ?? null) : null;
+
+          // disturbance/weighted：尽量在“保存工程”时派生补齐候选表，避免用户导出后再导入却看不到四方案候选。
+          const distKeyDerived = String(lastD || buildDisturbanceCacheKey() || '');
+          const distResult = (() => {
+            if (distFromCache) return distFromCache;
+            if (!effResult?.ok) return null;
+            try {
+              const p = planningDisturbanceParamsRef.current ?? planningDisturbanceParams ?? {};
+              const pack = buildDisturbanceRankingPackForEfficiencyResult(effResult, odiFieldPack, {
+                sampleStepM: Number(p?.sampleStepM) || 25,
+                maxSamples: Number(p?.maxSamples) || 4500,
+                exceedThreshold: Number(p?.exceedThreshold) || 0.7,
+                wMean: Number(p?.wMean) || 0.50,
+                wP90: Number(p?.wP90) || 0.35,
+                wExceed: Number(p?.wExceed) || 0.15,
+                outerBufferM: Number.isFinite(Number(p?.outerBufferM)) ? Number(p.outerBufferM) : 30,
+              });
+              return { ...(cloneJson(effResult) ?? {}), optMode: 'disturbance', disturbance: pack };
+            } catch {
+              return null;
+            }
+          })();
 
           const weightedKey = String(planningWeightedResult?.cacheKey ?? lastW ?? '');
+          const weightedResult = (() => {
+            if (planningWeightedResult) return cloneJson(planningWeightedResult);
+            try {
+              const p = planningDisturbanceParamsRef.current ?? planningDisturbanceParams ?? {};
+              const w = planningOptWeights ?? { efficiency: 0.34, disturbance: 0.33, recovery: 0.33 };
+              return buildWeightedRankingPack({
+                effResult,
+                recResult,
+                odiPack: odiFieldPack,
+                distParams: {
+                  sampleStepM: Number(p?.sampleStepM) || 25,
+                  maxSamples: Number(p?.maxSamples) || 4500,
+                  exceedThreshold: Number(p?.exceedThreshold) || 0.7,
+                  wMean: Number(p?.wMean) || 0.50,
+                  wP90: Number(p?.wP90) || 0.35,
+                  wExceed: Number(p?.wExceed) || 0.15,
+                  outerBufferM: Number.isFinite(Number(p?.outerBufferM)) ? Number(p.outerBufferM) : 30,
+                },
+                weights: w,
+              });
+            } catch {
+              return null;
+            }
+          })();
 
           return {
             savedAt: new Date().toISOString(),
@@ -11908,12 +12491,12 @@ const App = () => {
             disturbance: {
               // disturbance 复用 efficiency 结果结构（cacheKey 使用 dist|...），并尽量保存带 disturbance pack 的 result。
               result: distResult,
-              cacheKey: String(lastD || ''),
-              selectedSig: String(pullSigFromEffCache(lastD) || planningEfficiencySelectedSig || ''),
+              cacheKey: String(lastD || distKeyDerived || ''),
+              selectedSig: String(pullSigFromEffCache(lastD || distKeyDerived) || distResult?.disturbance?.bestSignature || planningEfficiencySelectedSig || ''),
               showAllCandidates: Boolean(planningEfficiencyShowAllCandidates),
             },
             weighted: {
-              result: planningWeightedResult ? cloneJson(planningWeightedResult) : null,
+              result: weightedResult,
               cacheKey: String(weightedKey || ''),
               selected: cloneJson(planningWeightedSelected),
               showAllCandidates: Boolean(planningWeightedShowAllCandidates),
@@ -12105,15 +12688,26 @@ const App = () => {
           // disturbance：若单独携带，则合并进 efficiency 结果（UI 复用 planningEfficiencyResult.disturbance）。
           if (Object.prototype.hasOwnProperty.call(importedPlanningResults ?? {}, 'disturbance')) {
             try {
-              const distRes = importedPlanningResults?.disturbance?.result ? cloneJson(importedPlanningResults.disturbance.result) : null;
-              if (distRes) {
-                setPlanningEfficiencyResult((prev) => {
-                  const base = (prev && typeof prev === 'object') ? prev : (importedPlanningResults?.efficiency?.result ? cloneJson(importedPlanningResults.efficiency.result) : null);
-                  if (!base || typeof base !== 'object') return base;
-                  // 仅在未携带 disturbance 或为空时合并，避免覆盖更完整的 pack
-                  const hasDist = Boolean(base?.disturbance && typeof base.disturbance === 'object');
-                  return hasDist ? base : { ...(base ?? {}), disturbance: distRes };
-                });
+              const raw = importedPlanningResults?.disturbance?.result ? cloneJson(importedPlanningResults.disturbance.result) : null;
+              if (raw) {
+                // 兼容两种结构：
+                // 1) raw 为“完整 efficiency result（含 raw.disturbance pack）”
+                // 2) raw 直接就是“disturbance pack（含 raw.table.rows）”
+                const pack = (raw && typeof raw === 'object' && raw?.disturbance && typeof raw.disturbance === 'object')
+                  ? raw.disturbance
+                  : raw;
+
+                const looksLikePack = Boolean(pack && typeof pack === 'object' && pack?.table && typeof pack.table === 'object');
+                if (looksLikePack) {
+                  setPlanningEfficiencyResult((prev) => {
+                    const base = (prev && typeof prev === 'object')
+                      ? prev
+                      : (importedPlanningResults?.efficiency?.result ? cloneJson(importedPlanningResults.efficiency.result) : null);
+                    if (!base || typeof base !== 'object') return base;
+                    const hasDist = Boolean(base?.disturbance && typeof base.disturbance === 'object' && base?.disturbance?.table);
+                    return hasDist ? base : { ...(base ?? {}), disturbance: pack };
+                  });
+                }
               }
             } catch {
               // ignore
@@ -12189,7 +12783,14 @@ const App = () => {
             // ignore
           }
 
-          setPlanningEfficiencySelectedSig(String(importedPlanningResults?.efficiency?.selectedSig ?? ''));
+          // efficiency/disturbance 共用 selectedSig：优先按导入时的当前模式恢复
+          {
+            const modeImported = String(importedPlanningResults?.planningOptMode ?? '').trim();
+            const sigEff = String(importedPlanningResults?.efficiency?.selectedSig ?? '').trim();
+            const sigDist = String(importedPlanningResults?.disturbance?.selectedSig ?? '').trim();
+            const sig = (modeImported === 'disturbance') ? (sigDist || sigEff) : (sigEff || sigDist);
+            setPlanningEfficiencySelectedSig(String(sig || ''));
+          }
           setPlanningRecoverySelectedSig(String(importedPlanningResults?.recovery?.selectedSig ?? ''));
           if (importedPlanningResults?.weighted?.selected) setPlanningWeightedSelected(cloneJson(importedPlanningResults.weighted.selected));
 
@@ -14235,6 +14836,40 @@ const App = () => {
       return best;
     };
 
+    // 协同调控：允许直接用“粉色定位点（评价点中的 pink / workface loc points）”进行选中/回填。
+    // 这是为了解决：仅渲染定位点、不显示蓝色面域/轮廓时，用户无法点选工作面的问题。
+    const findHoverPlannedFromLocPoints = () => {
+      const loc = (generatedPoints?.pink ?? [])
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y), faceIndex: Math.round(Number(p?.faceIndex)) }))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.faceIndex) && p.faceIndex >= 1);
+      if (!loc.length) return null;
+
+      const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+      const findLoop = (fi) => {
+        for (const wf of src) {
+          const faceIndex = Math.round(Number(wf?.faceIndex));
+          if (Number.isFinite(faceIndex) && faceIndex === fi) {
+            const loop = (wf?.loop ?? [])
+              .map((pt) => ({ x: Number(pt?.x), y: Number(pt?.y) }))
+              .filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y));
+            return loop.length >= 3 ? loop : null;
+          }
+        }
+        return null;
+      };
+
+      let best = null;
+      for (const p of loc) {
+        const d2v = dist2({ x: p.x, y: p.y }, pW);
+        if (d2v <= tol2 && (!best || d2v < best.d2)) {
+          const loop = findLoop(p.faceIndex);
+          const dims = loop ? computeDimsFromLoop(loop) : null;
+          best = { kind: 'planned', faceIndex: p.faceIndex, point: { x: p.x, y: p.y }, d2: d2v, dims };
+        }
+      }
+      return best;
+    };
+
     const findHoverPlanned = () => {
       const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
       let best = null;
@@ -14256,7 +14891,7 @@ const App = () => {
     };
 
     const hitImport = findHoverImport();
-    const hitPlanned = hitImport ? null : findHoverPlanned();
+    const hitPlanned = hitImport ? null : (findHoverPlannedFromLocPoints() || findHoverPlanned());
     const hit = hitImport || hitPlanned;
 
     const rect = mainMapContainerRef.current?.getBoundingClientRect?.();
@@ -14351,6 +14986,40 @@ const App = () => {
       }
     }
 
+    // 2.1.1) 若仅显示粉色定位点（不显示轮廓/面域），也应可直接点击定位点选中规划面。
+    const pickHitPlannedFromLocPoints = () => {
+      const loc = (generatedPoints?.pink ?? [])
+        .map((p) => ({ x: Number(p?.x), y: Number(p?.y), faceIndex: Math.round(Number(p?.faceIndex)) }))
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.faceIndex) && p.faceIndex >= 1);
+      if (!loc.length) return null;
+
+      const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+      const findLoop = (fi) => {
+        for (const wf of src) {
+          const faceIndex = Math.round(Number(wf?.faceIndex));
+          if (Number.isFinite(faceIndex) && faceIndex === fi) {
+            const loop = (wf?.loop ?? [])
+              .map((pt) => ({ x: Number(pt?.x), y: Number(pt?.y) }))
+              .filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y));
+            return loop.length >= 3 ? loop : null;
+          }
+        }
+        return null;
+      };
+
+      let best = null;
+      for (const p of loc) {
+        const dx = pW.x - p.x;
+        const dy = pW.y - p.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= hitTolWorld * hitTolWorld && (!best || d2 < best.d2)) {
+          const loop = findLoop(p.faceIndex);
+          best = { faceIndex: p.faceIndex, d2, dims: loop ? computeDimsFromLoop(loop) : null };
+        }
+      }
+      return best;
+    };
+
     const pickHitImport = () => {
       const src = Array.isArray(workingFaceData) ? workingFaceData : [];
       const nFaces = Math.floor(src.length / 4);
@@ -14385,7 +15054,8 @@ const App = () => {
     };
 
     const hitImport = pickHitImport();
-    const hitPlanned = pickHitPlanned();
+    const hitPlannedLoc = pickHitPlannedFromLocPoints();
+    const hitPlanned = hitPlannedLoc ? { kind: 'planned', faceIndex: Number(hitPlannedLoc.faceIndex) } : pickHitPlanned();
     if (!hitImport && !hitPlanned) return;
 
     if (hitImport && hitPlanned) {
@@ -14401,7 +15071,18 @@ const App = () => {
       return;
     }
 
-    coApplyPickTarget(hitImport || hitPlanned);
+    const t = hitImport || hitPlanned;
+    coApplyPickTarget(t);
+    if (t?.kind === 'planned' && hitPlannedLoc?.dims) {
+      coUpdateEntry(t, (entry) => ({
+        ...entry,
+        layout: {
+          ...entry.layout,
+          workfaceWidthM: sanitizeCoIntStr(hitPlannedLoc.dims.widthM),
+          advanceLengthM: sanitizeCoIntStr(hitPlannedLoc.dims.advanceLengthM),
+        },
+      }));
+    }
   };
 
   useEffect(() => {
@@ -16049,6 +16730,428 @@ const App = () => {
     }
   };
 
+  const normalizePlannedWorkfaceLoopsForExportOrCocontrol = (srcLoopsWorld) => {
+    const src = Array.isArray(srcLoopsWorld) ? srcLoopsWorld : [];
+
+    // 兼容多种结构：
+    // 1) [{ faceIndex, loop:[{x,y}...] }]
+    // 2) [[{x,y}...], ...]（rectLoops / 旧输出）
+    // 3) 点可能是 {x,y} / {nx,ny} / [x,y]
+    const toXY = (p) => {
+      if (Array.isArray(p) && p.length >= 2) {
+        const x = Number(p[0]);
+        const y = Number(p[1]);
+        return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+      }
+      const x = Number(p?.x ?? p?.nx);
+      const y = Number(p?.y ?? p?.ny);
+      return (Number.isFinite(x) && Number.isFinite(y)) ? { x, y } : null;
+    };
+
+    const cleaned = [];
+    for (let i = 0; i < src.length; i++) {
+      const it0 = src[i];
+      const isPlainLoop = Array.isArray(it0) && it0.length >= 2;
+      const it = isPlainLoop ? { faceIndex: (i + 1), loop: it0 } : (it0 ?? {});
+
+      const rawLoop = Array.isArray(it?.loop) ? it.loop : [];
+      const pts0 = rawLoop.map(toXY).filter(Boolean);
+      if (pts0.length < 3) continue;
+
+      // 去掉闭合重复尾点（避免导出/计数多一行）
+      const pts = (() => {
+        if (pts0.length < 2) return pts0;
+        const f = pts0[0];
+        const l = pts0[pts0.length - 1];
+        const same = (Math.abs(f.x - l.x) <= 1e-9) && (Math.abs(f.y - l.y) <= 1e-9);
+        return same ? pts0.slice(0, -1) : pts0;
+      })();
+      if (pts.length < 3) continue;
+
+      cleaned.push({
+        faceIndex: Number.isFinite(Number(it?.faceIndex)) ? Number(it.faceIndex) : (i + 1),
+        loop: pts,
+        __order: i,
+      });
+    }
+
+    // 排序并重排 faceIndex 为 1..N（满足“同步工作面编号”需求）
+    cleaned.sort((a, b) => {
+      const fa = Number(a?.faceIndex);
+      const fb = Number(b?.faceIndex);
+      const okA = Number.isFinite(fa);
+      const okB = Number.isFinite(fb);
+      if (okA && okB && fa !== fb) return fa - fb;
+      return Number(a?.__order ?? 0) - Number(b?.__order ?? 0);
+    });
+    return cleaned.map((it, idx) => ({ faceIndex: idx + 1, loop: it.loop }));
+  };
+
+  const getCurrentPlannedLoopsForExportOrCocontrol = () => {
+    // 优先导出“设计矩形 rectLoops”（它才是工作面坐标口径）；
+    // 若不存在，再回退到当前展示层 plannedWorkfaceLoopsWorld。
+    try {
+      const pickRectLoopsFromCandidate = (cand) => {
+        const rr = (cand?.render && typeof cand.render === 'object') ? cand.render : null;
+        const rectLoops = Array.isArray(rr?.rectLoops) ? rr.rectLoops : (Array.isArray(cand?.rectLoops) ? cand.rectLoops : null);
+        if (!Array.isArray(rectLoops) || !rectLoops.length) return null;
+        return rectLoops.filter((loop) => Array.isArray(loop) && loop.length >= 3);
+      };
+
+      if (mainViewMode === 'planning' && planningOptMode === 'weighted') {
+        const pack = planningWeightedResult ?? {};
+        const sig = String(planningWeightedSelected?.sig ?? pack?.best?.signature ?? '').trim();
+        const src = String(planningWeightedSelected?.source ?? pack?.best?.source ?? '').trim();
+        const bucket = (src === 'recovery')
+          ? (pack?.recResult ?? planningRecoveryResult)
+          : (src === 'disturbance')
+            ? (pack?.distResult ?? planningEfficiencyResult)
+            : (pack?.effResult ?? planningEfficiencyResult);
+        const list = Array.isArray(bucket?.candidates) ? bucket.candidates : [];
+        const cand = sig ? (list.find((c) => String(c?.signature ?? '').trim() === sig) ?? list[0] ?? null) : (list[0] ?? null);
+        const rect = pickRectLoopsFromCandidate(cand);
+        if (rect && rect.length) return rect;
+      }
+
+      if (mainViewMode === 'planning' && planningOptMode === 'recovery') {
+        const rect = pickRectLoopsFromCandidate(planningRecoverySelectedCandidate);
+        if (rect && rect.length) return rect;
+      } else {
+        const rect = pickRectLoopsFromCandidate(planningEfficiencySelectedCandidate);
+        if (rect && rect.length) return rect;
+      }
+    } catch {
+      // ignore
+    }
+
+    return plannedWorkfaceLoopsWorld;
+  };
+
+  const getCurrentOmegaLoopsWorldForCocontrolClip = () => {
+    try {
+      const toOmegaLoops = (res) => {
+        const r = res ?? null;
+        const a = Array.isArray(r?.omegaRender?.loops) ? r.omegaRender.loops : [];
+        if (a.length) return a;
+        const b = Array.isArray(r?.omegaRender?.innerOmegaLoopWorld) ? [r.omegaRender.innerOmegaLoopWorld] : [];
+        return b;
+      };
+
+      if (mainViewMode === 'planning' && planningOptMode === 'weighted') {
+        const pack = planningWeightedResult ?? {};
+        const sig = String(planningWeightedSelected?.sig ?? pack?.best?.signature ?? '').trim();
+        const src = String(planningWeightedSelected?.source ?? pack?.best?.source ?? '').trim();
+        const bucket = (src === 'recovery')
+          ? (pack?.recResult ?? planningRecoveryResult)
+          : (src === 'disturbance')
+            ? (pack?.distResult ?? planningEfficiencyResult)
+            : (pack?.effResult ?? planningEfficiencyResult);
+        const list = Array.isArray(bucket?.candidates) ? bucket.candidates : [];
+        const cand = sig ? (list.find((c) => String(c?.signature ?? '').trim() === sig) ?? list[0] ?? null) : (list[0] ?? null);
+        const om = toOmegaLoops(cand) || [];
+        if (Array.isArray(om) && om.length) return om;
+        return toOmegaLoops(bucket);
+      }
+
+      if (mainViewMode === 'planning' && planningOptMode === 'recovery') {
+        const om = toOmegaLoops(planningRecoverySelectedCandidate) || [];
+        if (Array.isArray(om) && om.length) return om;
+        return toOmegaLoops(planningRecoveryResult);
+      }
+
+      const om = toOmegaLoops(planningEfficiencySelectedCandidate) || [];
+      if (Array.isArray(om) && om.length) return om;
+      return toOmegaLoops(planningEfficiencyResult);
+    } catch {
+      return [];
+    }
+  };
+
+  const clipRectLoopsToOmegaWorldIfNeeded = (rectLoops, omegaLoopsWorld) => {
+    // 兜底：当后端没有提供 clippedFacesLoops 时，用前端做一次 rectLoops ∩ Ω。
+    // 注意：这里只做协同调控“显示定位点”的几何兜底，不影响候选评分/排序口径。
+    const rect = Array.isArray(rectLoops) ? rectLoops : [];
+    const omega = Array.isArray(omegaLoopsWorld) ? omegaLoopsWorld : [];
+    if (!rect.length || !omega.length) return rect;
+
+    const gf = new GeometryFactory();
+    const toPoly = (loop) => {
+      const pts = (Array.isArray(loop) ? loop : [])
+        .map((p) => {
+          if (Array.isArray(p) && p.length >= 2) return { x: Number(p[0]), y: Number(p[1]) };
+          return { x: Number(p?.x), y: Number(p?.y) };
+        })
+        .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      if (pts.length < 3) return null;
+      const f = pts[0];
+      const l = pts[pts.length - 1];
+      const closed = (f.x === l.x && f.y === l.y) ? pts : [...pts, f];
+      try {
+        const coords = closed.map((p) => new Coordinate(p.x, p.y));
+        const ring = gf.createLinearRing(coords);
+        const poly = gf.createPolygon(ring);
+        if (!poly || poly.isEmpty?.() || !(poly.getArea?.() > 0)) return null;
+        return poly;
+      } catch {
+        return null;
+      }
+    };
+    const fixGeom = (geom) => {
+      if (!geom) return null;
+      try {
+        const fixed = BufferOp.bufferOp(geom, 0);
+        return fixed || geom;
+      } catch {
+        return geom;
+      }
+    };
+    const unionLoopsToGeom = (loops0) => {
+      const loops = Array.isArray(loops0) ? loops0 : [];
+      let out = null;
+      for (const loop of loops) {
+        const poly = toPoly(loop);
+        if (!poly) continue;
+        const p2 = fixGeom(poly);
+        try {
+          out = out ? fixGeom(out.union(p2)) : p2;
+        } catch {
+          out = out || p2;
+        }
+      }
+      return out;
+    };
+    const geomToLoops = (geom) => {
+      const g = geom;
+      const out = [];
+      const pushPoly = (poly) => {
+        try {
+          const ring = poly?.getExteriorRing?.();
+          const coords = ring?.getCoordinates?.();
+          if (!coords || coords.length < 3) return;
+          const pts = [];
+          for (const c of coords) {
+            const x = Number(c?.x);
+            const y = Number(c?.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            pts.push({ x, y });
+          }
+          if (pts.length >= 2) {
+            const f = pts[0];
+            const l = pts[pts.length - 1];
+            if (f.x === l.x && f.y === l.y) pts.pop();
+          }
+          if (pts.length >= 3) out.push(pts);
+        } catch {
+          // ignore
+        }
+      };
+      const walk = (gg) => {
+        if (!gg || gg.isEmpty?.()) return;
+        const type = gg.getGeometryType?.();
+        if (type === 'Polygon') {
+          pushPoly(gg);
+          return;
+        }
+        if (typeof gg.getNumGeometries === 'function') {
+          const n = gg.getNumGeometries();
+          for (let i = 0; i < n; i++) walk(gg.getGeometryN(i));
+        }
+      };
+      walk(g);
+      return out;
+    };
+
+    try {
+      const omegaGeom = unionLoopsToGeom(omega);
+      if (!omegaGeom || omegaGeom.isEmpty?.()) return rect;
+      const clipped = [];
+      for (const loop of rect) {
+        const faceGeom = toPoly(loop);
+        if (!faceGeom || faceGeom.isEmpty?.()) continue;
+        let inter = null;
+        try {
+          inter = fixGeom(faceGeom.intersection(omegaGeom));
+        } catch {
+          inter = null;
+        }
+        const loops = inter ? geomToLoops(inter) : [];
+        // 交集可能碎成多个多边形：取面积最大的一个作为“该工作面显示用的裁剪后轮廓”
+        if (loops.length === 1) {
+          clipped.push(loops[0]);
+        } else if (loops.length >= 2) {
+          let best = loops[0];
+          let bestA = -Infinity;
+          for (const l of loops) {
+            const a = areaShoelace(l);
+            const aa = Number.isFinite(a) ? a : 0;
+            if (aa > bestA) {
+              bestA = aa;
+              best = l;
+            }
+          }
+          clipped.push(best);
+        } else {
+          // 若没有交集，跳过该面（避免越界点）
+        }
+      }
+      return clipped.length ? clipped : rect;
+    } catch {
+      return rect;
+    }
+  };
+
+  const getCurrentPlannedLoopsForCocontrol = () => {
+    // 协同调控口径：优先使用“裁剪后的采出域”（clippedFacesLoops）。
+    // 若没有 clipped，则用 rectLoops 做前端裁剪，确保不会越界。
+    try {
+      const pickFromCandidate = (cand) => {
+        if (!cand) return null;
+        const rr = (cand?.render && typeof cand.render === 'object') ? cand.render : {};
+        const clipped = Array.isArray(rr?.clippedFacesLoops) ? rr.clippedFacesLoops : (Array.isArray(cand?.clippedFacesLoops) ? cand.clippedFacesLoops : null);
+        if (Array.isArray(clipped) && clipped.length) return clipped;
+
+        const rectLoops = Array.isArray(rr?.rectLoops) ? rr.rectLoops : (Array.isArray(cand?.rectLoops) ? cand.rectLoops : null);
+        if (Array.isArray(rectLoops) && rectLoops.length) {
+          const omegaLoops = getCurrentOmegaLoopsWorldForCocontrolClip();
+          const clippedRect = clipRectLoopsToOmegaWorldIfNeeded(rectLoops, omegaLoops);
+          return clippedRect;
+        }
+
+        const faces = Array.isArray(rr?.plannedWorkfaceLoopsWorld)
+          ? rr.plannedWorkfaceLoopsWorld
+          : (Array.isArray(rr?.facesLoops) ? rr.facesLoops : null);
+        if (Array.isArray(faces) && faces.length) return faces;
+        return null;
+      };
+
+      if (mainViewMode === 'planning' && planningOptMode === 'weighted') {
+        const pack = planningWeightedResult ?? {};
+        const sig = String(planningWeightedSelected?.sig ?? pack?.best?.signature ?? '').trim();
+        const src = String(planningWeightedSelected?.source ?? pack?.best?.source ?? '').trim();
+        const bucket = (src === 'recovery')
+          ? (pack?.recResult ?? planningRecoveryResult)
+          : (src === 'disturbance')
+            ? (pack?.distResult ?? planningEfficiencyResult)
+            : (pack?.effResult ?? planningEfficiencyResult);
+        const list = Array.isArray(bucket?.candidates) ? bucket.candidates : [];
+        const cand = sig ? (list.find((c) => String(c?.signature ?? '').trim() === sig) ?? list[0] ?? null) : (list[0] ?? null);
+        const loops = pickFromCandidate(cand);
+        if (Array.isArray(loops) && loops.length) return loops;
+      }
+
+      if (mainViewMode === 'planning' && planningOptMode === 'recovery') {
+        const loops = pickFromCandidate(planningRecoverySelectedCandidate);
+        if (Array.isArray(loops) && loops.length) return loops;
+      } else {
+        const loops = pickFromCandidate(planningEfficiencySelectedCandidate);
+        if (Array.isArray(loops) && loops.length) return loops;
+      }
+    } catch {
+      // ignore
+    }
+    return plannedWorkfaceLoopsWorld;
+  };
+
+  const exportPlannedWorkfaceLoopsToCsv = () => {
+    try {
+      const normalized = normalizePlannedWorkfaceLoopsForExportOrCocontrol(getCurrentPlannedLoopsForExportOrCocontrol());
+      if (!normalized.length) {
+        window.alert('暂无可导出的规划工作面：请先选择一个方案（并确保图上有工作面轮廓）。');
+        return;
+      }
+
+      // 兼容策略：
+      // - 明细版（中文）：工作面编号,坐标点编号,x,y
+      // - 兼容版（通用解析器）：id,x,y（满足常见脚本的自动识别规则）
+      const headerDetail = '工作面编号,坐标点编号,x,y\n';
+      const headerCompat = 'id,x,y\n';
+      const linesDetail = [];
+      const linesCompat = [];
+      const fmt = (v) => Number(v).toFixed(3);
+      for (const face of normalized) {
+        const faceNo = Number(face?.faceIndex);
+        const loop = Array.isArray(face?.loop) ? face.loop : [];
+        for (let i = 0; i < loop.length; i++) {
+          const p = loop[i] ?? {};
+          const x = Number(p?.x);
+          const y = Number(p?.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          const pointNo = i + 1;
+          linesDetail.push(`${faceNo},${pointNo},${fmt(x)},${fmt(y)}`);
+          linesCompat.push(`WF-${faceNo}-${pointNo},${fmt(x)},${fmt(y)}`);
+        }
+      }
+
+      const bom = '\ufeff';
+      const stamp = formatNowStamp();
+      const csvDetail = bom + headerDetail + linesDetail.join('\n') + (linesDetail.length ? '\n' : '');
+      const csvCompat = bom + headerCompat + linesCompat.join('\n') + (linesCompat.length ? '\n' : '');
+      downloadTextFile(`工作面坐标_明细_${stamp}.csv`, csvDetail, 'text/csv;charset=utf-8');
+      downloadTextFile(`工作面坐标_兼容xy_${stamp}.csv`, csvCompat, 'text/csv;charset=utf-8');
+    } catch (e) {
+      console.error('exportPlannedWorkfaceLoopsToCsv failed', e);
+      window.alert(`导出失败：${String(e?.message ?? e)}`);
+    }
+  };
+
+  const startCocontrolWithCurrentPlannedWorkfaces = () => {
+    try {
+      const normalized = normalizePlannedWorkfaceLoopsForExportOrCocontrol(getCurrentPlannedLoopsForCocontrol());
+      if (!normalized.length) {
+        window.alert('暂无可用于协同调控的规划工作面：请先选择一个方案（并确保图上有工作面轮廓）。');
+        return;
+      }
+
+      // 备份规划视图的工作面轮廓：用于从协同调控切回智能规划时恢复，避免显示“协同调控工作面”。
+      if (!cocontrolInjectedPlannedWorkfacesRef.current) {
+        try {
+          cocontrolPlannedWorkfacesBackupRef.current = {
+            loops: cloneJson(plannedWorkfaceLoopsWorld ?? []),
+            unionLoops: cloneJson(plannedWorkfaceUnionLoopsWorld ?? []),
+            showWorkfaceOutline: Boolean(showWorkfaceOutline),
+          };
+        } catch {
+          cocontrolPlannedWorkfacesBackupRef.current = null;
+        }
+      }
+      cocontrolInjectedPlannedWorkfacesRef.current = true;
+
+      // 覆盖“规划面”参数条目，并同步 faceIndex 为 1..N
+      setPlannedWorkfaceLoopsWorld(normalized);
+      plannedWorkfaceLoopsOriginalRef.current = cloneJson(normalized);
+
+      const nextPlannedParams = {};
+      for (let i = 0; i < normalized.length; i++) {
+        const faceIndex = i + 1;
+        // 规划面从智能规划注入：几何已经给定，默认视为“已确认布局”，便于直接调整生产层并计算 ODI。
+        nextPlannedParams[String(faceIndex)] = makeCoEntry({ layoutConfirmed: true, layoutNeedsReconfirm: false });
+      }
+      setCoPlannedParamsByFaceIndex(nextPlannedParams);
+
+      // 进入协同调控并选中 No.1
+      setCoPickPopup(null);
+      setCoWsPickPopup(null);
+      setCoSelectedTarget({ kind: 'planned', faceIndex: 1 });
+      // 协同调控只看“定位点”，不需要蓝色面/描边。
+      setShowWorkfaceOutline(false);
+      switchMainViewModeWithRightPanel('cocontrol');
+      openCocontrolPanel();
+
+      // 关键：协同调控注入的是“规划面 loops”，并不等价于导入的 workingFaceData。
+      // 为了让“生成评价点/ODI”链路可用，这里从 loops 推导出 4 点一面结构并自动生成评价点。
+      // 若用户还未导入钻孔数据，则生成会静默失败（generatePoints 内部会检查 drillholeData）。
+      try {
+        const wfOverride = deriveWorkingFacePointsFromPlannedLoops(normalized);
+        generatePoints({ silent: true, workingFaceDataOverride: wfOverride, plannedWorkfaceLoopsOverride: normalized });
+      } catch {
+        // ignore
+      }
+    } catch (e) {
+      console.error('startCocontrolWithCurrentPlannedWorkfaces failed', e);
+      window.alert(`启动协同调控失败：${String(e?.message ?? e)}`);
+    }
+  };
+
   const normalizedWorkingFaceDataVisible = useMemo(() => {
     // “定位点”开关应控制所有工作面定位点的隐藏/显示；因此这里不按选中No过滤。
     return normalizedWorkingFaceData ?? [];
@@ -17032,7 +18135,7 @@ const App = () => {
             </button>
             <button
               className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'geology' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
-              onClick={() => setMainViewMode('geology')}
+              onClick={() => switchMainViewModeWithRightPanel('geology')}
             >
               地质参数分析
             </button>
@@ -17740,7 +18843,7 @@ const App = () => {
                         </g>
                       )}
 
-                      {/* 规划工作面虚线圈定（智能规划生成） */}
+                      {/* 规划工作面面域（智能规划生成，仅规划视图显示蓝色面） */}
                       {mainViewMode === 'planning' && normalizedPlannedWorkfaceLoops.length > 0 && (
                         <g>
                           {normalizedPlannedWorkfaceLoops.map((wf) => {
@@ -17765,6 +18868,26 @@ const App = () => {
                                 onMouseLeave={handlePlannedWorkfaceMouseLeave}
                               />
                             );
+                          })}
+                        </g>
+                      )}
+
+                      {/* 协同调控：规划面定位点（仅点，不显示蓝色面；点来自裁剪后的 plannedWorkfaceLoopsWorld） */}
+                      {mainViewMode === 'cocontrol' && showEvalWorkfaceLocPoints && normalizedPlannedWorkfaceLoops.length > 0 && (
+                        <g pointerEvents="none">
+                          {normalizedPlannedWorkfaceLoops.flatMap((wf) => {
+                            const loop = wf?.loop ?? [];
+                            if (loop.length < 1) return [];
+                            return loop.map((p, i) => (
+                              <circle
+                                key={`co-plan-pt-${wf.faceIndex}-${String(wf?.__k ?? '')}-${i}`}
+                                cx={p.nx}
+                                cy={p.ny}
+                                r="3.8"
+                                fill="#ec4899"
+                                opacity="0.92"
+                              />
+                            ));
                           })}
                         </g>
                       )}
@@ -17884,47 +19007,31 @@ const App = () => {
                       )}
 
                       {/* 协同调控：幽灵工作面轮廓（显示原有最大范围，半透明虚线） */}
-                      {mainViewMode === 'planning' ? 
-                        // 规划模式下的幽灵
-                        Object.entries(coWorkfaceGhosts)
-                           .filter(([k]) => k.startsWith('planned-'))
-                           .map(([k, pts]) => {
-                               if (!pts || pts.length < 2) return null;
-                               const norm = normalizeCoords(pts, combinedPointsForBounds);
-                               const d = norm.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`).join(' ') + ' Z';
-                               return (
-                                 <path 
-                                    key={`ghost-${k}`} 
-                                    d={d} 
-                                    fill="none" 
-                                    stroke="#94a3b8" 
-                                    strokeWidth="1.5" 
-                                    strokeDasharray="4 4" 
-                                    strokeOpacity="0.5" 
-                                 />
-                               );
-                           })
-                        : 
-                        // 导入模式下的幽灵
-                        Object.entries(coWorkfaceGhosts)
-                           .filter(([k]) => k.startsWith('import-'))
-                           .map(([k, pts]) => {
-                               if (!pts || pts.length < 2) return null;
-                               const norm = normalizeCoords(pts, combinedPointsForBounds);
-                               const d = norm.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`).join(' ') + ' Z';
-                               return (
-                                 <path 
-                                    key={`ghost-${k}`} 
-                                    d={d} 
-                                    fill="none" 
-                                    stroke="#94a3b8" 
-                                    strokeWidth="1.5" 
-                                    strokeDasharray="4 4" 
-                                    strokeOpacity="0.5" 
-                                 />
-                               );
-                           })
-                      }
+                      {(() => {
+                        const entries = Object.entries(coWorkfaceGhosts ?? {});
+                        const allowPrefixes = (mainViewMode === 'planning')
+                          ? ['planned-']
+                          : ['import-', 'planned-'];
+
+                        return entries
+                          .filter(([k]) => allowPrefixes.some((p) => k.startsWith(p)))
+                          .map(([k, pts]) => {
+                            if (!pts || pts.length < 2) return null;
+                            const norm = normalizeCoords(pts, combinedPointsForBounds);
+                            const d = norm.map((p, idx) => `${idx === 0 ? 'M' : 'L'} ${p.nx} ${p.ny}`).join(' ') + ' Z';
+                            return (
+                              <path
+                                key={`ghost-${k}`}
+                                d={d}
+                                fill="none"
+                                stroke="#94a3b8"
+                                strokeWidth="1.5"
+                                strokeDasharray="4 4"
+                                strokeOpacity="0.5"
+                              />
+                            );
+                          });
+                      })()}
 
                       {/* 十字准星（实时坐标与即时插值） */}
                       {showMainMapCoordinates && crosshair.active && (
@@ -20816,16 +21923,30 @@ const App = () => {
                   <Zap size={18} className="text-white/90" /> 启动智能采区规划
                 </button>
 
-                {DEBUG_PANEL && (
-                  <PlanningDebugPanel snapshot={planningDebugSnapshot} />
-                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    className="py-3 rounded-2xl font-bold text-[12px] border bg-white border-slate-200 text-slate-700 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50 transition-colors"
+                    onClick={exportPlannedWorkfaceLoopsToCsv}
+                    type="button"
+                    title="导出当前已选中方案的所有工作面轮廓点（CSV：工作面编号/点编号/x/y）"
+                  >
+                    导出工作面坐标
+                  </button>
+                  <button
+                    className="py-3 rounded-2xl font-bold text-[12px] border bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50 transition-colors"
+                    onClick={startCocontrolWithCurrentPlannedWorkfaces}
+                    type="button"
+                    title="跳转到协同调控，并把当前方案的规划工作面作为‘规划面’载入（覆盖并重排编号）"
+                  >
+                    启动协同调控
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
         {/* 3) 协同调控（Coordinated Control） */}
-        {(mainViewMode === 'planning' || mainViewMode === 'cocontrol') && (
         <div ref={cocontrolSectionRef} className="border-b border-slate-100">
           <button
             className="w-full p-5 flex items-center justify-between gap-4 hover:bg-white/60 transition-colors"
@@ -20894,6 +22015,13 @@ const App = () => {
                   const layoutConfirmed = Boolean(entry?.layoutConfirmed);
                   const layoutNeedsReconfirm = Boolean(entry?.layoutNeedsReconfirm);
                   const hasSelected = Boolean(t);
+                  const canGeneratePoints = Boolean(
+                    drillholeData?.length
+                    && (
+                      workingFaceData?.length
+                      || (Array.isArray(plannedWorkfaceLoopsWorld) && plannedWorkfaceLoopsWorld.length)
+                    )
+                  );
 
                   const faceBBox = hasSelected ? coGetFaceBBoxForTarget(t) : null;
                   const axis = (hasSelected && faceBBox) ? coResolveAxis(faceBBox, layout) : 'x';
@@ -20973,14 +22101,16 @@ const App = () => {
                               导入设计工作面坐标
                             </button>
                             <button
-                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!drillholeData?.length || !workingFaceData?.length) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50'}`}
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!canGeneratePoints) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-emerald-200 text-emerald-700 hover:border-emerald-400 hover:bg-emerald-50'}`}
                               onClick={() => {
-                                if (!drillholeData?.length || !workingFaceData?.length) return;
+                                if (!canGeneratePoints) return;
                                 handleGeneratePoints();
                               }}
                               type="button"
-                              disabled={!drillholeData?.length || !workingFaceData?.length}
-                              title={(!drillholeData?.length || !workingFaceData?.length) ? '请先导入钻孔坐标与工作面坐标' : `生成评价点（步长=${stepLength}）`}
+                              disabled={!canGeneratePoints}
+                              title={(!canGeneratePoints)
+                                ? '请先导入钻孔坐标；并确保已有导入工作面坐标或规划面坐标'
+                                : `生成评价点（步长=${stepLength}）`}
                             >
                               生成评价点
                             </button>
@@ -20988,26 +22118,26 @@ const App = () => {
 
                           <div className="mt-2 grid grid-cols-2 gap-2">
                             <button
-                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected || t?.kind !== 'import') ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50'}`}
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:border-blue-400 hover:text-blue-700 hover:bg-blue-50'}`}
                               onClick={() => {
-                                if (!hasSelected || t?.kind !== 'import') return;
+                                if (!hasSelected) return;
                                 handleCoRestoreSelectedWorkface();
                               }}
                               type="button"
-                              disabled={!hasSelected || t?.kind !== 'import'}
-                              title={(t?.kind !== 'import') ? '仅支持导入工作面' : '恢复该工作面的初始导入数据'}
+                              disabled={!hasSelected}
+                              title={!hasSelected ? '请先点选一个工作面' : (t?.kind === 'import' ? '恢复该工作面的初始导入数据' : '恢复该规划面的注入基线坐标')}
                             >
                               还原工作面
                             </button>
                             <button
-                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected || t?.kind !== 'import') ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50'}`}
+                              className={`py-2 rounded-xl font-bold text-[11px] border transition-colors ${(!hasSelected) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50'}`}
                               onClick={() => {
-                                if (!hasSelected || t?.kind !== 'import') return;
+                                if (!hasSelected) return;
                                 handleCoDeleteSelectedWorkface();
                               }}
                               type="button"
-                              disabled={!hasSelected || t?.kind !== 'import'}
-                              title={(t?.kind !== 'import') ? '仅支持导入工作面' : '删除该工作面（会重排后续 No 编号）'}
+                              disabled={!hasSelected}
+                              title={!hasSelected ? '请先点选一个工作面' : (t?.kind === 'import' ? '删除该工作面（会重排后续 No 编号）' : '删除该规划面（会重排后续 faceIndex 编号）')}
                             >
                               删除工作面
                             </button>
@@ -21330,11 +22460,6 @@ const App = () => {
                                 disabled={!dynEnabled}
                                 onClick={() => {
                                   if (!dynEnabled) return;
-                                  // 手动兜底：若没有评价点则先生成
-                                  if (!generatedPoints) {
-                                    const step0 = Math.max(1, Math.round(Number(production?.advanceStepM) || 25));
-                                    generatePoints({ silent: true, stepOverrideM: step0 });
-                                  }
                                   handleCocontrolComputeOdiAll();
                                 }}
                                 className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
@@ -21347,23 +22472,6 @@ const App = () => {
                         })()}
                       </div>
 
-                      {/* 底部操作 */}
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-slate-900 hover:bg-slate-800 text-white border-slate-900"
-                          onClick={coSaveAll}
-                          type="button"
-                        >
-                          保存
-                        </button>
-                        <button
-                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-white hover:bg-slate-50 text-slate-700 border-slate-200"
-                          onClick={coResetAll}
-                          type="button"
-                        >
-                          重置
-                        </button>
-                      </div>
                         </>
                       );
                     })()}
@@ -21374,7 +22482,7 @@ const App = () => {
             </div>
           </div>
         </div>
-        )}
+
 
         {/* 4) 采掘接续计划（Succession Plan） */}
         <div className="border-b border-slate-100">
