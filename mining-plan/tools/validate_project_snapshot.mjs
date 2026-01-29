@@ -3,7 +3,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const PROJECT_SNAPSHOT_SCHEMA = 1;
+const PROJECT_SNAPSHOT_SCHEMA = 5;
 
 const DEFAULT_DISTURBANCE_PARAMS = {
   sampleStepM: 25,
@@ -78,6 +78,11 @@ const validateOne = async (filePath) => {
     'planningParams',
     'planningDisturbanceParams',
     'planningAdvanceAxis',
+    'workfacePlan',
+    'planningResults',
+    'cocontrol',
+    'succession',
+    'economicsParams',
     'scenarioParamsById',
   ]);
   for (const k of Object.keys(obj)) {

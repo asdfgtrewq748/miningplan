@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { 
   BrainCircuit,
   CalendarClock,
@@ -50,8 +50,10 @@ import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
 import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
 import SuccessionStage1View from './components/SuccessionStage1View.jsx';
+import EconomicsView from './components/EconomicsView.jsx';
 import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedComputeCancelable } from './api.js';
 import { buildSuccessionStage1Plan, computeWorkfaceDimsFromLoop } from './utils/successionStage1.js';
+import { computeEconomicsFromPlan } from './utils/economics.js';
 import {
   buildStage3Candidates,
   computeProductionKpis,
@@ -137,6 +139,30 @@ const DEFAULT_SUCCESSION_STAGE3_PARAMS = {
   wMonths: 0.15,
 };
 
+const DEFAULT_ECONOMICS_PARAMS = {
+  // 收入
+  coalPriceYuanPerTon: 800, // 元/吨
+  salesRatio: 1.0, // 0~1
+
+  // 成本
+  opexVarYuanPerTon: 320, // 元/吨
+  opexFixedWanPerMonth: 300, // 万元/月
+
+  // 投资
+  capexInitialWan: 30000, // 万元
+  capexSustainWanPerYear: 0, // 万元/年
+
+  // 财务
+  discountRate: 0.10, // 0~1（年贴现率）
+
+  // 风险联动（来自接续阶段2风险序列；默认开启）
+  riskLinkEnabled: true,
+  riskMetricKey: 'p90',
+  riskImpactThreshold: 0.85, // 0~1
+  riskDowntimeRatio: 0.10, // 0~1
+  riskExtraCostWanPerHighRiskMonth: 0, // 万元/月
+};
+
 const App = () => {
   const DEBUG_PANEL = import.meta.env.DEV;
   // Worker 抓包日志：在浏览器控制台执行 localStorage.setItem('mp.debugWorker','1') 并刷新即可开启。
@@ -153,7 +179,7 @@ const App = () => {
   const workerError = (...args) => { if (DEBUG_WORKER_LOG) console.error(...args); };
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
-  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning' | 'cocontrol' | 'succession'
+  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning' | 'cocontrol' | 'succession' | 'economics'
   const [miningHeight, setMiningHeight] = useState(4.5);
   const [stepLength, setStepLength] = useState(25);
   const [richFactor, setRichFactor] = useState(1.1);
@@ -163,6 +189,7 @@ const App = () => {
   const [successionStage1Params, setSuccessionStage1Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE1_PARAMS }));
   const [successionStage2Params, setSuccessionStage2Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE2_PARAMS }));
   const [successionStage3Params, setSuccessionStage3Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE3_PARAMS }));
+  const [economicsParams, setEconomicsParams] = useState(() => ({ ...DEFAULT_ECONOMICS_PARAMS }));
   const [successionPanelOrderMode, setSuccessionPanelOrderMode] = useState('yardConfirmed'); // faceIndex|odiLowFirst|yardConfirmed
   const [successionYardDir, setSuccessionYardDir] = useState('NE'); // N|NE|E|SE|S|SW|W|NW
   const [successionYardOffsetM, setSuccessionYardOffsetM] = useState(120);
@@ -7359,7 +7386,12 @@ const App = () => {
   };
 
   const openRightPanelOnly = (key) => {
-    setActiveAccordion(key ? [key] : []);
+    const next = key ? [key] : [];
+    setActiveAccordion((prev) => {
+      const a = Array.isArray(prev) ? prev : [];
+      if (a.length === next.length && a[0] === next[0]) return prev;
+      return next;
+    });
   };
 
   const handlePlanningOptModeChange = (nextMode) => {
@@ -7591,13 +7623,16 @@ const App = () => {
   }, [planningEfficiencyResult, planningRecoveryResult, planningWeightedResult, mainViewMode]);
 
   const switchMainViewModeWithRightPanel = (mode) => {
+    const nextMode = String(mode ?? '').trim();
+    if (!nextMode) return;
+
     // 需求：从协同调控跳转回智能规划时，自动关闭“评价点”显示，避免点云遮挡。
     try {
-      if (mainViewMode === 'cocontrol' && mode === 'planning') {
+      if (mainViewMode === 'cocontrol' && nextMode === 'planning') {
         setShowLayerEvalPoints(false);
       }
       // 需求：协同调控板块默认应显示评价点。
-      if (mode === 'cocontrol') {
+      if (nextMode === 'cocontrol') {
         setShowLayerEvalPoints(true);
       }
     } catch {
@@ -7605,7 +7640,7 @@ const App = () => {
     }
 
     // 需求：从协同调控回到智能规划时，不要把“协同调控注入的规划面”带回规划视图显示。
-    if (mode === 'planning' && cocontrolInjectedPlannedWorkfacesRef.current && cocontrolPlannedWorkfacesBackupRef.current) {
+    if (nextMode === 'planning' && cocontrolInjectedPlannedWorkfacesRef.current && cocontrolPlannedWorkfacesBackupRef.current) {
       try {
         const bak = cocontrolPlannedWorkfacesBackupRef.current;
         setPlannedWorkfaceLoopsWorld(cloneJson(bak?.loops ?? []));
@@ -7618,12 +7653,16 @@ const App = () => {
       cocontrolPlannedWorkfacesBackupRef.current = null;
     }
 
-    setMainViewMode(mode);
-    if (mode === 'planning') openRightPanelOnly('planning');
-    if (mode === 'odi') openRightPanelOnly('summary');
-    if (mode === 'geology') openRightPanelOnly('summary');
-    if (mode === 'cocontrol') openRightPanelOnly('cocontrol');
-    if (mode === 'succession') openRightPanelOnly('succession');
+    // 性能：把“模式切换 + 右侧面板同步”放到 transition 内，保持交互更顺滑
+    startTransition(() => {
+      if (nextMode !== mainViewMode) setMainViewMode(nextMode);
+      if (nextMode === 'planning') openRightPanelOnly('planning');
+      if (nextMode === 'odi') openRightPanelOnly('summary');
+      if (nextMode === 'geology') openRightPanelOnly('summary');
+      if (nextMode === 'cocontrol') openRightPanelOnly('cocontrol');
+      if (nextMode === 'succession') openRightPanelOnly('succession');
+      if (nextMode === 'economics') openRightPanelOnly('economics');
+    });
   };
 
   // 智能规划：进入“采区规划图”后自动把“多目标规划优化方案”滚动到可视区
@@ -7648,7 +7687,8 @@ const App = () => {
       panel.scrollIntoView?.({ behavior: 'smooth', block: 'end' });
     };
 
-    const t = setTimeout(ensureVisible, 0);
+    // 切换模式时先让 UI 完成一次绘制，再做 scrollIntoView，降低“切换瞬间”主线程峰值
+    const t = setTimeout(ensureVisible, 50);
     return () => clearTimeout(t);
   }, [mainViewMode]);
   const [boundaryData, setBoundaryData] = useState([]);
@@ -7726,6 +7766,8 @@ const App = () => {
   const coProductionAutoFillKeyRef = useRef('');
   const coProductionAutoFillAllKeyRef = useRef('');
   const coDynAdvanceMaxByKeyRef = useRef({}); // { [coGetKey(target)]: number }
+  const coDynAdvanceDragRef = useRef({ active: false, value: null, endPick: 'max' });
+  const coDynAdvanceDebounceTimerRef = useRef(0);
 
   // 协同调控（新参数面板 v2）：按工作面分别设置，并把“导入面/规划面”分表存
   const COCONTROL_STORAGE_KEY_V1 = 'miningplan.cocontrol.v1';
@@ -8099,6 +8141,14 @@ const App = () => {
   }, [coSelectedTarget, coOdiAnalysisResult, coOdiAnalysisSelectedKey, coOdiAnalysisCheckedKeys]);
   const [coPickPopup, setCoPickPopup] = useState(null); // { x, y, importNo, plannedFaceIndex }
   const [coWsPickPopup, setCoWsPickPopup] = useState(null); // { x, y, target, axis, side, options: [{kind,key,label,gap}], desiredWs?: string }
+
+  // 协同调控：ws 基准选择弹窗仅在协同调控视图展示；离开时自动关闭，避免其它模块误出现。
+  useEffect(() => {
+    if (mainViewMode === 'cocontrol') return;
+    if (!coWsPickPopup) return;
+    setCoWsPickPopup(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainViewMode]);
 
   // 记录“导入工作面”的初始点位，用于单面还原（按 4 点一组，与 workingFaceData 同序）
   const workingFaceDataOriginalRef = useRef([]);
@@ -8657,6 +8707,67 @@ const App = () => {
       plannedWorkfaceLoopsOverride: planLoopsNext 
     });
   };
+
+  // 协同调控：动态推进长度滑块
+  // 修复：range 拖拽后如果在滑块外松手，onMouseUp/onTouchEnd 可能不触发，导致 ODI 不更新。
+  // 这里用全局 pointer/mouse/touch up 兜底提交。
+  const coCommitDynAdvanceFromRef = (reason) => {
+    const cur = coDynAdvanceDragRef.current;
+    if (!cur?.active) return;
+    coDynAdvanceDragRef.current = { ...(cur ?? {}), active: false };
+    if (cur?.value == null) return;
+    coApplyDynamicAdvanceForSelected({
+      nextLengthStr: String(cur.value),
+      nextEnd: String(cur.endPick || 'max'),
+      reason: reason || 'dyn-length-slider-up-global',
+    });
+  };
+
+  const coScheduleDynAdvanceCommit = (reason) => {
+    if (coDynAdvanceDebounceTimerRef.current) {
+      clearTimeout(coDynAdvanceDebounceTimerRef.current);
+      coDynAdvanceDebounceTimerRef.current = 0;
+    }
+    // 防抖提交：用户停止滑动一小段时间后自动应用并触发 ODI，避免“松手事件丢失”导致不更新。
+    // 时间不宜太短，否则慢拖会频繁触发；这里取 450ms。
+    coDynAdvanceDebounceTimerRef.current = setTimeout(() => {
+      coDynAdvanceDebounceTimerRef.current = 0;
+      coCommitDynAdvanceFromRef(reason || 'dyn-length-slider-debounced');
+    }, 450);
+  };
+
+  useEffect(() => {
+    const onUp = () => coCommitDynAdvanceFromRef('dyn-length-slider-up-global');
+    const onCancel = () => coCommitDynAdvanceFromRef('dyn-length-slider-cancel');
+    try {
+      window.addEventListener('pointerup', onUp, { passive: true });
+      window.addEventListener('mouseup', onUp, { passive: true });
+      window.addEventListener('touchend', onUp, { passive: true });
+      window.addEventListener('pointercancel', onCancel, { passive: true });
+      window.addEventListener('touchcancel', onCancel, { passive: true });
+      window.addEventListener('blur', onCancel);
+    } catch {
+      // ignore
+    }
+    return () => {
+      try {
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('mouseup', onUp);
+        window.removeEventListener('touchend', onUp);
+        window.removeEventListener('pointercancel', onCancel);
+        window.removeEventListener('touchcancel', onCancel);
+        window.removeEventListener('blur', onCancel);
+      } catch {
+        // ignore
+      }
+
+      if (coDynAdvanceDebounceTimerRef.current) {
+        clearTimeout(coDynAdvanceDebounceTimerRef.current);
+        coDynAdvanceDebounceTimerRef.current = 0;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const coGetFaceBBoxByNeighborKey = (nk) => {
     const parsed = coParseNeighborKey(nk);
@@ -10022,9 +10133,15 @@ const App = () => {
     }
     const keyNow = coBuildAutoOdiKey(t);
     if (keyNow !== pending.key) {
-      // 期间参数又变了：丢弃本次，交给下一次请求
-      coAutoOdiPendingRef.current = null;
-      return;
+      // 稳定性修复：动态推演（拖动推进长度）期间可能出现 key 轻微不一致（状态更新/去抖时序）。
+      // 旧逻辑会直接丢弃，导致“拖动后 ODI 不更新”。
+      // 对 dyn 请求：不丢弃，直接按当前状态计算一次，保证 UI 及时刷新。
+      const isDyn = String(pending.reason || '').includes('dyn');
+      if (!isDyn) {
+        // 非动态请求仍保持严格：避免用错参数造成困惑
+        coAutoOdiPendingRef.current = null;
+        return;
+      }
     }
     coAutoOdiPendingRef.current = null;
     try {
@@ -10130,7 +10247,9 @@ const App = () => {
   const [mainMapEvalMenuPos, setMainMapEvalMenuPos] = useState({ left: 0, top: 0, openUp: false });
 
   // 工程快照（仅输入）：保存/导入
-  const PROJECT_SNAPSHOT_SCHEMA = 3;
+  // schemaVersion=4: 增加采掘接续参数(succession)与经济分析参数(economicsParams)
+  // schemaVersion=5: 增加协同调控参数(cocontrol)
+  const PROJECT_SNAPSHOT_SCHEMA = 5;
   const [showProjectSaveModal, setShowProjectSaveModal] = useState(false);
   const [projectSaveScope, setProjectSaveScope] = useState('all'); // 'current' | 'all'
   const [projectSaveName, setProjectSaveName] = useState('');
@@ -10544,6 +10663,17 @@ const App = () => {
       showMainMap,
       showMeasuredMapping,
       showErrorAnalysis,
+      // Succession + economics
+      successionStage1Params: cloneJson(successionStage1Params),
+      successionStage2Params: cloneJson(successionStage2Params),
+      successionStage3Params: cloneJson(successionStage3Params),
+      successionPanelOrderMode,
+      successionYardDir,
+      successionYardOffsetM,
+      successionYardConfirmed: cloneJson(successionYardConfirmed),
+      successionSelectedFaceIndex,
+      successionStage3Result: cloneJson(successionStage3Result),
+      economicsParams: cloneJson(economicsParams),
       // Workface / evaluation pipeline
       drillholeData: cloneJson(drillholeData),
       workingFaceData: cloneJson(workingFaceData),
@@ -10627,6 +10757,42 @@ const App = () => {
       setShowMainMap(Boolean(snap.showMainMap));
       setShowMeasuredMapping(Boolean(snap.showMeasuredMapping));
       setShowErrorAnalysis(Boolean(snap.showErrorAnalysis));
+
+      // Succession + economics
+      setSuccessionStage1Params((() => {
+        const raw = snap?.successionStage1Params;
+        if (!raw || typeof raw !== 'object') return { ...DEFAULT_SUCCESSION_STAGE1_PARAMS };
+        return { ...DEFAULT_SUCCESSION_STAGE1_PARAMS, ...(cloneJson(raw) ?? {}) };
+      })());
+      setSuccessionStage2Params((() => {
+        const raw = snap?.successionStage2Params;
+        if (!raw || typeof raw !== 'object') return { ...DEFAULT_SUCCESSION_STAGE2_PARAMS };
+        return { ...DEFAULT_SUCCESSION_STAGE2_PARAMS, ...(cloneJson(raw) ?? {}) };
+      })());
+      setSuccessionStage3Params((() => {
+        const raw = snap?.successionStage3Params;
+        if (!raw || typeof raw !== 'object') return { ...DEFAULT_SUCCESSION_STAGE3_PARAMS };
+        return { ...DEFAULT_SUCCESSION_STAGE3_PARAMS, ...(cloneJson(raw) ?? {}) };
+      })());
+      setSuccessionPanelOrderMode(String(snap?.successionPanelOrderMode ?? 'yardConfirmed'));
+      setSuccessionYardDir(String(snap?.successionYardDir ?? 'NE'));
+      setSuccessionYardOffsetM(Number.isFinite(Number(snap?.successionYardOffsetM)) ? Number(snap.successionYardOffsetM) : 120);
+      setSuccessionYardConfirmed((() => {
+        const raw = snap?.successionYardConfirmed;
+        if (!raw || typeof raw !== 'object') return { dir: 'NE', offsetM: 120, confirmedAt: Date.now() };
+        const dir = String(raw?.dir ?? 'NE');
+        const offsetM = Number.isFinite(Number(raw?.offsetM)) ? Number(raw.offsetM) : 120;
+        const confirmedAt = Number.isFinite(Number(raw?.confirmedAt)) ? Number(raw.confirmedAt) : Date.now();
+        return { dir, offsetM, confirmedAt };
+      })());
+      setSuccessionSelectedFaceIndex((snap?.successionSelectedFaceIndex == null) ? null : Number(snap.successionSelectedFaceIndex));
+      setSuccessionStage3Result(snap?.successionStage3Result ? cloneJson(snap.successionStage3Result) : null);
+      setEconomicsParams((() => {
+        const raw = snap?.economicsParams;
+        if (!raw || typeof raw !== 'object') return { ...DEFAULT_ECONOMICS_PARAMS };
+        return { ...DEFAULT_ECONOMICS_PARAMS, ...(cloneJson(raw) ?? {}) };
+      })());
+
       // Workface / evaluation pipeline
       setDrillholeData(snap.drillholeData ?? null);
       setWorkingFaceData(snap.workingFaceData ?? null);
@@ -10805,6 +10971,17 @@ const App = () => {
       showMainMap: true,
       showMeasuredMapping: true,
       showErrorAnalysis: true,
+      // Succession + economics reset
+      successionStage1Params: { ...DEFAULT_SUCCESSION_STAGE1_PARAMS },
+      successionStage2Params: { ...DEFAULT_SUCCESSION_STAGE2_PARAMS },
+      successionStage3Params: { ...DEFAULT_SUCCESSION_STAGE3_PARAMS },
+      successionPanelOrderMode: 'yardConfirmed',
+      successionYardDir: 'NE',
+      successionYardOffsetM: 120,
+      successionYardConfirmed: { dir: 'NE', offsetM: 120, confirmedAt: Date.now() },
+      successionSelectedFaceIndex: null,
+      successionStage3Result: null,
+      economicsParams: { ...DEFAULT_ECONOMICS_PARAMS },
       drillholeData: null,
       workingFaceData: [],
       stepLength: 5,
@@ -10907,6 +11084,16 @@ const App = () => {
     showMainMap,
     showMeasuredMapping,
     showErrorAnalysis,
+    successionStage1Params,
+    successionStage2Params,
+    successionStage3Params,
+    successionPanelOrderMode,
+    successionYardDir,
+    successionYardOffsetM,
+    successionYardConfirmed,
+    successionSelectedFaceIndex,
+    successionStage3Result,
+    economicsParams,
     planningParams,
     planningDisturbanceParams,
     planningReverseSolutions,
@@ -13236,6 +13423,15 @@ const App = () => {
     };
   }, [successionSource, successionStage1Plan, successionLoopsWorld, successionPanels, successionStage2Params, odiFieldPack, coControlEnabled, coScalePack, coOdiUnionResult, activeTab]);
 
+  const economicsResult = useMemo(() => {
+    // 经济分析依赖：阶段1（月产量/工期），可选依赖：阶段2（月风险序列）
+    return computeEconomicsFromPlan({
+      plan: successionStage1Plan,
+      risk: (successionStage2Risk?.ok ? successionStage2Risk : null),
+      params: economicsParams,
+    });
+  }, [successionStage1Plan, successionStage2Risk, economicsParams]);
+
   const handleRunSuccessionStage3 = () => {
     try {
       const target = computeTargetTonsPerMonth(planningParams?.mineCapacity);
@@ -14363,6 +14559,45 @@ const App = () => {
       planningParams: cloneJson(planningParams),
       planningDisturbanceParams: cloneJson(planningDisturbanceParams),
       planningAdvanceAxis,
+      cocontrol: {
+        savedAt: new Date().toISOString(),
+        enabled: Boolean(coControlEnabled),
+        workfaceGhosts: cloneJson(coWorkfaceGhosts),
+        scaleConfig: cloneJson(coScaleConfig),
+        stageN: coStageN,
+        stageK: coStageK,
+        panelScalePct: coPanelScalePct,
+        importParamsByNo: cloneJson(coImportParamsByNo),
+        plannedParamsByFaceIndex: cloneJson(coPlannedParamsByFaceIndex),
+        selectedTarget: cloneJson(coSelectedTarget),
+        analysis: {
+          collapsed: Boolean(coAnalysisCollapsed),
+          selectedKey: String(coOdiAnalysisSelectedKey ?? ''),
+          checkedKeys: cloneJson(coOdiAnalysisCheckedKeys),
+          gridStepM: coOdiAnalysisGridStepM,
+          thresholds: cloneJson(coOdiAnalysisThresholds),
+          percents: cloneJson(coOdiAnalysisPercents),
+          sortKey: String(coOdiAnalysisSortKey ?? 'p90'),
+          sortDesc: Boolean(coOdiAnalysisSortDesc),
+        },
+        results: {
+          scalePack: cloneJson(coScalePack),
+          odiUnionResult: cloneJson(coOdiUnionResult),
+          productionSummary: cloneJson(coProductionSummary),
+          coalThkHash: String(coCoalThkHash ?? ''),
+        },
+      },
+      succession: {
+        stage1Params: cloneJson(successionStage1Params),
+        stage2Params: cloneJson(successionStage2Params),
+        stage3Params: cloneJson(successionStage3Params),
+        panelOrderMode: String(successionPanelOrderMode),
+        yardDir: String(successionYardDir),
+        yardOffsetM: Number(successionYardOffsetM),
+        yardConfirmed: cloneJson(successionYardConfirmed),
+        selectedFaceIndex: successionSelectedFaceIndex,
+      },
+      economicsParams: cloneJson(economicsParams),
       workfacePlan,
       planningResults,
       scenarioParamsById: cloneJson(pickedScenarioParams),
@@ -14451,6 +14686,17 @@ const App = () => {
 
       const importedPlanningResults = (parsed?.planningResults && typeof parsed.planningResults === 'object') ? parsed.planningResults : null;
 
+      const importedCocontrol = (parsed?.cocontrol && typeof parsed.cocontrol === 'object') ? parsed.cocontrol : null;
+
+      const importedSuccession = (parsed?.succession && typeof parsed.succession === 'object') ? parsed.succession : null;
+      // 兼容：允许旧/外部快照采用扁平字段名
+      const importedSuccStage1 = importedSuccession?.stage1Params ?? parsed?.successionStage1Params ?? null;
+      const importedSuccStage2 = importedSuccession?.stage2Params ?? parsed?.successionStage2Params ?? null;
+      const importedSuccStage3 = importedSuccession?.stage3Params ?? parsed?.successionStage3Params ?? null;
+      const importedEconomicsParams = (parsed?.economicsParams && typeof parsed.economicsParams === 'object')
+        ? parsed.economicsParams
+        : null;
+
       const current = getAppSnapshot();
       const nextSnap = {
         ...current,
@@ -14459,6 +14705,69 @@ const App = () => {
         planningDisturbanceParams: nextPlanningDisturbanceParams,
         planningAdvanceAxis: nextAdvanceAxis,
         scenarioParamsById: cloneJson(nextScenarioParamsById),
+
+        // 协同调控（cocontrol）：输入 + 关键结果（用于导入后直接显示/编辑）
+        coControlEnabled: (importedCocontrol && Object.prototype.hasOwnProperty.call(importedCocontrol, 'enabled'))
+          ? Boolean(importedCocontrol.enabled)
+          : Boolean(current.coControlEnabled),
+        coWorkfaceGhosts: importedCocontrol?.workfaceGhosts ? cloneJson(importedCocontrol.workfaceGhosts) : cloneJson(current.coWorkfaceGhosts ?? {}),
+        coScaleConfig: importedCocontrol?.scaleConfig ? cloneJson(importedCocontrol.scaleConfig) : cloneJson(current.coScaleConfig ?? { qLo: 0.05, qHi: 0.95, includeGeoOnly: true }),
+        coStageN: Number.isFinite(Number(importedCocontrol?.stageN)) ? Number(importedCocontrol.stageN) : (typeof current.coStageN === 'number' ? current.coStageN : 5),
+        coStageK: Number.isFinite(Number(importedCocontrol?.stageK)) ? Number(importedCocontrol.stageK) : (typeof current.coStageK === 'number' ? current.coStageK : 1),
+        coPanelScalePct: Number.isFinite(Number(importedCocontrol?.panelScalePct)) ? Number(importedCocontrol.panelScalePct) : (typeof current.coPanelScalePct === 'number' ? current.coPanelScalePct : 100),
+        coImportParamsByNo: importedCocontrol?.importParamsByNo ? cloneJson(importedCocontrol.importParamsByNo) : cloneJson(current.coImportParamsByNo ?? {}),
+        coPlannedParamsByFaceIndex: importedCocontrol?.plannedParamsByFaceIndex ? cloneJson(importedCocontrol.plannedParamsByFaceIndex) : cloneJson(current.coPlannedParamsByFaceIndex ?? {}),
+        coSelectedTarget: (importedCocontrol && Object.prototype.hasOwnProperty.call(importedCocontrol, 'selectedTarget'))
+          ? cloneJson(importedCocontrol.selectedTarget)
+          : cloneJson(current.coSelectedTarget ?? null),
+        coScalePack: importedCocontrol?.results?.scalePack ? cloneJson(importedCocontrol.results.scalePack) : null,
+        coOdiUnionResult: importedCocontrol?.results?.odiUnionResult ? cloneJson(importedCocontrol.results.odiUnionResult) : null,
+        coProductionSummary: importedCocontrol?.results?.productionSummary ? cloneJson(importedCocontrol.results.productionSummary) : null,
+        coCoalThkHash: String(importedCocontrol?.results?.coalThkHash ?? ''),
+        coScaleDirty: true,
+        coAnalysisCollapsed: Boolean(importedCocontrol?.analysis?.collapsed ?? current.coAnalysisCollapsed ?? false),
+        coOdiAnalysisSelectedKey: String(importedCocontrol?.analysis?.selectedKey ?? current.coOdiAnalysisSelectedKey ?? ''),
+        coOdiAnalysisCheckedKeys: Array.isArray(importedCocontrol?.analysis?.checkedKeys)
+          ? importedCocontrol.analysis.checkedKeys
+          : (Array.isArray(current.coOdiAnalysisCheckedKeys) ? current.coOdiAnalysisCheckedKeys : []),
+        coOdiAnalysisGridStepM: Number.isFinite(Number(importedCocontrol?.analysis?.gridStepM))
+          ? Number(importedCocontrol.analysis.gridStepM)
+          : (typeof current.coOdiAnalysisGridStepM === 'number' ? current.coOdiAnalysisGridStepM : 25),
+        coOdiAnalysisThresholds: importedCocontrol?.analysis?.thresholds
+          ? cloneJson(importedCocontrol.analysis.thresholds)
+          : cloneJson(current.coOdiAnalysisThresholds ?? { t1: 0.65, t2: 0.85, t3: 0.90 }),
+        coOdiAnalysisPercents: Array.isArray(importedCocontrol?.analysis?.percents)
+          ? importedCocontrol.analysis.percents
+          : (Array.isArray(current.coOdiAnalysisPercents) ? current.coOdiAnalysisPercents : [0, 25, 50, 75, 100]),
+        coOdiAnalysisSortKey: String(importedCocontrol?.analysis?.sortKey ?? current.coOdiAnalysisSortKey ?? 'p90'),
+        coOdiAnalysisSortDesc: Boolean(importedCocontrol?.analysis?.sortDesc ?? current.coOdiAnalysisSortDesc ?? true),
+
+        // 采掘接续 + 经济分析（输入参数）
+        successionStage1Params: (importedSuccStage1 && typeof importedSuccStage1 === 'object')
+          ? { ...DEFAULT_SUCCESSION_STAGE1_PARAMS, ...(cloneJson(importedSuccStage1) ?? {}) }
+          : cloneJson(current.successionStage1Params ?? { ...DEFAULT_SUCCESSION_STAGE1_PARAMS }),
+        successionStage2Params: (importedSuccStage2 && typeof importedSuccStage2 === 'object')
+          ? { ...DEFAULT_SUCCESSION_STAGE2_PARAMS, ...(cloneJson(importedSuccStage2) ?? {}) }
+          : cloneJson(current.successionStage2Params ?? { ...DEFAULT_SUCCESSION_STAGE2_PARAMS }),
+        successionStage3Params: (importedSuccStage3 && typeof importedSuccStage3 === 'object')
+          ? { ...DEFAULT_SUCCESSION_STAGE3_PARAMS, ...(cloneJson(importedSuccStage3) ?? {}) }
+          : cloneJson(current.successionStage3Params ?? { ...DEFAULT_SUCCESSION_STAGE3_PARAMS }),
+        successionPanelOrderMode: String(importedSuccession?.panelOrderMode ?? current.successionPanelOrderMode ?? 'yardConfirmed'),
+        successionYardDir: String(importedSuccession?.yardDir ?? current.successionYardDir ?? 'NE'),
+        successionYardOffsetM: Number.isFinite(Number(importedSuccession?.yardOffsetM))
+          ? Number(importedSuccession.yardOffsetM)
+          : Number(current.successionYardOffsetM ?? 120),
+        successionYardConfirmed: (importedSuccession?.yardConfirmed && typeof importedSuccession.yardConfirmed === 'object')
+          ? cloneJson(importedSuccession.yardConfirmed)
+          : cloneJson(current.successionYardConfirmed ?? { dir: 'NE', offsetM: 120, confirmedAt: Date.now() }),
+        successionSelectedFaceIndex: (importedSuccession && Object.prototype.hasOwnProperty.call(importedSuccession, 'selectedFaceIndex'))
+          ? (importedSuccession.selectedFaceIndex == null ? null : Number(importedSuccession.selectedFaceIndex))
+          : (current.successionSelectedFaceIndex ?? null),
+        // 导入属于“仅输入快照”，阶段3结果默认不恢复（避免与当前几何/风险序列不一致）
+        successionStage3Result: null,
+        economicsParams: importedEconomicsParams
+          ? { ...DEFAULT_ECONOMICS_PARAMS, ...(cloneJson(importedEconomicsParams) ?? {}) }
+          : cloneJson(current.economicsParams ?? { ...DEFAULT_ECONOMICS_PARAMS }),
 
         // 默认仍按“仅输入快照”导入；若文件包含 workfacePlan，则一并恢复工作面布置方案。
         planningReverseSolutions: [],
@@ -20237,25 +20546,25 @@ const App = () => {
         <div className="px-6 pt-6 flex items-center justify-between gap-4">
           <div className="inline-flex bg-white border border-slate-200 rounded-lg p-1 shadow-sm">
             <button
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'odi' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'odi' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('odi')}
             >
               综合扰动结果
             </button>
             <button
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'geology' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'geology' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('geology')}
             >
               地质参数分析
             </button>
             <button
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'planning' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'planning' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('planning')}
             >
               智能规划
             </button>
             <button
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'cocontrol' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'cocontrol' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('cocontrol')}
               title="协同调控：统一标尺 ODI* + 参数门禁/检查"
               type="button"
@@ -20263,12 +20572,20 @@ const App = () => {
               协同调控
             </button>
             <button
-              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'succession' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'succession' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('succession')}
               title="采掘接续：阶段1前端确定性排程（不依赖后端）"
               type="button"
             >
               采掘接续
+            </button>
+            <button
+              className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'economics' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => switchMainViewModeWithRightPanel('economics')}
+              title="工程经济分析：基于接续（月产量/工期）+ 风险（月序列）计算现金流"
+              type="button"
+            >
+              经济分析
             </button>
           </div>
 
@@ -20382,6 +20699,11 @@ const App = () => {
               onStage3ParamsChange={(patch) => setSuccessionStage3Params((p) => ({ ...(p ?? {}), ...(patch ?? {}) }))}
               onStage3OrderModeChange={(mode) => setSuccessionPanelOrderMode(String(mode || 'yardConfirmed'))}
               mineCapacityWanPerYear={planningParams.mineCapacity}
+            />
+          ) : mainViewMode === 'economics' ? (
+            <EconomicsView
+              result={economicsResult}
+              onGoSuccession={() => switchMainViewModeWithRightPanel('succession')}
             />
           ) : mainViewMode === 'geology' ? (
             <>
@@ -20839,7 +21161,7 @@ const App = () => {
                 )}
 
                 {/* 协同调控：ws 基准工作面选择（同侧多个相邻面候选时弹出） */}
-                {coWsPickPopup && (
+                {mainViewMode === 'cocontrol' && coWsPickPopup && (
                   <div
                     className="absolute z-50"
                     style={{
@@ -24236,7 +24558,7 @@ const App = () => {
               <section className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2 min-w-0">
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest italic flex items-center gap-2">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
                       <ListOrdered size={14} className="text-red-500" /> 分级响应详情
                     </h3>
                     {activeTab === 'surface' && measuredZoningResult?.bins?.length === 5 && (
@@ -25445,18 +25767,55 @@ const App = () => {
                                         const hi = Number.isFinite(Ltotal) ? Number(Ltotal) : 0;
                                         return Math.max(0, Math.min(hi, v));
                                       })()}
+                                      onPointerDown={(e) => {
+                                        if (!dynEnabled) return;
+                                        coDynAdvanceDragRef.current = {
+                                          active: true,
+                                          value: String(e.currentTarget.value ?? ''),
+                                          endPick: String(endPick || 'max'),
+                                        };
+                                      }}
+                                      onMouseDown={(e) => {
+                                        if (!dynEnabled) return;
+                                        coDynAdvanceDragRef.current = {
+                                          active: true,
+                                          value: String(e.currentTarget.value ?? ''),
+                                          endPick: String(endPick || 'max'),
+                                        };
+                                      }}
+                                      onTouchStart={(e) => {
+                                        if (!dynEnabled) return;
+                                        coDynAdvanceDragRef.current = {
+                                          active: true,
+                                          value: String(e.currentTarget.value ?? ''),
+                                          endPick: String(endPick || 'max'),
+                                        };
+                                      }}
                                       onChange={(e) => {
                                         if (!dynEnabled) return;
                                         const v = Math.max(0, Math.round(Number(e.target.value) || 0));
                                         coUpdateProductionForSelected({ advanceLengthM: String(v) });
+                                        coDynAdvanceDragRef.current = {
+                                          active: true,
+                                          value: String(v),
+                                          endPick: String(endPick || 'max'),
+                                        };
+                                        coScheduleDynAdvanceCommit('dyn-length-slider-debounced');
                                       }}
                                       onMouseUp={(e) => {
                                         if (!dynEnabled) return;
-                                        coApplyDynamicAdvanceForSelected({ nextLengthStr: e.currentTarget.value, nextEnd: endPick, reason: 'dyn-length-slider-up' });
+                                        coDynAdvanceDragRef.current = { active: true, value: String(e.currentTarget.value ?? ''), endPick: String(endPick || 'max') };
+                                        coCommitDynAdvanceFromRef('dyn-length-slider-up');
                                       }}
                                       onTouchEnd={(e) => {
                                         if (!dynEnabled) return;
-                                        coApplyDynamicAdvanceForSelected({ nextLengthStr: e.currentTarget.value, nextEnd: endPick, reason: 'dyn-length-slider-up' });
+                                        coDynAdvanceDragRef.current = { active: true, value: String(e.currentTarget.value ?? ''), endPick: String(endPick || 'max') };
+                                        coCommitDynAdvanceFromRef('dyn-length-slider-up');
+                                      }}
+                                      onPointerUp={(e) => {
+                                        if (!dynEnabled) return;
+                                        coDynAdvanceDragRef.current = { active: true, value: String(e.currentTarget.value ?? ''), endPick: String(endPick || 'max') };
+                                        coCommitDynAdvanceFromRef('dyn-length-slider-up');
                                       }}
                                       disabled={!dynEnabled}
                                       className="w-full h-8 cursor-pointer"
@@ -25554,7 +25913,7 @@ const App = () => {
                 {/* 从“采区参数编辑器”迁移：生产规模配置 */}
                 <div className="bg-slate-50 p-5 rounded-[2rem] border border-slate-100 transition-all hover:bg-white hover:shadow-md">
                   <div className="flex items-center gap-2 mb-4">
-                    <ClipboardCheck size={14} className="text-blue-600" />
+                    <ClipboardCheck size={14} className="text-purple-500" />
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">生产规模配置</span>
                   </div>
                   <div className="space-y-2">
@@ -25571,7 +25930,7 @@ const App = () => {
                 {/* 从“采区参数编辑器”迁移：回采规模与生产效率 */}
                 <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2">
-                    <BarChart3 size={14} className="text-blue-500" />
+                    <BarChart3 size={14} className="text-purple-500" />
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">回采规模与生产效率</span>
                   </div>
 
@@ -25682,7 +26041,7 @@ const App = () => {
                 {/* 阶段1新增：关键路径工期 */}
                 <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2">
-                    <CalendarClock size={14} className="text-purple-600" />
+                    <CalendarClock size={14} className="text-purple-500" />
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">关键路径工期</span>
                   </div>
 
@@ -25711,7 +26070,7 @@ const App = () => {
                 {/* 阶段1新增：并行与约束 */}
                 <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2">
-                    <Settings size={14} className="text-purple-600" />
+                    <Settings size={14} className="text-purple-500" />
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">并行与约束</span>
                   </div>
 
@@ -25758,7 +26117,7 @@ const App = () => {
                 {/* 阶段2新增：ODI 风险曲线 */}
                 <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
                   <div className="flex items-center gap-2">
-                    <BarChart3 size={14} className="text-orange-500" />
+                    <BarChart3 size={14} className="text-purple-500" />
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">ODI 风险</span>
                   </div>
 
@@ -25837,37 +26196,214 @@ const App = () => {
             />
           </button>
 
-          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('economics') ? 'max-h-[500px]' : 'max-h-0'}`}>
-            <div className="px-5 pb-5 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                  <div className="text-[10px] text-emerald-700 font-bold uppercase tracking-widest">预估净利润</div>
-                  <div className="mt-1 text-2xl font-mono font-bold text-emerald-800">¥ 1280.5</div>
-                  <div className="mt-1 text-[10px] text-emerald-700/70">单位：万元（示意）</div>
+          <div className={`overflow-hidden transition-all duration-500 ${activeAccordion.includes('economics') ? 'max-h-[calc(100vh-120px)]' : 'max-h-0'}`}>
+            <div className="px-5 pb-5 space-y-5 max-h-[calc(100vh-160px)] overflow-y-auto custom-scrollbar">
+              {!successionStage1Plan?.ok && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                  <div className="text-[11px] text-amber-800 font-bold">未检测到接续排程结果</div>
+                  <div className="mt-1 text-[10px] text-amber-700 leading-relaxed">
+                    请先在“采掘接续”生成阶段1排程（月产量），经济分析才可计算现金流。
+                  </div>
+                  <button
+                    className="mt-3 w-full py-2 rounded-xl font-bold text-xs border bg-white border-amber-200 text-amber-800 hover:border-purple-400 hover:text-purple-700 transition-colors"
+                    onClick={() => switchMainViewModeWithRightPanel('succession')}
+                    type="button"
+                  >
+                    前往采掘接续
+                  </button>
                 </div>
-                <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-                  <div className="text-[10px] text-blue-700 font-bold uppercase tracking-widest">投资回报率</div>
-                  <div className="mt-1 text-2xl font-mono font-bold text-blue-800">18.6%</div>
-                  <div className="mt-1 text-[10px] text-blue-700/70">内部估算（示意）</div>
+              )}
+
+              {/* 参数：收入 */}
+              <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2">
+                  <CircleDollarSign size={14} className="text-amber-500" />
+                  <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">收入参数</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">煤价（元/吨）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.coalPriceYuanPerTon}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), coalPriceYuanPerTon: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-amber-500/20 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">销售率（0~1）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={economicsParams.salesRatio}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), salesRatio: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-amber-500/20 transition-all"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-xl border border-slate-200 p-4">
-                <div className="text-[11px] text-slate-500 font-bold mb-2">明细</div>
+              {/* 参数：成本 */}
+              <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2">
+                  <BarChart3 size={14} className="text-amber-500" />
+                  <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">成本参数</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">变动成本（元/吨）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.opexVarYuanPerTon}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), opexVarYuanPerTon: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-slate-500/20 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">固定成本（万元/月）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.opexFixedWanPerMonth}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), opexFixedWanPerMonth: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-slate-500/20 transition-all"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 参数：投资/财务 */}
+              <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2">
+                  <Settings size={14} className="text-amber-500" />
+                  <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">投资与贴现</span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">初始投资（万元）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.capexInitialWan}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), capexInitialWan: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-slate-500/20 transition-all"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">维持性投资（万元/年）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.capexSustainWanPerYear}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), capexSustainWanPerYear: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-slate-500/20 transition-all"
+                    />
+                  </div>
+                </div>
                 <div className="space-y-2">
-                  {[
-                    { name: '资源残余成本', value: '¥ 120.0' },
-                    { name: '环境治理金', value: '¥ 36.5' },
-                    { name: '设备折旧', value: '¥ 88.2' },
-                  ].map((row) => (
-                    <div key={row.name} className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2 text-slate-600">
-                        <CircleDollarSign size={14} className="text-amber-400" />
-                        <span>{row.name}</span>
-                      </div>
-                      <div className="font-mono text-slate-800">{row.value}</div>
-                    </div>
-                  ))}
+                  <label className="text-[12px] font-black text-slate-400">贴现率（0~1，年）</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={economicsParams.discountRate}
+                    onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), discountRate: e.target.value }))}
+                    className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-slate-500/20 transition-all"
+                  />
+                </div>
+              </div>
+
+              {/* 参数：风险联动 */}
+              <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                <div className="flex items-center gap-2">
+                  <BarChart3 size={14} className="text-amber-500" />
+                  <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">风险联动（可选）</span>
+                </div>
+
+                <label className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-black text-slate-600">启用风险联动</div>
+                    <div className="text-[10px] text-slate-400">高风险月按比例减产/或叠加风险成本</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(economicsParams.riskLinkEnabled)}
+                    onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), riskLinkEnabled: Boolean(e.target.checked) }))}
+                    className="h-4 w-4"
+                  />
+                </label>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">风险指标</label>
+                    <select
+                      value={economicsParams.riskMetricKey}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), riskMetricKey: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      disabled={!Boolean(economicsParams.riskLinkEnabled)}
+                      title="默认与接续阶段2一致；如无风险序列，此项不生效"
+                    >
+                      <option value="p90">p90</option>
+                      <option value="p95">p95</option>
+                      <option value="mean">mean</option>
+                      <option value="exceed">exceed</option>
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">触发阈值（0~1）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={economicsParams.riskImpactThreshold}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), riskImpactThreshold: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      disabled={!Boolean(economicsParams.riskLinkEnabled)}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">高风险减产比例（0~1）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={economicsParams.riskDowntimeRatio}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), riskDowntimeRatio: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      disabled={!Boolean(economicsParams.riskLinkEnabled)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">高风险附加成本（万元/月）</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={economicsParams.riskExtraCostWanPerHighRiskMonth}
+                      onChange={(e) => setEconomicsParams((p) => ({ ...(p ?? {}), riskExtraCostWanPerHighRiskMonth: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      disabled={!Boolean(economicsParams.riskLinkEnabled)}
+                    />
+                  </div>
+                </div>
+
+                <div className="text-[10px] text-slate-400 leading-relaxed">
+                  说明：风险序列来自“采掘接续-阶段2（ODI风险）”。若未生成风险序列，风险联动不会触发。
                 </div>
               </div>
             </div>

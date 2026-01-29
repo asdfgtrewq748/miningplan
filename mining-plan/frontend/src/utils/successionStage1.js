@@ -206,10 +206,14 @@ function buildMonthlyProduction({ panelsById, tasks, params, daysPerMonth }) {
 
     let tonnage = 0;
     let minedLen = 0;
+    const overlapByWorkface = new Map();
 
     for (const t of miningTasks) {
       const overlap = Math.max(0, Math.min(t.endDay, mEnd) - Math.max(t.startDay, mStart));
       if (!(overlap > 1e-9)) continue;
+
+      const wfId = String(t.workface ?? '');
+      if (wfId) overlapByWorkface.set(wfId, (overlapByWorkface.get(wfId) || 0) + overlap);
 
       const wf = panelsById.get(String(t.workface));
       const widthM = Math.max(0, toFinite(wf?.widthM ?? wf?.width ?? 0, 0));
@@ -223,7 +227,16 @@ function buildMonthlyProduction({ panelsById, tasks, params, daysPerMonth }) {
       tonnage += volume * coalDensity * recoveryRate;
     }
 
-    out.push({ month: m, tonnage, minedLen });
+    const workface = (() => {
+      const items = Array.from(overlapByWorkface.entries())
+        .map(([id, ov]) => ({ id, ov: Number(ov) }))
+        .filter((x) => x.id);
+      if (!items.length) return '';
+      items.sort((a, b) => (b.ov - a.ov) || a.id.localeCompare(b.id));
+      return items.map((x) => x.id).join('、');
+    })();
+
+    out.push({ month: m, tonnage, minedLen, workface });
   }
 
   return out;
