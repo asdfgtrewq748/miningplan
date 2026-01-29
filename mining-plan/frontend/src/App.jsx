@@ -7651,6 +7651,7 @@ const App = () => {
   const [coCoalThkHash, setCoCoalThkHash] = useState('');
   const coProductionAutoFillKeyRef = useRef('');
   const coProductionAutoFillAllKeyRef = useRef('');
+  const coDynAdvanceMaxByKeyRef = useRef({}); // { [coGetKey(target)]: number }
 
   // 协同调控（新参数面板 v2）：按工作面分别设置，并把“导入面/规划面”分表存
   const COCONTROL_STORAGE_KEY_V1 = 'miningplan.cocontrol.v1';
@@ -7671,7 +7672,7 @@ const App = () => {
     miningHeightM: '4',
     advanceLengthM: '200',
     advanceStepM: '25',
-    advanceBaselineEnd: 'min',
+    advanceBaselineEnd: 'max',
     advanceSpeedPerShift: '0',
   }), []);
 
@@ -8129,7 +8130,7 @@ const App = () => {
       // 推进长度基准端：不提供“自动”选项时，缺省落到固定 min 端
       const curEnd = String(curLayout.advanceBaselineEnd ?? '').trim();
       if (!(curEnd === 'min' || curEnd === 'max')) {
-        nextLayout.advanceBaselineEnd = 'min';
+        nextLayout.advanceBaselineEnd = 'max';
       }
 
       // 布置方向变化可能影响 ws 侧向选项：先清空，让用户或自动逻辑重新选
@@ -8216,7 +8217,7 @@ const App = () => {
       const curDynEnd = String(curProd?.advanceBaselineEnd ?? '').trim();
       if (!(curDynEnd === 'min' || curDynEnd === 'max')) {
         const layEnd = String(getCoEntryForTarget(t)?.layout?.advanceBaselineEnd ?? '').trim();
-        nextProd.advanceBaselineEnd = (layEnd === 'min' || layEnd === 'max') ? layEnd : 'min';
+        nextProd.advanceBaselineEnd = (layEnd === 'min' || layEnd === 'max') ? layEnd : 'max';
       }
 
       return { ...cur, production: nextProd };
@@ -8236,10 +8237,14 @@ const App = () => {
     const production = entry?.production ?? coDefaultProduction;
 
     const dims = coComputeDimsForTarget(t);
-    const Ltotal0 = toCoIntOrNull(layout?.advanceLengthM);
-    const Ltotal = (Number.isFinite(Ltotal0) && Ltotal0 > 0)
-      ? Ltotal0
-      : (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0 ? Math.round(dims.advanceLengthM) : null);
+    const k0 = String(coGetKey(t) || '').trim();
+    const Ldesign0 = toCoIntOrNull(layout?.advanceLengthM);
+    const Ldesign = (Number.isFinite(Ldesign0) && Ldesign0 > 0) ? Ldesign0 : null;
+    const locked = (k0 && Number.isFinite(Number(coDynAdvanceMaxByKeyRef.current?.[k0])))
+      ? Number(coDynAdvanceMaxByKeyRef.current[k0])
+      : null;
+    const inferred = (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0) ? Math.round(dims.advanceLengthM) : null;
+    const Ltotal = (Number.isFinite(Ldesign) ? Ldesign : (Number.isFinite(locked) ? locked : inferred));
     if (!(Number.isFinite(Ltotal) && Ltotal >= 0)) return;
 
     const curDynL0 = toCoIntOrNull(production?.advanceLengthM);
@@ -8251,7 +8256,7 @@ const App = () => {
     const nextDynL = Math.max(0, Math.min(Ltotal, parsedNext));
 
     const end0 = String(nextEnd ?? production?.advanceBaselineEnd ?? '').trim();
-    const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'min';
+    const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'max';
 
     // 1) 先写回生产层参数（保证 UI 一致）
     coUpdateEntry(t, (cur) => ({
@@ -8300,7 +8305,8 @@ const App = () => {
     }
 
     // 4) 几何变化后：派生结果作废，并触发自动算（会自动补齐评价点）
-    coInvalidateDerivedAfterWorkfaceChange();
+    // 体验优化：拖动 Slider 时不立刻清空评价点，否则画面会瞬间“全消失”被误判为删除。
+    coInvalidateDerivedAfterWorkfaceChange({ keepGeneratedPoints: true });
     coRequestAutoOdi({ 
       reason: reason || 'dyn-length-change', 
       forceRegenPoints: true, 
@@ -8754,8 +8760,10 @@ const App = () => {
     return s;
   };
 
-  const coInvalidateDerivedAfterWorkfaceChange = () => {
-    setGeneratedPoints(null);
+  const coInvalidateDerivedAfterWorkfaceChange = ({ keepGeneratedPoints = false } = {}) => {
+    if (!keepGeneratedPoints) {
+      setGeneratedPoints(null);
+    }
     setParamExtractionResult(null);
     setParamExtractionGeoResult(null);
     setParamExtractionFullResult(null);
@@ -24544,15 +24552,23 @@ const App = () => {
 
                         {(() => {
                           const dims = hasSelected ? coComputeDimsForTarget(t) : null;
-                          const Ltotal0 = toCoIntOrNull(layout?.advanceLengthM);
-                          const Ltotal = (Number.isFinite(Ltotal0) && Ltotal0 > 0)
-                            ? Ltotal0
-                            : (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0 ? Math.round(dims.advanceLengthM) : null);
+                          const k0 = hasSelected ? String(coGetKey(t) || '').trim() : '';
+                          const Ldesign0 = toCoIntOrNull(layout?.advanceLengthM);
+                          const Ldesign = (Number.isFinite(Ldesign0) && Ldesign0 > 0) ? Ldesign0 : null;
+                          if (k0 && Number.isFinite(Ldesign)) {
+                            coDynAdvanceMaxByKeyRef.current[k0] = Number(Ldesign);
+                          } else if (k0 && !Number.isFinite(Number(coDynAdvanceMaxByKeyRef.current?.[k0]))) {
+                            const inferred = (Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0) ? Math.round(dims.advanceLengthM) : null;
+                            if (Number.isFinite(inferred) && inferred > 0) coDynAdvanceMaxByKeyRef.current[k0] = Number(inferred);
+                          }
+                          const Ltotal = (k0 && Number.isFinite(Number(coDynAdvanceMaxByKeyRef.current?.[k0])))
+                            ? Number(coDynAdvanceMaxByKeyRef.current[k0])
+                            : (Number.isFinite(Ldesign) ? Number(Ldesign) : null);
 
                           const dynEnabled = Boolean(layoutConfirmed && hasSelected && Number.isFinite(Ltotal) && Ltotal >= 0);
                           const stepM = Math.max(1, Math.round(Number(production?.advanceStepM) || 25));
                           const end0 = String(production?.advanceBaselineEnd ?? '').trim();
-                          const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'min';
+                          const endPick = (end0 === 'min' || end0 === 'max') ? end0 : 'max';
 
                           return (
                             <div className="space-y-3">
@@ -24610,10 +24626,11 @@ const App = () => {
                                 <div className="space-y-2">
                                   <label className="text-[12px] font-black text-slate-400">基准端</label>
                                   <select
-                                    value={advEndOptions.some((o) => o.value === endPick) ? endPick : (advEndOptions[0]?.value ?? 'min')}
+                                    value={advEndOptions.some((o) => o.value === endPick) ? endPick : 'max'}
                                     onChange={(e) => {
                                       if (!dynEnabled) return;
-                                      const v = String(e.target.value || 'min');
+                                      const v0 = String(e.target.value || 'max');
+                                      const v = (v0 === 'min' || v0 === 'max') ? v0 : 'max';
                                       coUpdateProductionForSelected({ advanceBaselineEnd: v });
                                       coApplyDynamicAdvanceForSelected({ nextLengthStr: production.advanceLengthM, nextEnd: v, reason: 'dyn-end-change' });
                                     }}
