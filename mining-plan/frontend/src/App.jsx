@@ -1,6 +1,5 @@
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { 
-  Activity, 
   BrainCircuit,
   CalendarClock,
   CircleDollarSign,
@@ -31,6 +30,7 @@ import {
   ChevronUp,
   ChevronDown
 } from 'lucide-react';
+import SystemLogo from './components/SystemLogo.jsx';
 import {
   ComposedChart,
   Line,
@@ -49,10 +49,19 @@ import Coordinate from 'jsts/org/locationtech/jts/geom/Coordinate.js';
 import BufferOp from 'jsts/org/locationtech/jts/operation/buffer/BufferOp.js';
 import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
+import SuccessionStage1View from './components/SuccessionStage1View.jsx';
 import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedComputeCancelable } from './api.js';
+import { buildSuccessionStage1Plan, computeWorkfaceDimsFromLoop } from './utils/successionStage1.js';
+import {
+  buildStage3Candidates,
+  computeProductionKpis,
+  computeTargetTonsPerMonth,
+  estimateMonthlyRiskFromCocontrolCurves,
+  scoreScenario,
+} from './utils/successionStage3.js';
 
 const DEFAULT_PLANNING_PARAMS = {
-  mineCapacity: '',
+  mineCapacity: '500',
   seamThickness: '',
   coalDensity: '1.4',
   recoveryRateMin: '0.85',
@@ -74,6 +83,17 @@ const DEFAULT_PLANNING_PARAMS = {
   boundaryPillarTarget: '65',
 };
 
+const normalizePlanningParams = (p0) => {
+  const p = (p0 && typeof p0 === 'object') ? p0 : {};
+  const mineCapacityRaw = String(p?.mineCapacity ?? '').trim();
+  const mineCapacity = mineCapacityRaw ? mineCapacityRaw : String(DEFAULT_PLANNING_PARAMS.mineCapacity ?? '500');
+  return {
+    ...DEFAULT_PLANNING_PARAMS,
+    ...p,
+    mineCapacity,
+  };
+};
+
 const DEFAULT_DISTURBANCE_PARAMS = {
   // 扰动评分采样：默认 25m（后续可从编辑框读取）
   sampleStepM: 25,
@@ -84,6 +104,37 @@ const DEFAULT_DISTURBANCE_PARAMS = {
   wExceed: 0.15,
   // 体现“超采出范围”覆岩影响：采出区域外扩（m），默认 30；不设上限
   outerBufferM: 30,
+};
+
+const DEFAULT_SUCCESSION_STAGE1_PARAMS = {
+  // 速度/节拍
+  daysPerMonth: 25,
+  utilization: 0.85,
+  shearAdvanceRate: 6, // m/d
+  driveRate: 15, // m/d
+  // 关键路径
+  installDays: 15,
+  relocationDays: 10,
+  // 约束
+  singleFaceMining: true,
+  driveParallelWithMining: true,
+  driveCrews: 1,
+};
+
+const DEFAULT_SUCCESSION_STAGE2_PARAMS = {
+  // ODI 风险曲线：默认用 p90 与阈值 0.85
+  metric: 'p90', // p90|p95|mean|exceed
+  threshold: 0.85,
+  sampleStepM: 25,
+  // 若协同调控已完成 ODI* 统一标尺，则允许用 ODI*（0~1）构建插值场作为风险场
+  useOdiStarWhenAvailable: true,
+};
+
+const DEFAULT_SUCCESSION_STAGE3_PARAMS = {
+  // 推荐与对比：权重（越大越看重）
+  wProd: 1.0,
+  wRisk: 1.0,
+  wMonths: 0.15,
 };
 
 const App = () => {
@@ -102,18 +153,40 @@ const App = () => {
   const workerError = (...args) => { if (DEBUG_WORKER_LOG) console.error(...args); };
   // 状态管理：场景切换、采高、步长、富裕系数及权重
   const [activeTab, setActiveTab] = useState('surface'); 
-  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning' | 'cocontrol'
+  const [mainViewMode, setMainViewMode] = useState('odi'); // 'odi' | 'geology' | 'planning' | 'cocontrol' | 'succession'
   const [miningHeight, setMiningHeight] = useState(4.5);
   const [stepLength, setStepLength] = useState(25);
   const [richFactor, setRichFactor] = useState(1.1);
   const [scenarioWeights, setScenarioWeights] = useState({ wd: 0.45, wo: 0.30, wf: 0.25 });
   const [lastParamExtractionMode, setLastParamExtractionMode] = useState('full'); // 'full' | 'geo'
-  const [planningParams, setPlanningParams] = useState(() => ({ ...DEFAULT_PLANNING_PARAMS }));
+  const [planningParams, setPlanningParams] = useState(() => normalizePlanningParams(DEFAULT_PLANNING_PARAMS));
+  const [successionStage1Params, setSuccessionStage1Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE1_PARAMS }));
+  const [successionStage2Params, setSuccessionStage2Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE2_PARAMS }));
+  const [successionStage3Params, setSuccessionStage3Params] = useState(() => ({ ...DEFAULT_SUCCESSION_STAGE3_PARAMS }));
+  const [successionPanelOrderMode, setSuccessionPanelOrderMode] = useState('yardConfirmed'); // faceIndex|odiLowFirst|yardConfirmed
+  const [successionYardDir, setSuccessionYardDir] = useState('NE'); // N|NE|E|SE|S|SW|W|NW
+  const [successionYardOffsetM, setSuccessionYardOffsetM] = useState(120);
+  const [successionYardConfirmed, setSuccessionYardConfirmed] = useState(() => ({ dir: 'NE', offsetM: 120, confirmedAt: Date.now() })); // { dir, offsetM, confirmedAt }
+  const [successionSelectedFaceIndex, setSuccessionSelectedFaceIndex] = useState(null);
+  const [successionStage3Result, setSuccessionStage3Result] = useState(null);
   // 智能规划：保存反算可行解集，用于调节 N 时即时重绘
   const [planningReverseSolutions, setPlanningReverseSolutions] = useState([]);
   const [planningAdvanceAxis, setPlanningAdvanceAxis] = useState('x');
   // 智能规划：多目标规划优化方案（仅 UI 选择，不改既有算法触发逻辑）
   const [planningOptMode, setPlanningOptMode] = useState('efficiency'); // 'efficiency' | 'disturbance' | 'recovery' | 'weighted'
+
+  // 兜底：如果任何恢复/导入/旧状态把 mineCapacity 置空，则立即回填默认值。
+  useEffect(() => {
+    const cur = String(planningParams?.mineCapacity ?? '').trim();
+    if (cur) return;
+    setPlanningParams((p) => {
+      const mc = String(p?.mineCapacity ?? '').trim();
+      if (mc) return p;
+      return { ...(p && typeof p === 'object' ? p : {}), mineCapacity: String(DEFAULT_PLANNING_PARAMS.mineCapacity ?? '500') };
+    });
+  }, [planningParams?.mineCapacity]);
+
+  
 
   const pickCoverageForDisplay = (cand) => {
     const c = cand ?? null;
@@ -7550,6 +7623,7 @@ const App = () => {
     if (mode === 'odi') openRightPanelOnly('summary');
     if (mode === 'geology') openRightPanelOnly('summary');
     if (mode === 'cocontrol') openRightPanelOnly('cocontrol');
+    if (mode === 'succession') openRightPanelOnly('succession');
   };
 
   // 智能规划：进入“采区规划图”后自动把“多目标规划优化方案”滚动到可视区
@@ -7729,6 +7803,274 @@ const App = () => {
   });
 
   const [coSelectedTarget, setCoSelectedTarget] = useState(null); // { kind: 'import', no: number } | { kind: 'planned', faceIndex: number }
+
+  // 采掘接续（阶段1）：方案来源优先级
+  // 注意：必须放在 coPlannedParamsByFaceIndex / plannedWorkfaceLoopsWorld 声明之后，避免 TDZ（Cannot access before initialization）。
+  const successionHasCocontrolConfirmed = useMemo(() => {
+    const map = (coPlannedParamsByFaceIndex && typeof coPlannedParamsByFaceIndex === 'object') ? coPlannedParamsByFaceIndex : {};
+    return Object.values(map).some((e) => Boolean(e?.layoutConfirmed));
+  }, [coPlannedParamsByFaceIndex]);
+
+  const successionHasCocontrolAny = useMemo(() => {
+    const map = (coPlannedParamsByFaceIndex && typeof coPlannedParamsByFaceIndex === 'object') ? coPlannedParamsByFaceIndex : {};
+    return Object.keys(map).length > 0;
+  }, [coPlannedParamsByFaceIndex]);
+
+  const successionDisplayLoopsWorld = useMemo(() => {
+    const loops = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+    if (loops.length) return loops;
+
+    // 兜底：部分智能规划流程可能只更新 generatedPoints.faces（矩形 corners），未写回 plannedWorkfaceLoopsWorld。
+    const faces = Array.isArray(generatedPoints?.faces) ? generatedPoints.faces : [];
+    const sanitized = faces
+      .filter((f) => Array.isArray(f?.corners) && f.corners.length >= 3)
+      .map((f) => {
+        const rawLoop = (f.corners ?? []).map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+        return {
+          faceIndex: Number(f?.faceIndex),
+          loop: rawLoop,
+        };
+      })
+      .filter((wf) => Array.isArray(wf.loop) && wf.loop.length >= 3);
+
+    // faceIndex 不可靠时按出现顺序补齐为 1..N（接续与 No.X 对应）
+    let next = 1;
+    const normalized = sanitized.map((wf) => {
+      const fi = Math.round(Number(wf?.faceIndex));
+      if (Number.isFinite(fi) && fi >= 1) return { ...wf, faceIndex: fi };
+      const assigned = next;
+      next += 1;
+      return { ...wf, faceIndex: assigned };
+    });
+
+    return normalized;
+  }, [plannedWorkfaceLoopsWorld, generatedPoints]);
+
+  const successionHasAnyLoops = useMemo(() => {
+    const loops = Array.isArray(successionDisplayLoopsWorld) ? successionDisplayLoopsWorld : [];
+    return loops.length > 0;
+  }, [successionDisplayLoopsWorld]);
+
+  const successionHasPlanningAny = useMemo(() => {
+    // 规划结果可能存在“已出图但未显式选中”的情况：此时仍应允许接续直接显示。
+    return Boolean(planningEfficiencyResult?.ok || planningRecoveryResult?.ok || planningWeightedResult?.ok);
+  }, [planningEfficiencyResult, planningRecoveryResult, planningWeightedResult]);
+
+  const successionHasPlanningSelected = useMemo(() => {
+    const sig = String(planningEfficiencySelectedSig || planningRecoverySelectedSig || planningWeightedSelected?.sig || '').trim();
+    return Boolean(sig);
+  }, [planningEfficiencySelectedSig, planningRecoverySelectedSig, planningWeightedSelected]);
+
+  const successionSource = useMemo(() => {
+    if (successionHasCocontrolConfirmed) {
+      return {
+        ok: true,
+        label: '协同调控（已确认）',
+        detail: '优先使用协同调控已确认的工作面布局',
+        kind: 'cocontrol',
+      };
+    }
+
+    // 协同调控已有布置但尚未确认：仍允许接续先展示与排程（避免“看得见方案但接续不显示”）。
+    if (successionHasCocontrolAny && successionHasAnyLoops) {
+      return {
+        ok: true,
+        label: '协同调控（未确认）',
+        detail: '检测到协同调控工作面参数表，但未确认；接续先展示当前布置（建议去协同调控确认）',
+        kind: 'cocontrol',
+      };
+    }
+
+    if (successionHasPlanningSelected) {
+      const sig = String(planningEfficiencySelectedSig || planningRecoverySelectedSig || planningWeightedSelected?.sig || '').trim();
+      return {
+        ok: true,
+        label: '智能规划（当前选中）',
+        detail: sig ? `已选中方案：${sig.slice(0, 10)}…` : '已选中方案',
+        kind: 'planning',
+      };
+    }
+
+    // 智能规划已有结果并已出图，但未显式选中：接续仍可直接使用当前展示的 loops。
+    if (successionHasPlanningAny && successionHasAnyLoops) {
+      const sig = String(planningEfficiencySelectedSig || planningRecoverySelectedSig || planningWeightedSelected?.sig || '').trim();
+      return {
+        ok: true,
+        label: '智能规划（已有方案）',
+        detail: sig ? `当前展示方案：${sig.slice(0, 10)}…` : '检测到智能规划结果；接续使用当前展示的工作面布置',
+        kind: 'planning',
+      };
+    }
+
+    // 兜底：只要已有 loops，就允许接续展示（来源不明时提示用户回到规划/协同调控确认）。
+    if (successionHasAnyLoops) {
+      return {
+        ok: true,
+        label: '已有工作面布置',
+        detail: '检测到工作面轮廓；接续已显示（建议在智能规划/协同调控明确确认来源）',
+        kind: 'unknown',
+      };
+    }
+
+    return {
+      ok: false,
+      label: '未确认',
+      detail: '',
+      kind: 'none',
+    };
+  }, [
+    successionHasCocontrolConfirmed,
+    successionHasCocontrolAny,
+    successionHasAnyLoops,
+    successionHasPlanningSelected,
+    successionHasPlanningAny,
+    planningEfficiencySelectedSig,
+    planningRecoverySelectedSig,
+    planningWeightedSelected,
+  ]);
+
+  const successionLoopsWorld = useMemo(() => {
+    const loops = Array.isArray(successionDisplayLoopsWorld) ? successionDisplayLoopsWorld : [];
+    if (!successionSource?.ok) return [];
+
+    if (successionSource.kind === 'cocontrol') {
+      const map = (coPlannedParamsByFaceIndex && typeof coPlannedParamsByFaceIndex === 'object') ? coPlannedParamsByFaceIndex : {};
+      const filtered = loops.filter((wf) => {
+        const fi = Math.round(Number(wf?.faceIndex));
+        if (!(Number.isFinite(fi) && fi >= 1)) return false;
+        return Boolean(map?.[String(fi)]?.layoutConfirmed);
+      });
+      // 若确认表存在但匹配不到 loops（例如仅确认了导入面），兜底仍显示全部规划面。
+      return filtered.length ? filtered : loops;
+    }
+
+    return loops;
+  }, [successionDisplayLoopsWorld, coPlannedParamsByFaceIndex, successionSource]);
+
+  const successionPanels = useMemo(() => {
+    const loops = Array.isArray(successionLoopsWorld) ? successionLoopsWorld : [];
+    const out = loops
+      .map((wf) => {
+        const fi = Math.round(Number(wf?.faceIndex));
+        const { center, widthM, advanceLengthM } = computeWorkfaceDimsFromLoop(wf?.loop ?? []);
+        return {
+          id: Number.isFinite(fi) && fi >= 1 ? `No.${fi}` : String(wf?.id ?? ''),
+          faceIndex: Number.isFinite(fi) ? fi : null,
+          widthM,
+          advanceLengthM,
+          center_x: center.x,
+          center_y: center.y,
+        };
+      })
+      .filter((p) => p.id && Number.isFinite(Number(p.advanceLengthM)) && p.advanceLengthM > 0);
+
+    const riskByFi = (() => {
+      if (!coOdiAnalysisResult?.ok) return new Map();
+      const faces = Array.isArray(coOdiAnalysisResult?.faces) ? coOdiAnalysisResult.faces : [];
+      const m = new Map();
+      for (const f of faces) {
+        if (String(f?.kind) !== 'planned') continue;
+        const fi = Number(f?.faceIndex);
+        const v = Number(f?.stats?.p90);
+        if (Number.isFinite(fi) && fi >= 1 && Number.isFinite(v)) m.set(fi, v);
+      }
+      return m;
+    })();
+
+    const mode = String(successionPanelOrderMode || 'faceIndex');
+    if (mode === 'odiLowFirst') {
+      out.sort((a, b) => {
+        const fa = Number(a.faceIndex) || 0;
+        const fb = Number(b.faceIndex) || 0;
+        const ra = riskByFi.get(fa);
+        const rb = riskByFi.get(fb);
+        const aa = Number.isFinite(ra) ? ra : Infinity;
+        const bb = Number.isFinite(rb) ? rb : Infinity;
+        if (aa !== bb) return aa - bb;
+        return fa - fb;
+      });
+    } else if (mode === 'yardConfirmed') {
+      // 语义（B）：采区/工作面相对工业广场的方位。
+      // 排序锚点需要使用“工业广场相对采区”的方位，因此这里做 180° 翻转。
+      const dirUser = String(successionYardConfirmed?.dir ?? successionYardDir ?? 'NE');
+      const dir = (() => {
+        if (dirUser === 'N') return 'S';
+        if (dirUser === 'S') return 'N';
+        if (dirUser === 'E') return 'W';
+        if (dirUser === 'W') return 'E';
+        if (dirUser === 'NE') return 'SW';
+        if (dirUser === 'NW') return 'SE';
+        if (dirUser === 'SE') return 'NW';
+        if (dirUser === 'SW') return 'NE';
+        return 'SW';
+      })();
+      const offsetM = Number(successionYardConfirmed?.offsetM ?? successionYardOffsetM ?? 120);
+      const pad = (Number.isFinite(offsetM) && offsetM > 0) ? offsetM : 120;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of out) {
+        const x = Number(p?.center_x);
+        const y = Number(p?.center_y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      if (!(Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY))) {
+        out.sort((a, b) => (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0));
+        return out;
+      }
+
+      const midX = (minX + maxX) / 2;
+      const midY = (minY + maxY) / 2;
+
+      // 注意：这里使用的是 world 坐标（与中心点/几何一致），y 越大越靠“北/上”。
+      const anchor = (() => {
+        if (dir === 'N') return { x: midX, y: maxY + pad };
+        if (dir === 'S') return { x: midX, y: minY - pad };
+        if (dir === 'E') return { x: maxX + pad, y: midY };
+        if (dir === 'W') return { x: minX - pad, y: midY };
+        if (dir === 'NE') return { x: maxX + pad, y: maxY + pad };
+        if (dir === 'NW') return { x: minX - pad, y: maxY + pad };
+        if (dir === 'SE') return { x: maxX + pad, y: minY - pad };
+        if (dir === 'SW') return { x: minX - pad, y: minY - pad };
+        return { x: minX - pad, y: minY - pad };
+      })();
+
+      out.sort((a, b) => {
+        const ax = Number(a?.center_x);
+        const ay = Number(a?.center_y);
+        const bx = Number(b?.center_x);
+        const by = Number(b?.center_y);
+        const da = (Number.isFinite(ax) && Number.isFinite(ay)) ? ((ax - anchor.x) ** 2 + (ay - anchor.y) ** 2) : Infinity;
+        const db = (Number.isFinite(bx) && Number.isFinite(by)) ? ((bx - anchor.x) ** 2 + (by - anchor.y) ** 2) : Infinity;
+        if (da !== db) return da - db;
+        return (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0);
+      });
+    } else {
+      out.sort((a, b) => (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0));
+    }
+    return out;
+  }, [successionLoopsWorld, coOdiAnalysisResult, successionPanelOrderMode, successionYardDir, successionYardOffsetM, successionYardConfirmed]);
+
+  const successionStage1Plan = useMemo(() => {
+    if (!successionSource?.ok) return { ok: false };
+    if (!successionPanels.length) return { ok: false };
+
+    const params = {
+      ...successionStage1Params,
+      coalDensity: planningParams.coalDensity,
+      recoveryRateMin: planningParams.recoveryRateMin,
+      recoveryRateMax: planningParams.recoveryRateMax,
+      miningHeightM: miningHeight,
+    };
+    return buildSuccessionStage1Plan(successionPanels, params);
+  }, [successionSource, successionPanels, successionStage1Params, planningParams.coalDensity, planningParams.recoveryRateMin, planningParams.recoveryRateMax, miningHeight]);
 
   // ODI 分析排行表的 key 口径：与 handleCocontrolOdiAnalysis 内部保持一致
   const coOdiAnalysisKeyForTarget = (t) => {
@@ -10339,7 +10681,7 @@ const App = () => {
       setCoOdiAnalysisExportOpen(Boolean(snap.coOdiAnalysisExportOpen));
       setCoOdiAnalysisExportOptions(snap.coOdiAnalysisExportOptions ? cloneJson(snap.coOdiAnalysisExportOptions) : { includeSelectedHistogram: true, includeSelectedCurve: true });
       setCoOdiAnalysisExportCopyStatus(String(snap.coOdiAnalysisExportCopyStatus ?? ''));
-      setPlanningParams(snap.planningParams ? cloneJson(snap.planningParams) : { ...DEFAULT_PLANNING_PARAMS });
+      setPlanningParams(normalizePlanningParams(snap.planningParams ? cloneJson(snap.planningParams) : DEFAULT_PLANNING_PARAMS));
       setPlanningDisturbanceParams(snap.planningDisturbanceParams ? cloneJson(snap.planningDisturbanceParams) : { ...DEFAULT_DISTURBANCE_PARAMS });
       setPlanningReverseSolutions(snap.planningReverseSolutions ?? []);
       setPlanningAdvanceAxis(String(snap.planningAdvanceAxis ?? 'x') === 'y' ? 'y' : 'x');
@@ -12346,6 +12688,10 @@ const App = () => {
       if (cur === next) return p;
       return { ...p, seamThickness: next };
     });
+    {
+      const n = Number(next);
+      if (Number.isFinite(n) && n > 0) setMiningHeight(n);
+    }
     lastAutoSeamThicknessRef.current = next;
   }, [autoSeamThicknessInfo?.avg, autoSeamThicknessInfo?.coal]);
 
@@ -12712,6 +13058,358 @@ const App = () => {
 
     return renormField01(pack);
   }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, odiScaleReference, mainViewMode, workfaceCount, plannedWorkfaceLoopsWorld, generatedPoints, coOdiAnalysisGridStepM]);
+
+  // 采掘接续（阶段2）：基于 ODI 场/ODI* 场对“阶段1甘特推进进度”做按月风险采样
+  // 注意：依赖数组会读取 odiFieldPack，因此必须放在 odiFieldPack 初始化之后。
+  const successionStage2Risk = useMemo(() => {
+    const plan = successionStage1Plan;
+    if (!successionSource?.ok || !plan?.ok) {
+      return { ok: false, reason: '缺少接续方案或尚未生成排程。' };
+    }
+
+    const metric = String(successionStage2Params?.metric ?? 'p90');
+    const threshold = clamp(Number(successionStage2Params?.threshold), 0, 1);
+    const stepM = Math.max(5, Math.round(Number(successionStage2Params?.sampleStepM) || 25));
+
+    const wantOdiStar = Boolean(successionStage2Params?.useOdiStarWhenAvailable);
+    const canOdiStar = Boolean(wantOdiStar && coControlEnabled && coScalePack && coOdiUnionResult);
+
+    const buildOdiStarFieldPack = () => {
+      if (!canOdiStar) return null;
+      const basePts = (coOdiUnionResult?.fullPoints?.length ? coOdiUnionResult.fullPoints : (coOdiUnionResult?.points ?? []))
+        .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.odi));
+      if (basePts.length < 3) return null;
+
+      const samples = basePts
+        .map((p) => {
+          const v = applyUnifiedScaleToOdiRaw(p?.odi, coScalePack);
+          return Number.isFinite(v) ? ({ id: String(p?.id ?? ''), x: p.x, y: p.y, value: clamp(v, 0, 1) }) : null;
+        })
+        .filter((s) => s && Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.value));
+      if (samples.length < 3) return null;
+
+      const worldBounds = coAnalysisGetWorldBounds();
+      if (!worldBounds) return null;
+      return coAnalysisBuildFieldPack(samples, worldBounds);
+    };
+
+    const odiStarFieldPack = buildOdiStarFieldPack();
+    const fieldPack = (odiStarFieldPack?.field) ? odiStarFieldPack : ((odiFieldPack?.field) ? odiFieldPack : null);
+    const fieldLabel = (odiStarFieldPack?.field) ? 'ODI*（统一标尺，0~1）' : 'ODI（插值场，0~1）';
+
+    if (!fieldPack?.field) {
+      return { ok: false, reason: '缺少 ODI 插值场：请先在“ODI”页面完成插值（或在“协同调控”完成 ODI* 统一标尺并开启）。' };
+    }
+
+    const quantile01 = (xs, q) => {
+      const arr = (xs ?? []).filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
+      if (!arr.length) return null;
+      const qq = clamp(Number(q), 0, 1);
+      const pos = (arr.length - 1) * qq;
+      const i0 = Math.floor(pos);
+      const i1 = Math.min(arr.length - 1, i0 + 1);
+      const t = pos - i0;
+      const v0 = arr[i0];
+      const v1 = arr[i1];
+      return v0 + (v1 - v0) * t;
+    };
+
+    const stats01 = (xs) => {
+      const arr = (xs ?? []).filter((v) => Number.isFinite(v));
+      const n = arr.length;
+      if (!n) return { n: 0, mean: null, p90: null, p95: null, exceed: null };
+      let sum = 0;
+      let ex = 0;
+      for (const v of arr) {
+        sum += v;
+        if (v >= threshold) ex++;
+      }
+      return {
+        n,
+        mean: sum / n,
+        p90: quantile01(arr, 0.90),
+        p95: quantile01(arr, 0.95),
+        exceed: ex / n,
+      };
+    };
+
+    const loopById = new Map(
+      (Array.isArray(successionLoopsWorld) ? successionLoopsWorld : [])
+        .map((wf) => {
+          const fi = Math.round(Number(wf?.faceIndex));
+          const id = (Number.isFinite(fi) && fi >= 1) ? `No.${fi}` : String(wf?.id ?? '');
+          return [id, wf?.loop ?? []];
+        })
+        .filter(([id]) => Boolean(id))
+    );
+
+    const faceGeomById = new Map();
+    for (const p of (Array.isArray(successionPanels) ? successionPanels : [])) {
+      const id = String(p?.id ?? '');
+      const loop = loopById.get(id);
+      if (!id || !Array.isArray(loop) || loop.length < 3) continue;
+      const dims = computeWorkfaceDimsFromLoop(loop);
+      if (!(Number.isFinite(dims?.advanceLengthM) && dims.advanceLengthM > 0)) continue;
+      faceGeomById.set(id, dims);
+    }
+
+    const sampleFacePrefixValues = (faceId, progressLenM) => {
+      const dims = faceGeomById.get(String(faceId));
+      if (!dims) return [];
+      const center = dims.center;
+      const adv = dims.advanceAxis ?? { x: 1, y: 0 };
+      const wid = dims.widthAxis ?? { x: 0, y: 1 };
+      const advMin = Number.isFinite(dims.advanceMin) ? dims.advanceMin : -(dims.advanceLengthM / 2);
+      const widthM = Math.max(0, Number(dims.widthM) || 0);
+      const advLen = Math.max(0, Number(dims.advanceLengthM) || 0);
+      const len = clamp(Number(progressLenM) || 0, 0, advLen);
+      if (!(len > 0)) return [];
+
+      const offsets = [-0.4, -0.2, 0, 0.2, 0.4].map((k) => k * (widthM * 0.5));
+      const out = [];
+      const s0 = advMin;
+      const s1 = advMin + len;
+      for (let s = s0; s <= s1 + 1e-6; s += stepM) {
+        const bx = center.x + adv.x * s;
+        const by = center.y + adv.y * s;
+        for (const o of offsets) {
+          const x = bx + wid.x * o;
+          const y = by + wid.y * o;
+          const v = sampleFieldAtWorldXY(fieldPack, x, y);
+          if (Number.isFinite(v)) out.push(clamp(Number(v), 0, 1));
+        }
+      }
+      return out;
+    };
+
+    const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+    const miningTasks = tasks.filter((t) => t?.type === 'mining' && Number.isFinite(t?.startDay) && Number.isFinite(t?.endDay));
+    const daysPerMonth = Math.max(1, Math.round(Number(plan?.daysPerMonth) || 25));
+    const totalMonths = Math.max(1, Math.round(Number(plan?.totalMonths) || 1));
+
+    const rows = [];
+    for (let m = 1; m <= totalMonths; m++) {
+      const mStart = (m - 1) * daysPerMonth;
+      const mEnd = m * daysPerMonth;
+
+      // 本月内“处于回采中”的工作面（允许多面时取 max 风险）
+      const active = miningTasks.filter((t) => (t.startDay < mEnd) && (t.endDay > mStart));
+      if (!active.length) {
+        rows.push({ month: m, mean: null, p90: null, p95: null, exceed: null, activeFaces: 0 });
+        continue;
+      }
+
+      let best = null;
+      for (const t of active) {
+        const dur = Math.max(1e-6, Number(t.endDay) - Number(t.startDay));
+        const fracEnd = clamp((mEnd - Number(t.startDay)) / dur, 0, 1);
+        const lengthM = Math.max(0, Number(t.lengthM) || 0);
+        const progressLen = lengthM * fracEnd;
+
+        const values = sampleFacePrefixValues(String(t.workface), progressLen);
+        const st = stats01(values);
+        if (!st?.n) continue;
+
+        const val = (metric === 'p95') ? st.p95
+          : (metric === 'mean') ? st.mean
+          : (metric === 'exceed') ? st.exceed
+          : st.p90;
+        const vv = Number.isFinite(val) ? Number(val) : -Infinity;
+        if (!best || vv > Number(best.__pick ?? -Infinity)) {
+          best = { ...st, __pick: vv };
+        }
+      }
+
+      if (!best) {
+        rows.push({ month: m, mean: null, p90: null, p95: null, exceed: null, activeFaces: active.length });
+      } else {
+        rows.push({ month: m, mean: best.mean, p90: best.p90, p95: best.p95, exceed: best.exceed, activeFaces: active.length });
+      }
+    }
+
+    return {
+      ok: true,
+      fieldLabel,
+      metric,
+      threshold,
+      rows,
+    };
+  }, [successionSource, successionStage1Plan, successionLoopsWorld, successionPanels, successionStage2Params, odiFieldPack, coControlEnabled, coScalePack, coOdiUnionResult, activeTab]);
+
+  const handleRunSuccessionStage3 = () => {
+    try {
+      const target = computeTargetTonsPerMonth(planningParams?.mineCapacity);
+      const allowOrderModes = (() => {
+        const modes = ['faceIndex', 'yardConfirmed'];
+        if (coOdiAnalysisResult?.ok) modes.push('odiLowFirst');
+        return modes;
+      })();
+      const cands = buildStage3Candidates({
+        baseParams: successionStage1Params,
+        allowOrderModes,
+        currentOrderMode: successionPanelOrderMode,
+      });
+
+      const results = [];
+      for (const c of cands) {
+        // 生成面序（按 candidate.orderMode）
+        const panelsOrdered = (() => {
+          const base = Array.isArray(successionPanels) ? successionPanels.slice() : [];
+          const mode = String(c?.orderMode || 'faceIndex');
+
+          if (mode === 'yardConfirmed') {
+            // 语义（B）：采区/工作面相对工业广场的方位。
+            // 排序锚点需要使用“工业广场相对采区”的方位，因此这里做 180° 翻转。
+            const dirUser = String(successionYardConfirmed?.dir ?? successionYardDir ?? 'NE');
+            const dir = (() => {
+              if (dirUser === 'N') return 'S';
+              if (dirUser === 'S') return 'N';
+              if (dirUser === 'E') return 'W';
+              if (dirUser === 'W') return 'E';
+              if (dirUser === 'NE') return 'SW';
+              if (dirUser === 'NW') return 'SE';
+              if (dirUser === 'SE') return 'NW';
+              if (dirUser === 'SW') return 'NE';
+              return 'SW';
+            })();
+            const offsetM = Number(successionYardConfirmed?.offsetM ?? successionYardOffsetM ?? 120);
+            const pad = (Number.isFinite(offsetM) && offsetM > 0) ? offsetM : 120;
+
+            let minX = Infinity;
+            let maxX = -Infinity;
+            let minY = Infinity;
+            let maxY = -Infinity;
+            for (const p of base) {
+              const x = Number(p?.center_x);
+              const y = Number(p?.center_y);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+            if (!(Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY))) {
+              base.sort((a, b) => (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0));
+              return base;
+            }
+
+            const midX = (minX + maxX) / 2;
+            const midY = (minY + maxY) / 2;
+            // 注意：这里使用的是 world 坐标（与中心点/几何一致），y 越大越靠“北/上”。
+            const anchor = (() => {
+              if (dir === 'N') return { x: midX, y: maxY + pad };
+              if (dir === 'S') return { x: midX, y: minY - pad };
+              if (dir === 'E') return { x: maxX + pad, y: midY };
+              if (dir === 'W') return { x: minX - pad, y: midY };
+              if (dir === 'NE') return { x: maxX + pad, y: maxY + pad };
+              if (dir === 'NW') return { x: minX - pad, y: maxY + pad };
+              if (dir === 'SE') return { x: maxX + pad, y: minY - pad };
+              if (dir === 'SW') return { x: minX - pad, y: minY - pad };
+              return { x: minX - pad, y: minY - pad };
+            })();
+
+            base.sort((a, b) => {
+              const ax = Number(a?.center_x);
+              const ay = Number(a?.center_y);
+              const bx = Number(b?.center_x);
+              const by = Number(b?.center_y);
+              const da = (Number.isFinite(ax) && Number.isFinite(ay)) ? ((ax - anchor.x) ** 2 + (ay - anchor.y) ** 2) : Infinity;
+              const db = (Number.isFinite(bx) && Number.isFinite(by)) ? ((bx - anchor.x) ** 2 + (by - anchor.y) ** 2) : Infinity;
+              if (da !== db) return da - db;
+              return (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0);
+            });
+            return base;
+          }
+
+          if (mode === 'odiLowFirst' && coOdiAnalysisResult?.ok) {
+            const riskByFi = new Map();
+            const faces = Array.isArray(coOdiAnalysisResult?.faces) ? coOdiAnalysisResult.faces : [];
+            for (const f of faces) {
+              if (String(f?.kind) !== 'planned') continue;
+              const fi = Number(f?.faceIndex);
+              const v = Number(f?.stats?.p90);
+              if (Number.isFinite(fi) && fi >= 1 && Number.isFinite(v)) riskByFi.set(fi, v);
+            }
+            base.sort((a, b) => {
+              const fa = Number(a.faceIndex) || 0;
+              const fb = Number(b.faceIndex) || 0;
+              const ra = riskByFi.get(fa);
+              const rb = riskByFi.get(fb);
+              const aa = Number.isFinite(ra) ? ra : Infinity;
+              const bb = Number.isFinite(rb) ? rb : Infinity;
+              if (aa !== bb) return aa - bb;
+              return fa - fb;
+            });
+            return base;
+          }
+
+          base.sort((a, b) => (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0));
+          return base;
+        })();
+
+        const pNext = { ...successionStage1Params, ...(c?.patch ?? {}) };
+        const params = {
+          ...pNext,
+          coalDensity: planningParams.coalDensity,
+          recoveryRateMin: planningParams.recoveryRateMin,
+          recoveryRateMax: planningParams.recoveryRateMax,
+          miningHeightM: miningHeight,
+        };
+        const plan = buildSuccessionStage1Plan(panelsOrdered, params);
+
+        const prodKpis = computeProductionKpis(plan?.monthly, target);
+        const riskEst = estimateMonthlyRiskFromCocontrolCurves({
+          plan,
+          coOdiAnalysisResult,
+          metric: successionStage2Params?.metric,
+        });
+        const score = scoreScenario({
+          prodKpis,
+          riskRows: riskEst?.rows,
+          weights: successionStage3Params,
+        });
+
+        results.push({
+          key: c.key,
+          label: c.label,
+          orderMode: c?.orderMode || 'faceIndex',
+          patch: c?.patch ?? {},
+          planSummary: {
+            months: prodKpis?.months,
+            hitRate: prodKpis?.hitRate,
+            maxDeficit: prodKpis?.maxDeficit,
+            minTonnage: prodKpis?.minTonnage,
+            riskMax: score?.riskMax,
+          },
+          score: score?.score,
+          riskSource: riskEst?.source ?? null,
+        });
+      }
+
+      results.sort((a, b) => (Number(b?.score) || -Infinity) - (Number(a?.score) || -Infinity));
+      setSuccessionStage3Result({
+        ok: true,
+        computedAt: Date.now(),
+        targetTonsPerMonth: target,
+        hasCurveRisk: Boolean(coOdiAnalysisResult?.ok),
+        results: results.slice(0, 8),
+      });
+    } catch (e) {
+      setSuccessionStage3Result({ ok: false, error: String(e?.message ?? e), computedAt: Date.now() });
+    }
+  };
+
+  const handleApplyStage3Candidate = (cand) => {
+    const c = cand ?? null;
+    if (!c) return;
+    try {
+      const patch = (c?.patch && typeof c.patch === 'object') ? c.patch : {};
+      setSuccessionStage1Params((p) => ({ ...(p ?? {}), ...patch }));
+      setSuccessionPanelOrderMode(String(c?.orderMode || 'faceIndex'));
+    } catch {
+      // ignore
+    }
+  };
 
   // disturbance 模式：只要已有 efficiency 结果，就应确保派生 disturbance pack。
   // 兜底场景：compute 回包时用户切走了模式/视图，导致 handleComputeResult 内 wantDisturbance=false。
@@ -13736,7 +14434,7 @@ const App = () => {
         nextScenarioParamsById[activeTab] = cloneJson(pick.params);
       }
 
-      const nextPlanningParams = parsed?.planningParams ? cloneJson(parsed.planningParams) : cloneJson(planningParams);
+      const nextPlanningParams = normalizePlanningParams(parsed?.planningParams ? cloneJson(parsed.planningParams) : cloneJson(planningParams));
       const nextPlanningDisturbanceParams = parsed?.planningDisturbanceParams
         ? { ...DEFAULT_DISTURBANCE_PARAMS, ...(cloneJson(parsed.planningDisturbanceParams) ?? {}) }
         : cloneJson(planningDisturbanceParams);
@@ -19311,21 +20009,25 @@ const App = () => {
       {/* 左侧控制栏 - 数据上传与输入 */}
       <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-xl z-10 shrink-0">
         <div className="p-6 border-b border-slate-100">
-          <div className="flex items-center gap-2 mb-1">
-            <Activity className="text-blue-600" size={20} />
-            <h1 className="text-base font-bold text-slate-800 tracking-tight">基于覆岩扰动约束的采区多目标智能规划系统</h1>
+          <div className="flex items-start gap-3 mb-1">
+            <SystemLogo size={56} className="shrink-0" />
+            <h1 className="text-lg font-bold text-slate-800 tracking-tight">
+              多场景覆岩扰动综合评估
+              <br />
+              与采区智能规划系统
+            </h1>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-6 custom-scrollbar">
           {/* 1. 场景选择 */}
           <section>
-            <label className="text-xs font-bold text-slate-500 mb-3 block uppercase tracking-wider">评估场景选择</label>
+            <label className="text-base font-bold text-slate-500 mb-3 block uppercase tracking-wider">评估场景选择</label>
             <div className="grid grid-cols-1 gap-2">
               {[
-                { id: 'surface', label: '地表下沉场景', icon: <TrendingDown size={14} />, accent: 'bg-blue-600', active: 'bg-blue-600 border-blue-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
-                { id: 'aquifer', label: '含水层扰动场景', icon: <Droplets size={14} />, accent: 'bg-emerald-600', active: 'bg-emerald-600 border-emerald-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
-                { id: 'upward', label: '上行开采可行性', icon: <ArrowUpCircle size={14} />, accent: 'bg-amber-500', active: 'bg-amber-500 border-amber-500 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' }
+                { id: 'surface', label: '地表下沉场景', icon: <TrendingDown size={18} />, accent: 'bg-blue-600', active: 'bg-blue-600 border-blue-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
+                { id: 'aquifer', label: '含水层扰动场景', icon: <Droplets size={18} />, accent: 'bg-emerald-600', active: 'bg-emerald-600 border-emerald-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
+                { id: 'upward', label: '上行开采可行性', icon: <ArrowUpCircle size={18} />, accent: 'bg-amber-500', active: 'bg-amber-500 border-amber-500 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' }
               ].map(item => (
                 <button
                   key={item.id}
@@ -19338,7 +20040,7 @@ const App = () => {
                 >
                   <span className={`absolute left-0 top-0 bottom-0 w-1 ${item.accent} ${activeTab === item.id ? 'opacity-100' : 'opacity-60'}`} />
                   {item.icon}
-                  <span className="text-sm font-medium">{item.label}</span>
+                  <span className="text-base font-medium">{item.label}</span>
                 </button>
               ))}
             </div>
@@ -19346,20 +20048,20 @@ const App = () => {
 
           {/* 2. 数据导入中心 */}
           <section>
-            <label className="text-xs font-bold text-slate-500 mb-3 block uppercase tracking-wider">数据导入中心</label>
+            <label className="text-base font-bold text-slate-500 mb-3 block uppercase tracking-wider">数据导入中心</label>
             <div className="space-y-2">
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-xs text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleBoundaryImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <Box size={14} className="text-slate-400 group-hover:text-blue-500" /> 导入采区边界坐标
+                  <Box size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入采区边界
                 </span>
                 <div className="flex items-center gap-2">
                   {boundaryData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {boundaryData.length} 个点</span>
                   )}
-                  <FileUp size={12} className="text-slate-300" />
+                  <FileUp size={16} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -19370,17 +20072,17 @@ const App = () => {
                 onChange={handleBoundaryFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-xs text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleDrillholeImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <MapPin size={14} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔坐标数据
+                  <MapPin size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔坐标
                 </span>
                 <div className="flex items-center gap-2">
                   {drillholeData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {drillholeData.length} 个点</span>
                   )}
-                  <FileUp size={12} className="text-slate-300" />
+                  <FileUp size={16} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -19391,17 +20093,17 @@ const App = () => {
                 onChange={handleDrillholeFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-xs text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleDrillholeLayersImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <Layers size={14} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔分层数据
+                  <Layers size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔数据
                 </span>
                 <div className="flex items-center gap-2">
                   {Object.keys(drillholeLayersById).length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {Object.keys(drillholeLayersById).length} 个钻孔</span>
                   )}
-                  <FileUp size={12} className="text-slate-300" />
+                  <FileUp size={16} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -19413,18 +20115,18 @@ const App = () => {
                 onChange={handleDrillholeLayersFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-xs text-slate-600 hover:border-emerald-500 hover:text-emerald-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-emerald-500 hover:text-emerald-600 transition-all group"
                 onClick={handleMeasuredConstraintImportClick}
                 type="button"
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <ClipboardCheck size={14} className="text-slate-400 group-hover:text-emerald-500" /> 导入实测约束数据
+                  <ClipboardCheck size={18} className="text-slate-400 group-hover:text-emerald-500" /> 导入实测数据
                 </span>
                 <div className="flex items-center gap-2">
                   {measuredConstraintData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {measuredConstraintData.length} 条</span>
                   )}
-                  <FileUp size={12} className="text-slate-300" />
+                  <FileUp size={16} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -19440,12 +20142,12 @@ const App = () => {
 
           {/* 场景标记配置 */}
           <section>
-            <label className="text-xs font-bold text-slate-500 mb-3 block uppercase tracking-wider">场景标记配置</label>
+            <label className="text-base font-bold text-slate-500 mb-3 block uppercase tracking-wider">场景标记配置</label>
             <div className="bg-white border border-slate-200 rounded-lg p-4 shadow-sm space-y-3">
               <div>
-                <div className="text-[11px] text-slate-500 mb-2 font-bold">目标煤层选择</div>
+                <div className="text-sm text-slate-500 mb-2 font-bold">目标煤层选择</div>
                 <select
-                  className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-sm text-slate-700"
+                  className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-lg text-slate-700"
                   value={selectedCoal}
                   onChange={(e) => setSelectedCoal(e.target.value)}
                   disabled={coalSeams.length === 0}
@@ -19462,9 +20164,9 @@ const App = () => {
 
               {activeTab === 'aquifer' && (
                 <div>
-                  <div className="text-[11px] text-slate-500 mb-2 font-bold">含水层选择</div>
+                  <div className="text-sm text-slate-500 mb-2 font-bold">含水层选择</div>
                   <select
-                    className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-sm text-slate-700"
+                    className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-lg text-slate-700"
                     value={selectedAquiferType}
                     onChange={(e) => setSelectedAquiferType(e.target.value)}
                     disabled={aquiferTypeOptions.length === 0}
@@ -19480,31 +20182,31 @@ const App = () => {
                 </div>
               )}
               <div>
-                <div className="text-[11px] text-slate-500 mb-2 font-bold">{activeTab === 'aquifer' ? '识别目标评价层（目标含水层下关键层）' : '识别目标评价层（最上层基岩）'}</div>
+                <div className="text-sm text-slate-500 mb-2 font-bold">{activeTab === 'aquifer' ? '识别目标评价层（目标层下关键层）' : '识别目标评价层（最上层基岩）'}</div>
                 {activeTab !== 'aquifer' && (
                   <div className={`flex items-start gap-2 rounded border p-3 ${identifiedTarget.name ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
                     {identifiedTarget.name ? (
-                      <CheckCircle2 size={16} className="text-emerald-600 mt-0.5" />
+                      <CheckCircle2 size={18} className="text-emerald-600 mt-0.5" />
                     ) : (
-                      <AlertTriangle size={16} className="text-amber-600 mt-0.5" />
+                      <AlertTriangle size={18} className="text-amber-600 mt-0.5" />
                     )}
                     <div className="min-w-0">
-                      <div className="text-sm font-bold text-slate-800 truncate">{identifiedTarget.name || '未识别'}</div>
-                      <div className="text-[10px] text-slate-600 mt-1 leading-4">{identifiedTarget.reason}</div>
+                      <div className="text-lg font-bold text-slate-800 truncate">{identifiedTarget.name || '未识别'}</div>
+                      <div className="text-xs text-slate-600 mt-1 leading-4">{identifiedTarget.reason}</div>
                     </div>
                   </div>
                 )}
 
                 <div className={activeTab === 'aquifer' ? '' : 'mt-3'}>
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-[11px] text-slate-500 font-bold">各钻孔识别结果</div>
-                    <div className="text-[10px] text-slate-400">{perBoreholeTargetList.length} 个</div>
+                    <div className="text-sm text-slate-500 font-bold">各钻孔识别结果</div>
+                    <div className="text-xs text-slate-400">{perBoreholeTargetList.length} 个</div>
                   </div>
                   <div className="border border-slate-200 rounded bg-slate-50 max-h-40 overflow-auto">
                     {perBoreholeTargetList.length === 0 ? (
-                      <div className="p-3 text-[11px] text-slate-500">暂无结果（请先导入钻孔分层数据）</div>
+                      <div className="p-3 text-sm text-slate-500">暂无结果（请先导入钻孔分层数据）</div>
                     ) : (
-                      <table className="w-full text-[11px]">
+                      <table className="w-full text-sm">
                         <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
                           <tr>
                             <th className="text-left px-3 py-2 text-slate-500 font-bold">钻孔</th>
@@ -19560,6 +20262,14 @@ const App = () => {
             >
               协同调控
             </button>
+            <button
+              className={`px-4 py-2 rounded-md text-xs font-bold transition-colors ${mainViewMode === 'succession' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              onClick={() => switchMainViewModeWithRightPanel('succession')}
+              title="采掘接续：阶段1前端确定性排程（不依赖后端）"
+              type="button"
+            >
+              采掘接续
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -19613,7 +20323,67 @@ const App = () => {
           className="flex-1 flex flex-col p-6 space-y-6 overflow-y-scroll"
           style={{ scrollbarGutter: 'stable' }}
         >
-          {mainViewMode === 'geology' ? (
+          {mainViewMode === 'succession' ? (
+            <SuccessionStage1View
+              source={{
+                ...successionSource,
+                goPlanning: () => switchMainViewModeWithRightPanel('planning'),
+                goCocontrol: () => switchMainViewModeWithRightPanel('cocontrol'),
+                goOdi: () => switchMainViewModeWithRightPanel('odi'),
+              }}
+              loopsWorld={successionLoopsWorld}
+              panels={successionPanels}
+              plan={successionStage1Plan}
+              risk={successionStage2Risk}
+              yardOrder={
+                {
+                  selectedDir: successionYardDir,
+                  confirmedDir: successionYardConfirmed?.dir ?? null,
+                  offsetM: successionYardConfirmed?.offsetM ?? successionYardOffsetM,
+                  confirmed: Boolean(successionYardConfirmed),
+                  orderMode: successionPanelOrderMode,
+                }
+              }
+              onYardSelectDir={(dir) => setSuccessionYardDir(String(dir || 'NE'))}
+              onYardConfirm={() => {
+                setSuccessionYardConfirmed({ dir: String(successionYardDir || 'NE'), offsetM: Number(successionYardOffsetM) || 120, confirmedAt: Date.now() });
+                setSuccessionPanelOrderMode('yardConfirmed');
+              }}
+              onYardClear={() => {
+                setSuccessionYardConfirmed(null);
+                setSuccessionPanelOrderMode('faceIndex');
+              }}
+              stage3={{
+                params: successionStage3Params,
+                orderMode: successionPanelOrderMode,
+                result: successionStage3Result,
+                hasCurveRisk: Boolean(coOdiAnalysisResult?.ok),
+              }}
+              productionParams={{
+                ...((successionStage1Params && typeof successionStage1Params === 'object') ? successionStage1Params : {}),
+                miningHeightM: miningHeight,
+                coalDensity: planningParams?.coalDensity,
+                recoveryRateMin: planningParams?.recoveryRateMin,
+                recoveryRateMax: planningParams?.recoveryRateMax,
+              }}
+              onPickWorkface={(p) => {
+                const fi = Number(p?.faceIndex);
+                if (!(Number.isFinite(fi) && fi >= 1)) return;
+                setSuccessionSelectedFaceIndex(fi);
+                const map = (coPlannedParamsByFaceIndex && typeof coPlannedParamsByFaceIndex === 'object') ? coPlannedParamsByFaceIndex : {};
+                const mh = Number(map?.[String(fi)]?.production?.miningHeightM);
+                if (Number.isFinite(mh) && mh > 0) {
+                  setMiningHeight(mh);
+                  setPlanningParams((pp) => ({ ...(pp ?? {}), seamThickness: String(mh) }));
+                }
+              }}
+              onStage3Run={handleRunSuccessionStage3}
+              onStage3Apply={handleApplyStage3Candidate}
+              onStage3ParamsChange={(patch) => setSuccessionStage3Params((p) => ({ ...(p ?? {}), ...(patch ?? {}) }))}
+              onStage3OrderModeChange={(mode) => setSuccessionPanelOrderMode(String(mode || 'yardConfirmed'))}
+              mineCapacityWanPerYear={planningParams.mineCapacity}
+            />
+          ) : mainViewMode === 'geology' ? (
             <>
               <div className="flex items-center justify-between">
                 <div className="text-xs text-slate-500 font-bold">分布云图</div>
@@ -23167,7 +23937,7 @@ const App = () => {
             type="button"
           >
             <div className="flex items-center justify-between gap-3 min-w-0 flex-1">
-              <h2 className="text-sm font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
+              <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
                 <Grid size={16} className="text-red-500" /> 覆岩扰动综合评价
               </h2>
               <span className="text-[9px] font-mono text-slate-400 bg-white px-2 py-0.5 rounded border border-slate-200 shrink-0">系统就绪: 100%</span>
@@ -23763,12 +24533,10 @@ const App = () => {
             onClick={() => setActiveAccordion((prev) => (prev.includes('planning') ? prev.filter((k) => k !== 'planning') : [...prev, 'planning']))}
             type="button"
           >
-            <div className="flex items-center gap-3 min-w-0">
-              <BrainCircuit size={18} className="text-blue-500" />
-              <div className="min-w-0 text-left">
-                <div className="text-sm font-bold text-slate-700 truncate">采区参数编辑器</div>
-                <div className="text-[10px] text-slate-400 truncate">采区智能规划参数输入</div>
-              </div>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
+                <BrainCircuit size={18} className="text-blue-500" /> 采区参数编辑器
+              </h2>
             </div>
             <ChevronDown
               size={18}
@@ -23787,14 +24555,33 @@ const App = () => {
                     <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">资源赋存与开采方式</span>
                   </div>
 
-                  {/* 0) 煤层平均厚度 + 煤的容重（从“回采规模与生产效率”迁移至此，置顶） */}
+                  {/* 0) 设计采高 + 煤的容重（从“回采规模与生产效率”迁移至此，置顶） */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">煤层平均厚度（m）</label>
+                      <label className="text-[12px] font-black text-slate-400">设计采高（m）</label>
                       <input
                         type="number"
                         value={planningParams.seamThickness}
-                        onChange={(e) => setPlanningParams((p) => ({ ...p, seamThickness: e.target.value }))}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setPlanningParams((p) => ({ ...p, seamThickness: v }));
+                          const n = Number(v);
+                          if (Number.isFinite(n) && n > 0) {
+                            setMiningHeight(n);
+                            const fi = Number(successionSelectedFaceIndex);
+                            if (Number.isFinite(fi) && fi >= 1) {
+                              const k = String(fi);
+                              setCoPlannedParamsByFaceIndex((prev) => {
+                                const base = (prev && typeof prev === 'object') ? prev : {};
+                                const old = base?.[k];
+                                const nextEntry = old
+                                  ? { ...old, production: { ...(old?.production ?? {}), miningHeightM: String(n) } }
+                                  : makeCoEntry({ production: { miningHeightM: String(n) } });
+                                return { ...base, [k]: nextEntry };
+                              });
+                            }
+                          }
+                        }}
                         className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                       />
                     </div>
@@ -24191,12 +24978,10 @@ const App = () => {
             onClick={() => setActiveAccordion((prev) => (prev.includes('cocontrol') ? prev.filter((k) => k !== 'cocontrol') : [...prev, 'cocontrol']))}
             type="button"
           >
-            <div className="flex items-center gap-3 min-w-0">
-              <Settings size={18} className="text-emerald-600" />
-              <div className="min-w-0 text-left">
-                <div className="text-sm font-bold text-slate-700 truncate">协同调控</div>
-                <div className="text-[10px] text-slate-400 truncate">统一标尺 ODI*（联合分位数）</div>
-              </div>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
+                <Settings size={18} className="text-emerald-600" /> 协同调控
+              </h2>
             </div>
             <ChevronDown
               size={18}
@@ -24751,12 +25536,10 @@ const App = () => {
             onClick={() => setActiveAccordion((prev) => (prev.includes('succession') ? prev.filter((k) => k !== 'succession') : [...prev, 'succession']))}
             type="button"
           >
-            <div className="flex items-center gap-3 min-w-0">
-              <CalendarClock size={18} className="text-purple-500" />
-              <div className="min-w-0 text-left">
-                <div className="text-sm font-bold text-slate-700 truncate">采掘接续计划</div>
-                <div className="text-[10px] text-slate-400 truncate">全周期进度监测</div>
-              </div>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
+                <CalendarClock size={18} className="text-purple-500" /> 采掘接续计划
+              </h2>
             </div>
             <ChevronDown
               size={18}
@@ -24794,11 +25577,16 @@ const App = () => {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-[12px] font-black text-slate-400">煤层平均厚度（m）</label>
+                      <label className="text-[12px] font-black text-slate-400">设计采高（m）</label>
                       <input
                         type="number"
                         value={planningParams.seamThickness}
-                        onChange={(e) => setPlanningParams((p) => ({ ...p, seamThickness: e.target.value }))}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setPlanningParams((p) => ({ ...p, seamThickness: v }));
+                          const n = Number(v);
+                          if (Number.isFinite(n) && n > 0) setMiningHeight(n);
+                        }}
                         className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
                       />
                     </div>
@@ -24840,6 +25628,192 @@ const App = () => {
                   </div>
                 </div>
 
+                {/* 阶段1新增：速度与节拍 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Zap size={14} className="text-purple-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">速度与节拍</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">回采推进速度（m/d）</label>
+                      <input
+                        type="number"
+                        value={successionStage1Params.shearAdvanceRate}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, shearAdvanceRate: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">掘进速度（m/d）</label>
+                      <input
+                        type="number"
+                        value={successionStage1Params.driveRate}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, driveRate: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">有效作业天数（d/月）</label>
+                      <input
+                        type="number"
+                        value={successionStage1Params.daysPerMonth}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, daysPerMonth: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">正规循环率（0~1）</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={successionStage1Params.utilization}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, utilization: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 阶段1新增：关键路径工期 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <CalendarClock size={14} className="text-purple-600" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">关键路径工期</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">安装工期（天）</label>
+                      <input
+                        type="number"
+                        value={successionStage1Params.installDays}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, installDays: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">搬家倒面工期（天）</label>
+                      <input
+                        type="number"
+                        value={successionStage1Params.relocationDays}
+                        onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, relocationDays: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 阶段1新增：并行与约束 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Settings size={14} className="text-purple-600" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">并行与约束</span>
+                  </div>
+
+                  <label className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-black text-slate-600">单面回采（强约束）</div>
+                      <div className="text-[10px] text-slate-400">任意时刻最多1个回采任务进行</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(successionStage1Params.singleFaceMining)}
+                      onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, singleFaceMining: Boolean(e.target.checked) }))}
+                      className="h-4 w-4"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-black text-slate-600">掘进与回采并行</div>
+                      <div className="text-[10px] text-slate-400">允许掘进任务与回采任务时间重叠</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(successionStage1Params.driveParallelWithMining)}
+                      onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, driveParallelWithMining: Boolean(e.target.checked) }))}
+                      className="h-4 w-4"
+                    />
+                  </label>
+
+                  <div className="space-y-2">
+                    <label className="text-[12px] font-black text-slate-400">掘进队/掘进头数量（条）</label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={successionStage1Params.driveCrews}
+                      onChange={(e) => setSuccessionStage1Params((p) => ({ ...p, driveCrews: e.target.value }))}
+                      className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-purple-500/20 transition-all"
+                    />
+                    <div className="text-[10px] text-slate-400">阶段1默认 1 条；后续可扩展为按巷道类型拆分</div>
+                  </div>
+                </div>
+
+                {/* 阶段2新增：ODI 风险曲线 */}
+                <div className="bg-white rounded-[2rem] p-5 border border-slate-100 shadow-sm space-y-4">
+                  <div className="flex items-center gap-2">
+                    <BarChart3 size={14} className="text-orange-500" />
+                    <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">ODI 风险</span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">指标</label>
+                      <select
+                        value={successionStage2Params.metric}
+                        onChange={(e) => setSuccessionStage2Params((p) => ({ ...p, metric: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      >
+                        <option value="p90">p90</option>
+                        <option value="p95">p95</option>
+                        <option value="mean">mean</option>
+                        <option value="exceed">exceed(≥阈值比例)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">阈值（0~1）</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={successionStage2Params.threshold}
+                        onChange={(e) => setSuccessionStage2Params((p) => ({ ...p, threshold: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[12px] font-black text-slate-400">采样步长（m）</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="5"
+                        value={successionStage2Params.sampleStepM}
+                        onChange={(e) => setSuccessionStage2Params((p) => ({ ...p, sampleStepM: e.target.value }))}
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-2xl text-sm font-bold outline-none focus:ring-2 focus:ring-orange-500/20 transition-all"
+                      />
+                    </div>
+                    <label className="flex items-center justify-between gap-3 bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3">
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-black text-slate-600">ODI标定</div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(successionStage2Params.useOdiStarWhenAvailable)}
+                        onChange={(e) => setSuccessionStage2Params((p) => ({ ...p, useOdiStarWhenAvailable: Boolean(e.target.checked) }))}
+                        className="h-4 w-4"
+                      />
+                    </label>
+                  </div>
+                </div>
+
               </div>
             </div>
           </div>
@@ -24852,12 +25826,10 @@ const App = () => {
             onClick={() => setActiveAccordion((prev) => (prev.includes('economics') ? prev.filter((k) => k !== 'economics') : [...prev, 'economics']))}
             type="button"
           >
-            <div className="flex items-center gap-3 min-w-0">
-              <CircleDollarSign size={18} className="text-amber-500" />
-              <div className="min-w-0 text-left">
-                <div className="text-sm font-bold text-slate-700 truncate">工程经济分析</div>
-                <div className="text-[10px] text-slate-400 truncate">产值与成本预估</div>
-              </div>
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
+                <CircleDollarSign size={18} className="text-amber-500" /> 工程经济分析
+              </h2>
             </div>
             <ChevronDown
               size={18}
