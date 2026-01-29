@@ -449,32 +449,32 @@ export default function EconomicsView({ result, onGoSuccession }) {
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-            <div className="text-[14px] text-emerald-700 font-bold">净现值（万元）</div>
-            <div className="mt-1 text-xl font-mono font-black text-emerald-800">{formatWan(s?.npvWan ?? 0, 2)}</div>
+          <div className="rounded-xl border border-rose-200 bg-gradient-to-br from-rose-50 to-pink-50 p-4">
+            <div className="text-[14px] text-rose-800 font-black">净现值（万元）</div>
+            <div className="mt-1 text-xl font-mono font-black text-rose-900">{formatWan(s?.npvWan ?? 0, 2)}</div>
           </div>
 
-          <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-            <div className="text-[14px] text-indigo-700 font-bold">利润（万元）</div>
-            <div className="mt-1 text-xl font-mono font-black text-indigo-800">{formatWan((s?.totalNetCashWan ?? totalNetCashWan ?? 0))}</div>
+          <div className="rounded-xl border border-orange-200 bg-gradient-to-br from-orange-50 to-amber-50 p-4">
+            <div className="text-[14px] text-orange-800 font-black">利润（万元）</div>
+            <div className="mt-1 text-xl font-mono font-black text-orange-900">{formatWan((s?.totalNetCashWan ?? totalNetCashWan ?? 0))}</div>
           </div>
 
-          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-            <div className="text-[14px] text-blue-700 font-bold">回收期（月）</div>
-            <div className="mt-1 text-xl font-mono font-black text-blue-800">{s?.paybackMonth ?? '-'}</div>
+          <div className="rounded-xl border border-cyan-200 bg-gradient-to-br from-cyan-50 to-sky-50 p-4">
+            <div className="text-[14px] text-cyan-800 font-black">回收期（月）</div>
+            <div className="mt-1 text-xl font-mono font-black text-cyan-900">{s?.paybackMonth ?? '-'}</div>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <div className="text-[14px] text-slate-600 font-bold">单位成本（元/吨）</div>
-            <div className="mt-1 text-xl font-mono font-black text-slate-800">{(s?.unitCostYuanPerTon == null) ? '-' : formatYuanPerTon(s.unitCostYuanPerTon)}</div>
+          <div className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-lime-50 p-4">
+            <div className="text-[14px] text-emerald-800 font-black">单位成本（元/吨）</div>
+            <div className="mt-1 text-xl font-mono font-black text-emerald-900">{(s?.unitCostYuanPerTon == null) ? '-' : formatYuanPerTon(s.unitCostYuanPerTon)}</div>
           </div>
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-            <div className="text-[14px] text-amber-700 font-bold">高风险月（个）</div>
-            <div className="mt-1 text-xl font-mono font-black text-amber-800">{formatInt(s?.highRiskMonths ?? 0)}</div>
+          <div className="rounded-xl border border-red-200 bg-gradient-to-br from-red-50 to-rose-50 p-4">
+            <div className="text-[14px] text-red-800 font-black">高风险月（个）</div>
+            <div className="mt-1 text-xl font-mono font-black text-red-900">{formatInt(s?.highRiskMonths ?? 0)}</div>
           </div>
 
-          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
-            <div className="text-[14px] text-violet-700 font-bold">当前回采工作面</div>
-            <div className="mt-1 text-xl font-mono font-black text-violet-800 truncate" title={currentWorkface}>{currentWorkface}</div>
+          <div className="rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50 to-fuchsia-50 p-4">
+            <div className="text-[14px] text-violet-800 font-black">当前回采工作面</div>
+            <div className="mt-1 text-xl font-mono font-black text-violet-900 truncate" title={currentWorkface}>{currentWorkface}</div>
           </div>
         </div>
 
