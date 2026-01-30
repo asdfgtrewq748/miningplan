@@ -51,7 +51,7 @@ import SmoothnessSlider from './components/SmoothnessSlider.jsx';
 import MultiObjectivePlanPanel from './components/MultiObjectivePlanPanel.jsx';
 import SuccessionStage1View from './components/SuccessionStage1View.jsx';
 import EconomicsView from './components/EconomicsView.jsx';
-import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedComputeCancelable } from './api.js';
+import { smartEfficiencyCompute, smartResourceCompute, smartResourceTonnageSort, smartWeightedComputeCancelable, API_BASE } from './api.js';
 import { buildSuccessionStage1Plan, computeWorkfaceDimsFromLoop } from './utils/successionStage1.js';
 import { computeEconomicsFromPlan } from './utils/economics.js';
 import {
@@ -69,6 +69,7 @@ const DEFAULT_PLANNING_PARAMS = {
   recoveryRateMin: '0.85',
   recoveryRateMax: '0.95',
   roadwayOrientation: 'x',
+      odiVizInvertPalette: false,
   miningMethod: '综放',
   coalPillarMin: '30',
   coalPillarMax: '50',
@@ -112,6 +113,7 @@ const DEFAULT_SUCCESSION_STAGE1_PARAMS = {
   // 速度/节拍
   daysPerMonth: 25,
   utilization: 0.85,
+      odiVizInvertPalette: false,
   shearAdvanceRate: 6, // m/d
   driveRate: 15, // m/d
   // 关键路径
@@ -155,6 +157,7 @@ const DEFAULT_ECONOMICS_PARAMS = {
   // 财务
   discountRate: 0.10, // 0~1（年贴现率）
 
+      odiVizInvertPalette: false,
   // 风险联动（来自接续阶段2风险序列；默认开启）
   riskLinkEnabled: true,
   riskMetricKey: 'p90',
@@ -7622,13 +7625,23 @@ const App = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planningEfficiencyResult, planningRecoveryResult, planningWeightedResult, mainViewMode]);
 
+  useEffect(() => {
+    if (mainViewMode !== 'planning') return;
+    // 口径：进入智能规划视图时，默认关闭“评价点”渲染（避免遮挡规划面/边界）。
+    try {
+      setShowLayerEvalPoints(false);
+    } catch {
+      // ignore
+    }
+  }, [mainViewMode]);
+
   const switchMainViewModeWithRightPanel = (mode) => {
     const nextMode = String(mode ?? '').trim();
     if (!nextMode) return;
 
-    // 需求：从协同调控跳转回智能规划时，自动关闭“评价点”显示，避免点云遮挡。
+    // 需求：切换到智能规划时，自动关闭“评价点”显示，避免点云遮挡。
     try {
-      if (mainViewMode === 'cocontrol' && nextMode === 'planning') {
+      if (nextMode === 'planning') {
         setShowLayerEvalPoints(false);
       }
       // 需求：协同调控板块默认应显示评价点。
@@ -10163,6 +10176,7 @@ const App = () => {
   const [odiLevelFilter, setOdiLevelFilter] = useState(null); // null | 0..4
   // ODI 可视化配置：色带 / 分级数量 / 映射区间（过滤低扰动噪音）
   const [odiVizPalette, setOdiVizPalette] = useState('blueRed');
+  const [odiVizInvertPalette, setOdiVizInvertPalette] = useState(false);
   const [odiVizSteps, setOdiVizSteps] = useState(5); // 3~10
   const [odiVizRange, setOdiVizRange] = useState({ min: '', max: '' }); // string inputs
   // 含水层扰动场景：ODI 自然邻域插值输出平滑度（0=不平滑；越大越丝滑）
@@ -10180,6 +10194,7 @@ const App = () => {
     values: { odiNorm: null, Ti: null, Hi: null, Di: null },
   });
   const [selectedCoal, setSelectedCoal] = useState('');
+  const [selectedUpperCoal, setSelectedUpperCoal] = useState('');
   const [showBoundaryLabels, setShowBoundaryLabels] = useState(false);
   const [showDrillholeLabels, setShowDrillholeLabels] = useState(false);
   const [showWorkfaceOutline, setShowWorkfaceOutline] = useState(false);
@@ -10245,6 +10260,264 @@ const App = () => {
   const [showMainMapLabelsMenu, setShowMainMapLabelsMenu] = useState(false);
   const [showMainMapEvalMenu, setShowMainMapEvalMenu] = useState(false);
   const [mainMapEvalMenuPos, setMainMapEvalMenuPos] = useState({ left: 0, top: 0, openUp: false });
+
+  // CAD 导出（DXF/DWG）：业务几何（世界坐标）-> 后端生成文件
+  const [showCadExportModal, setShowCadExportModal] = useState(false);
+  const [cadExportFormat, setCadExportFormat] = useState('dxf'); // 'dxf' | 'dwg'
+  const [cadExportIncludeLabels, setCadExportIncludeLabels] = useState(true);
+  const [cadExportIncludePillars, setCadExportIncludePillars] = useState(true);
+  const [cadExportBusy, setCadExportBusy] = useState(false);
+
+  const downloadBlobFile = (filename, blob) => {
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+    } catch {
+      // ignore
+    }
+  };
+
+  const parseFilenameFromContentDisposition = (cd) => {
+    try {
+      const s = String(cd || '');
+      // filename*=UTF-8''...
+      const mStar = s.match(/filename\*=UTF-8''([^;]+)/i);
+      if (mStar && mStar[1]) return decodeURIComponent(mStar[1]);
+      const m = s.match(/filename="?([^";]+)"?/i);
+      if (m && m[1]) return m[1];
+      return '';
+    } catch {
+      return '';
+    }
+  };
+
+  const buildCadExportPayload = () => {
+    const units = 'm';
+    const insUnits = 6; // meters
+
+    const cleanLoop = (loop) => {
+      const pts = Array.isArray(loop) ? loop : [];
+      const out = [];
+      for (const p of pts) {
+        const x = Number(p?.x);
+        const y = Number(p?.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        out.push({ x, y });
+      }
+      // 去掉尾部闭合重复点（后端会强制闭合）
+      if (out.length >= 2) {
+        const a = out[0];
+        const b = out[out.length - 1];
+        if (a.x === b.x && a.y === b.y) out.pop();
+      }
+      return out;
+    };
+
+    const boundaryLoops = boundaryData?.length >= 3
+      ? [{ id: 'boundary-0', points: cleanLoop(boundaryData), closed: true }]
+      : [];
+
+    // 有效布置域：优先取“规划结果的 ω 渲染 loops”（world），否则回退边界
+    const pickPlanningPayload = () => {
+      const mode = String(planningOptMode || 'efficiency');
+      if (mode === 'recovery') return planningRecoveryResult;
+      if (mode === 'weighted') return planningWeightedResult;
+      // disturbance 结果通常挂在 efficiency
+      return planningEfficiencyResult;
+    };
+    const planningPayload = pickPlanningPayload();
+    const omegaLoops = getOmegaLoopsForTonnage(planningPayload);
+    const effectiveDomainLoops = omegaLoops.length
+      ? omegaLoops.map((loop, idx) => ({ id: `omega-${idx}`, points: cleanLoop(loop), closed: true }))
+      : boundaryLoops;
+
+    // 工作面：导入四边形 + 规划 loops
+    const faces = [];
+
+    // 1) 导入工作面（按 4 点一组）
+    {
+      const src = Array.isArray(workingFaceData) ? workingFaceData : [];
+      const nFaces = Math.floor(src.length / 4);
+      for (let no = 1; no <= nFaces; no++) {
+        const base = (no - 1) * 4;
+        const raw = src.slice(base, base + 4);
+        const loop = cleanLoop(raw);
+        if (loop.length >= 3) faces.push({ id: `import-${no}`, name: `No.${no}`, loop });
+      }
+    }
+
+    // 2) 规划工作面（world loops）
+    {
+      const src = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
+      for (const wf of src) {
+        const fi = Math.round(Number(wf?.faceIndex));
+        const loop = cleanLoop(wf?.loop);
+        if (loop.length >= 3) {
+          const n = Number.isFinite(fi) ? fi : null;
+          const id = `planned-${n ?? (faces.length + 1)}`;
+          const name = n ? `No.${n}` : 'Face';
+          faces.push({ id, name, loop });
+        }
+      }
+    }
+
+    // 关键标注：最小集（编号/尺寸交由后端推导；这里提供编号）
+    const labels = [];
+    if (cadExportIncludeLabels) {
+      for (const f of faces) {
+        const loop = Array.isArray(f?.loop) ? f.loop : [];
+        if (loop.length < 3) continue;
+        const c = loop.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+        c.x /= loop.length;
+        c.y /= loop.length;
+        const name = String(f?.name || 'Face');
+        labels.push({ text: name, x: c.x, y: c.y });
+      }
+    }
+
+    // 变换声明：明确中部视图 screen<->world 的口径（用于验收抽查）
+    const transform = {
+      kind: 'mainMap',
+      units,
+      insUnits,
+      axis: { x: 'east(+x)', y: 'north(+y)' },
+      svg: {
+        viewBox: { x: 0, y: 0, width: 800, height: 500 },
+        rect: MAIN_MAP_RECT,
+      },
+      world: spatialBounds,
+      note: 'svgY向下；worldY向上；映射见 App.jsx: wx/wy 由 spatialBounds + MAIN_MAP_RECT 计算',
+    };
+
+    return {
+      units,
+      insUnits,
+      transform: {
+        spatialBounds,
+        mainMapRect: MAIN_MAP_RECT,
+        viewBox: { x: 0, y: 0, width: 800, height: 500 },
+        note: transform?.note,
+      },
+      meta: {
+        generatedAt: Date.now(),
+        crs: String(planningParams?.coordRefSystem || ''),
+        includeLabels: Boolean(cadExportIncludeLabels),
+        includePillars: Boolean(cadExportIncludePillars),
+      },
+      boundaryLoops,
+      effectiveDomainLoops,
+      faces,
+      pillars: [],
+      labels,
+      layers: {
+        boundary: 'LAYER_BOUNDARY',
+        face: 'LAYER_FACE',
+        pillar: 'LAYER_PILLAR',
+        text: 'LAYER_TEXT',
+        dim: 'LAYER_DIM',
+      },
+      style: {
+        boundaryColor: '#22c55e',
+        faceColor: '#3b82f6',
+        pillarColor: '#f59e0b',
+        textColor: '#111827',
+        boundaryLineweightMm: 0.25,
+        faceLineweightMm: 0.25,
+        pillarLineweightMm: 0.25,
+        textHeight: 2.5,
+      },
+    };
+  };
+
+  const exportCadViaBackend = async () => {
+    try {
+      if (cadExportBusy) return;
+      if (!hasSpatialData) {
+        window.alert('请先导入空间数据（边界/工作面等）后再导出 CAD。');
+        return;
+      }
+      if (!spatialBounds) {
+        window.alert('缺少坐标变换（spatialBounds），无法导出 CAD。');
+        return;
+      }
+
+      const fmt = String(cadExportFormat) === 'dwg' ? 'dwg' : 'dxf';
+      const url = `${API_BASE}/export/${fmt}`;
+      const payload = buildCadExportPayload();
+
+      setCadExportBusy(true);
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const ct = String(resp.headers.get('content-type') || '');
+      if (!resp.ok) {
+        let msg = `导出失败（HTTP ${resp.status}）`;
+        try {
+          if (ct.includes('application/json')) {
+            const j = await resp.json();
+            const code = String(j?.code || j?.detail?.code || '');
+            const detail = (j && Object.prototype.hasOwnProperty.call(j, 'detail')) ? j.detail : null;
+
+            const stringifySafe = (v) => {
+              try {
+                if (typeof v === 'string') return v;
+                if (v == null) return '';
+                return JSON.stringify(v);
+              } catch {
+                return String(v);
+              }
+            };
+
+            // FastAPI 422: { detail: [{loc,msg,type}, ...] }
+            const detailMsg = (() => {
+              if (Array.isArray(detail)) {
+                const ms = detail.map((it) => it?.msg || stringifySafe(it)).filter(Boolean);
+                return ms.join('；');
+              }
+              if (detail && typeof detail === 'object') {
+                return String(detail?.message || detail?.msg || '') || stringifySafe(detail);
+              }
+              return '';
+            })();
+
+            const m0 = j?.message || j?.detail?.message;
+            const m = (typeof m0 === 'string') ? m0 : '';
+            msg = [code, (m || detailMsg || stringifySafe(j?.message) || stringifySafe(detail))]
+              .filter(Boolean)
+              .join('：') || msg;
+          } else {
+            const t = await resp.text();
+            if (t) msg = t;
+          }
+        } catch {
+          // ignore
+        }
+        window.alert(msg);
+        return;
+      }
+
+      const blob = await resp.blob();
+      const cd = resp.headers.get('content-disposition');
+      const nameFromHeader = parseFilenameFromContentDisposition(cd);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const fallback = `中部视图_${stamp}.${fmt}`;
+      downloadBlobFile(nameFromHeader || fallback, blob);
+    } catch (e) {
+      console.error('exportCadViaBackend failed', e);
+      window.alert(`导出失败：${String(e?.message ?? e)}`);
+    } finally {
+      setCadExportBusy(false);
+    }
+  };
 
   // 工程快照（仅输入）：保存/导入
   // schemaVersion=4: 增加采掘接续参数(succession)与经济分析参数(economicsParams)
@@ -10322,6 +10595,7 @@ const App = () => {
         showEvalCenterCtrlPoints: true,
         odiLevelFilter: null,
         odiVizPalette: 'blueRed',
+        odiVizInvertPalette: false,
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
         aquiferOdiSmoothPasses: 0,
@@ -10334,6 +10608,7 @@ const App = () => {
         richFactor: 1.1,
         scenarioWeights: { wd: 0.45, wo: 0.30, wf: 0.25 },
         selectedCoal: '',
+        selectedUpperCoal: '',
         geologyLayoutMode: '2x2',
         geoPickA: 'Ti',
         geoPickB: 'Hi',
@@ -10378,6 +10653,7 @@ const App = () => {
         showEvalCenterCtrlPoints: true,
         odiLevelFilter: null,
         odiVizPalette: 'blueRed',
+        odiVizInvertPalette: false,
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
         aquiferOdiSmoothPasses: 2,
@@ -10389,6 +10665,7 @@ const App = () => {
         richFactor: 1.1,
         scenarioWeights: { wd: 0.15, wo: 0.25, wf: 0.6 },
         selectedCoal: '',
+        selectedUpperCoal: '',
         geologyLayoutMode: '2x2',
         geoPickA: 'Ti',
         geoPickB: 'Hi',
@@ -10433,6 +10710,7 @@ const App = () => {
         showEvalCenterCtrlPoints: true,
         odiLevelFilter: null,
         odiVizPalette: 'blueRed',
+        odiVizInvertPalette: false,
         odiVizSteps: 5,
         odiVizRange: { min: '', max: '' },
         aquiferOdiSmoothPasses: 0,
@@ -10444,6 +10722,7 @@ const App = () => {
         richFactor: 1.1,
         scenarioWeights: { wd: 0.2, wo: 0.45, wf: 0.35 },
         selectedCoal: '',
+        selectedUpperCoal: '',
         geologyLayoutMode: '2x2',
         geoPickA: 'Ti',
         geoPickB: 'Hi',
@@ -10498,6 +10777,7 @@ const App = () => {
     showEvalCenterCtrlPoints,
     odiLevelFilter,
     odiVizPalette,
+    odiVizInvertPalette,
     odiVizSteps,
     odiVizRange: cloneJson(odiVizRange),
     aquiferOdiSmoothPasses,
@@ -10510,6 +10790,7 @@ const App = () => {
     richFactor,
     scenarioWeights: cloneJson(scenarioWeights),
     selectedCoal,
+    selectedUpperCoal,
     geologyLayoutMode,
     geoPickA,
     geoPickB,
@@ -10585,6 +10866,7 @@ const App = () => {
     setShowEvalCenterCtrlPoints(p.showEvalCenterCtrlPoints ?? true);
     setOdiLevelFilter(p.odiLevelFilter ?? null);
     setOdiVizPalette(String(p.odiVizPalette ?? 'blueRed'));
+    setOdiVizInvertPalette(Boolean(p.odiVizInvertPalette));
     {
       const steps = Number(p.odiVizSteps);
       const s = Number.isFinite(steps) ? Math.max(3, Math.min(10, Math.round(steps))) : 5;
@@ -10605,6 +10887,7 @@ const App = () => {
     setRichFactor(Number(p.richFactor));
     setScenarioWeights(p.scenarioWeights);
     setSelectedCoal(String(p.selectedCoal ?? ''));
+    setSelectedUpperCoal(String(p.selectedUpperCoal ?? ''));
     setGeologyLayoutMode(String(p.geologyLayoutMode ?? '2x2'));
     setGeoPickA(String(p.geoPickA ?? 'Ti'));
     setGeoPickB(String(p.geoPickB ?? 'Hi'));
@@ -10646,6 +10929,8 @@ const App = () => {
   const [canRedo, setCanRedo] = useState(false);
   const undoRef = useRef(() => {});
   const redoRef = useRef(() => {});
+
+  const [showClearMenu, setShowClearMenu] = useState(false);
 
   const syncHistoryFlags = () => {
     setCanUndo(historyPastRef.current.length > 0);
@@ -10954,6 +11239,73 @@ const App = () => {
     window.addEventListener('keydown', onKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
   }, []);
+
+  useEffect(() => {
+    if (!showClearMenu) return;
+    const onDocDown = (e) => {
+      const root = document;
+      const menu = root.querySelector('[data-clear-menu]');
+      const btn = root.querySelector('[data-clear-button]');
+      const t = e.target;
+      if (menu && menu.contains(t)) return;
+      if (btn && btn.contains(t)) return;
+      setShowClearMenu(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [showClearMenu]);
+
+  const handleClearPage = () => {
+    const current = getAppSnapshot();
+    // 清空页面：仅清空各板块对中间 SVG 的“派生渲染/结果”，保留钻孔等输入数据。
+    const nextSnap = {
+      ...current,
+      // Summary / ODI：清空评价点/提取/ODI/标尺（这些直接驱动中部渲染）
+      generatedPoints: null,
+      paramExtractionResult: null,
+      paramExtractionGeoResult: null,
+      paramExtractionFullResult: null,
+      odiResult: null,
+      odiScaleReference: null,
+
+      // Planning：清空规划产物（中部工作面圈定等）
+      planningEfficiencyResult: null,
+      planningRecoveryResult: null,
+      planningWeightedResult: null,
+      planningEfficiencySelectedSig: '',
+      planningRecoverySelectedSig: '',
+      planningWeightedSelected: null,
+      plannedWorkfaceLoopsWorld: [],
+      plannedWorkfaceUnionLoopsWorld: [],
+      showPlanningBoundaryOverlay: false,
+
+      // Cocontrol：清空 ODI* 与分析结果（及其叠加渲染）
+      coScalePack: null,
+      coOdiUnionResult: null,
+      coScaleDirty: true,
+      coProductionSummary: null,
+      coImportParamsByNo: {},
+      coPlannedParamsByFaceIndex: {},
+      coSelectedTarget: null,
+      coPickPopup: null,
+      coWsPickPopup: null,
+      coOdiAnalysisResult: null,
+      coOdiAnalysisSelectedKey: '',
+      coOdiAnalysisCheckedKeys: [],
+      coOdiAnalysisBusy: false,
+      coOdiAnalysisLastError: '',
+      coOdiAnalysisDebugCopyStatus: '',
+      coOdiAnalysisExportCopyStatus: '',
+
+      // Succession / economics：清空会影响中部叠加的结果
+      successionStage3Result: null,
+
+      // 通用叠加开关
+      showWorkfaceOutline: false,
+    };
+    pushHistoryFromCurrentTo(nextSnap);
+    applyAppSnapshot(nextSnap);
+  };
 
   const handleClearAll = () => {
     const current = getAppSnapshot();
@@ -12642,6 +12994,13 @@ const App = () => {
     }
   }, [coalSeams, selectedCoal]);
 
+  useEffect(() => {
+    if (activeTab !== 'upward') return;
+    if (!selectedUpperCoal && coalSeams.length > 0) {
+      setSelectedUpperCoal(coalSeams[0]);
+    }
+  }, [activeTab, coalSeams, selectedUpperCoal]);
+
   const identifiedTarget = useMemo(() => {
     const counts = new Map();
 
@@ -12683,6 +13042,12 @@ const App = () => {
       };
     }
 
+    // 上行开采可行性：目标评价层 = 上煤层（用户选择；煤层列表与“目标煤层选择”一致）
+    if (activeTab === 'upward') {
+      const seam = String(selectedUpperCoal ?? '').trim();
+      return { name: seam, reason: '' };
+    }
+
     for (const layers of Object.values(drillholeLayersById ?? {})) {
       const ls = layers ?? [];
       // 最上层基岩：从地表向深部，首个不包含“土”的层
@@ -12713,7 +13078,7 @@ const App = () => {
       name: bestName,
       reason: '算法依据：从地表向深部检索，首个不包含“土”的岩层定义为“最上层基岩”。（下方列表显示各钻孔识别结果）',
     };
-  }, [activeTab, drillholeLayersById]);
+  }, [activeTab, drillholeLayersById, selectedUpperCoal]);
 
   const perBoreholeTarget = useMemo(() => {
     const out = {};
@@ -12736,6 +13101,22 @@ const App = () => {
       return out;
     }
 
+    if (activeTab === 'upward') {
+      const seam = String(selectedUpperCoal ?? '').trim();
+      if (!seam) return out;
+
+      for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
+        const ls = layers ?? [];
+        const targetIdx = ls.findIndex((l) => String(l?.name ?? '').trim() === seam);
+        if (targetIdx < 0) continue;
+        out[bhId] = {
+          targetIdx,
+          targetName: String(ls[targetIdx]?.name ?? '').trim(),
+        };
+      }
+      return out;
+    }
+
     // 其它场景：目标评价层=最上层基岩（与煤层选择无关）
     for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
       const ls = layers ?? [];
@@ -12750,7 +13131,7 @@ const App = () => {
       };
     }
     return out;
-  }, [activeTab, drillholeLayersById]);
+  }, [activeTab, drillholeLayersById, selectedUpperCoal]);
 
   const perBoreholeTargetList = useMemo(() => {
     return Object.entries(perBoreholeTarget ?? {})
@@ -12888,8 +13269,52 @@ const App = () => {
       viridis: ['#440154', '#3b528b', '#21918c', '#5ec962', '#fde725'],
       turbo: ['#30123b', '#4145ab', '#2a7bcb', '#19b6a1', '#7fd34e', '#f9e721', '#f26b2e', '#7a0403'],
       blueRed: ['#1d4ed8', '#60a5fa', '#f8fafc', '#fca5a5', '#dc2626'],
+
+      // ===== SCI / 工程常用色带（偏“论文/Origin/Matlab”风格） =====
+      // 彩虹（注意：彩虹/jet 在感知均匀性上不如 viridis，但工程图常用）
+      rainbow: ['#6a00ff', '#0047ff', '#00b7ff', '#00ff6a', '#f2ff00', '#ff9a00', '#ff0000'],
+      jet: ['#00007f', '#0000ff', '#007fff', '#00ffff', '#7fff7f', '#ffff00', '#ff7f00', '#ff0000', '#7f0000'],
+      spectral: ['#9e0142', '#d53e4f', '#f46d43', '#fdae61', '#fee08b', '#e6f598', '#abdda4', '#66c2a5', '#3288bd', '#5e4fa2'],
+      coolwarm: ['#3b4cc0', '#778dff', '#b6c6ff', '#f8fafc', '#ffc4b6', '#ff8366', '#b40426'],
+
+      // 额外“SCI风格”顺序色带
+      plasma: ['#0d0887', '#5b02a3', '#9a179b', '#cb4679', '#ed7953', '#fbad25', '#f0f921'],
+      inferno: ['#000004', '#1b0c41', '#4a0c6b', '#781c6d', '#a52c60', '#cf4446', '#ed6925', '#fb9b06', '#f7d13d', '#fcffa4'],
+      magma: ['#000004', '#1c1044', '#4f127b', '#812581', '#b63679', '#e65164', '#fb8861', '#fec287', '#fbfdbf'],
+      cividis: ['#00224e', '#2e4a7d', '#526d8f', '#7b8e8a', '#a5ad74', '#d1cb4c', '#fee838'],
+
+      // ===== 单色渐变（蓝/紫/红） =====
+      monoBlue: ['#eff6ff', '#bfdbfe', '#60a5fa', '#2563eb', '#1e3a8a'],
+      monoPurple: ['#faf5ff', '#e9d5ff', '#c4b5fd', '#7c3aed', '#4c1d95'],
+      monoRed: ['#fef2f2', '#fecaca', '#fca5a5', '#ef4444', '#7f1d1d'],
     };
     return palettes;
+  }, []);
+
+  const paletteLabels = useMemo(() => {
+    return {
+      // 现有
+      viridis: 'Viridis（感知均匀）',
+      turbo: 'Turbo（高对比）',
+      blueRed: '蓝-白-红（发散）',
+
+      // SCI / 工程常用
+      rainbow: '彩虹（Rainbow）',
+      jet: 'Jet（MATLAB 经典）',
+      spectral: 'Spectral（光谱）',
+      coolwarm: '冷暖（Coolwarm）',
+
+      // 顺序色带
+      plasma: 'Plasma',
+      inferno: 'Inferno',
+      magma: 'Magma',
+      cividis: 'Cividis',
+
+      // 单色渐变
+      monoBlue: '单色蓝（浅→深）',
+      monoPurple: '单色紫（浅→深）',
+      monoRed: '单色红（浅→深）',
+    };
   }, []);
 
   const hexToRgb = (hex) => {
@@ -12921,8 +13346,9 @@ const App = () => {
     return lerpColor(stops[i], stops[i + 1], frac);
   };
 
-  const valueToRgb = (t, paletteName) => {
-    const stops = paletteStops[paletteName] ?? paletteStops.viridis;
+  const valueToRgb = (t, paletteName, invert = false) => {
+    const baseStops = paletteStops[paletteName] ?? paletteStops.viridis;
+    const stops = invert ? [...baseStops].reverse() : baseStops;
     const tt = Math.max(0, Math.min(1, Number(t)));
     const n = stops.length - 1;
     const x = tt * n;
@@ -12951,7 +13377,7 @@ const App = () => {
     return { min, max, isAuto: false };
   };
 
-  const renderHeatmapDataUrl = (fieldPack, min, max, paletteName, clipRange, steps, filterRange, customBreaks) => {
+  const renderHeatmapDataUrl = (fieldPack, min, max, paletteName, clipRange, steps, filterRange, customBreaks, invertPalette = false) => {
     if (!fieldPack?.field || !fieldPack.gridW || !fieldPack.gridH) return null;
     if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
     if (typeof document === 'undefined') return null;
@@ -13059,7 +13485,7 @@ const App = () => {
           t = q > 0 ? Math.round(t * q) / q : t;
         }
 
-        const { r, g, b } = valueToRgb(t, paletteName);
+        const { r, g, b } = valueToRgb(t, paletteName, invertPalette);
 
         const idx = (py * width + px) * 4;
         data[idx] = r;
@@ -14116,9 +14542,10 @@ const App = () => {
       clip,
       odiVizSteps,
       filterRange,
-      breaks
+      breaks,
+      odiVizInvertPalette
     );
-  }, [odiFieldPack, odiLevelFilter, odiLevelRanges, odiVizPalette, odiVizSteps, odiVizRange, measuredZoningResult, activeTab]);
+  }, [odiFieldPack, odiLevelFilter, odiLevelRanges, odiVizPalette, odiVizInvertPalette, odiVizSteps, odiVizRange, measuredZoningResult, activeTab]);
 
   const handleComputeOdi = () => {
     const pts = paramExtractionResult?.points ?? [];
@@ -15125,6 +15552,248 @@ const App = () => {
       downloadDataUrlFile(filename, canvas.toDataURL('image/png'));
     } catch (e) {
       console.error('exportMainMapPng failed', e);
+    }
+  };
+
+  const exportMainMapDxf = () => {
+    try {
+      const svg = mainMapSvgRef.current;
+      if (!svg) {
+        window.alert('未找到可导出的主图 SVG。');
+        return;
+      }
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `主图_${stamp}.dxf`;
+
+      const asNum = (v) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const applyMatrix = (el, x, y) => {
+        try {
+          const pt = svg.createSVGPoint();
+          pt.x = Number(x);
+          pt.y = Number(y);
+          const m = el?.getCTM?.();
+          if (m) {
+            const p2 = pt.matrixTransform(m);
+            return { x: Number(p2.x), y: Number(p2.y) };
+          }
+        } catch {
+          // ignore
+        }
+        return { x: Number(x), y: Number(y) };
+      };
+
+      const scaleFromMatrix = (m) => {
+        if (!m) return 1;
+        const sx = Math.sqrt((m.a || 0) * (m.a || 0) + (m.b || 0) * (m.b || 0));
+        const sy = Math.sqrt((m.c || 0) * (m.c || 0) + (m.d || 0) * (m.d || 0));
+        const s = (Number.isFinite(sx) && Number.isFinite(sy)) ? (sx + sy) / 2 : (Number.isFinite(sx) ? sx : 1);
+        return Number.isFinite(s) && s > 0 ? s : 1;
+      };
+
+      const parsePointsAttr = (raw) => {
+        const s = String(raw ?? '').trim();
+        if (!s) return [];
+        const parts = s.split(/[\s]+/).filter(Boolean);
+        const pts = [];
+        for (const p of parts) {
+          const [xs, ys] = String(p).split(',');
+          const x = asNum(xs);
+          const y = asNum(ys);
+          if (x == null || y == null) continue;
+          pts.push({ x, y });
+        }
+        return pts;
+      };
+
+      const entities = [];
+      const allPts = [];
+
+      const pushPt = (p) => {
+        if (!p) return;
+        const x = Number(p.x);
+        const y = Number(p.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        allPts.push({ x, y });
+      };
+
+      const pushLine = (p1, p2) => {
+        if (!p1 || !p2) return;
+        const x1 = Number(p1.x);
+        const y1 = Number(p1.y);
+        const x2 = Number(p2.x);
+        const y2 = Number(p2.y);
+        if (![x1, y1, x2, y2].every((v) => Number.isFinite(v))) return;
+        entities.push({ kind: 'LINE', p1: { x: x1, y: y1 }, p2: { x: x2, y: y2 } });
+        pushPt(p1);
+        pushPt(p2);
+      };
+
+      const pushPolyline = (pts, closed) => {
+        const ps = Array.isArray(pts) ? pts.filter((p) => Number.isFinite(Number(p?.x)) && Number.isFinite(Number(p?.y))) : [];
+        if (ps.length < 2) return;
+        entities.push({ kind: 'LWPOLYLINE', pts: ps.map((p) => ({ x: Number(p.x), y: Number(p.y) })), closed: Boolean(closed) });
+        ps.forEach(pushPt);
+      };
+
+      const pushCircle = (c, r) => {
+        const cx = Number(c?.x);
+        const cy = Number(c?.y);
+        const rr = Number(r);
+        if (![cx, cy, rr].every((v) => Number.isFinite(v))) return;
+        if (!(rr > 0)) return;
+        entities.push({ kind: 'CIRCLE', c: { x: cx, y: cy }, r: rr });
+        pushPt({ x: cx - rr, y: cy - rr });
+        pushPt({ x: cx + rr, y: cy + rr });
+      };
+
+      // 线段
+      svg.querySelectorAll('line').forEach((el) => {
+        const x1 = asNum(el.getAttribute('x1'));
+        const y1 = asNum(el.getAttribute('y1'));
+        const x2 = asNum(el.getAttribute('x2'));
+        const y2 = asNum(el.getAttribute('y2'));
+        if (x1 == null || y1 == null || x2 == null || y2 == null) return;
+        const p1 = applyMatrix(el, x1, y1);
+        const p2 = applyMatrix(el, x2, y2);
+        pushLine(p1, p2);
+      });
+
+      // 折线/多边形
+      svg.querySelectorAll('polyline').forEach((el) => {
+        const pts0 = parsePointsAttr(el.getAttribute('points'));
+        const pts = pts0.map((p) => applyMatrix(el, p.x, p.y));
+        pushPolyline(pts, false);
+      });
+      svg.querySelectorAll('polygon').forEach((el) => {
+        const pts0 = parsePointsAttr(el.getAttribute('points'));
+        const pts = pts0.map((p) => applyMatrix(el, p.x, p.y));
+        pushPolyline(pts, true);
+      });
+
+      // 矩形
+      svg.querySelectorAll('rect').forEach((el) => {
+        const x = asNum(el.getAttribute('x'));
+        const y = asNum(el.getAttribute('y'));
+        const w = asNum(el.getAttribute('width'));
+        const h = asNum(el.getAttribute('height'));
+        if (x == null || y == null || w == null || h == null) return;
+        if (!(w > 0 && h > 0)) return;
+        const pts = [
+          applyMatrix(el, x, y),
+          applyMatrix(el, x + w, y),
+          applyMatrix(el, x + w, y + h),
+          applyMatrix(el, x, y + h),
+        ];
+        pushPolyline(pts, true);
+      });
+
+      // 圆
+      svg.querySelectorAll('circle').forEach((el) => {
+        const cx = asNum(el.getAttribute('cx'));
+        const cy = asNum(el.getAttribute('cy'));
+        const r0 = asNum(el.getAttribute('r'));
+        if (cx == null || cy == null || r0 == null) return;
+        const c = applyMatrix(el, cx, cy);
+        const m = el.getCTM?.();
+        const r = Number(r0) * scaleFromMatrix(m);
+        pushCircle(c, r);
+      });
+
+      // Path：采样为折线（用于少量矢量路径；复杂填充/图片不处理）
+      svg.querySelectorAll('path').forEach((el) => {
+        const d = String(el.getAttribute('d') ?? '').trim();
+        if (!d) return;
+        const total = el.getTotalLength?.();
+        if (!Number.isFinite(Number(total)) || total <= 0) return;
+
+        const samples = Math.max(20, Math.min(500, Math.round(Number(total) / 6)));
+        const pts = [];
+        for (let i = 0; i <= samples; i++) {
+          const t = (i / samples) * total;
+          const p = el.getPointAtLength(t);
+          if (!p) continue;
+          pts.push(applyMatrix(el, p.x, p.y));
+        }
+        pushPolyline(pts, false);
+      });
+
+      if (!entities.length) {
+        window.alert('当前主图没有可导出的矢量要素（仅支持 line/polyline/polygon/rect/circle/path）。');
+        return;
+      }
+
+      // 计算包围盒：翻转 Y 轴（SVG y向下，CAD y向上），并平移到 (0,0)
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of allPts) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+        minX = 0;
+        maxX = 0;
+        minY = 0;
+        maxY = 0;
+      }
+
+      const tx = (x) => (Number(x) - minX);
+      const ty = (y) => (maxY - Number(y));
+      const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(6) : '0');
+
+      const lines = [];
+      const push = (code, value) => {
+        lines.push(String(code));
+        lines.push(String(value));
+      };
+
+      push(0, 'SECTION');
+      push(2, 'HEADER');
+      push(0, 'ENDSEC');
+      push(0, 'SECTION');
+      push(2, 'ENTITIES');
+
+      for (const e of entities) {
+        if (e.kind === 'LINE') {
+          push(0, 'LINE');
+          push(8, '0');
+          push(10, fmt(tx(e.p1.x)));
+          push(20, fmt(ty(e.p1.y)));
+          push(11, fmt(tx(e.p2.x)));
+          push(21, fmt(ty(e.p2.y)));
+        } else if (e.kind === 'LWPOLYLINE') {
+          push(0, 'LWPOLYLINE');
+          push(8, '0');
+          push(90, e.pts.length);
+          push(70, e.closed ? 1 : 0);
+          for (const p of e.pts) {
+            push(10, fmt(tx(p.x)));
+            push(20, fmt(ty(p.y)));
+          }
+        } else if (e.kind === 'CIRCLE') {
+          push(0, 'CIRCLE');
+          push(8, '0');
+          push(10, fmt(tx(e.c.x)));
+          push(20, fmt(ty(e.c.y)));
+          push(40, fmt(e.r));
+        }
+      }
+
+      push(0, 'ENDSEC');
+      push(0, 'EOF');
+
+      downloadTextFile(filename, lines.join('\n') + '\n', 'application/dxf;charset=utf-8');
+    } catch (e) {
+      console.error('exportMainMapDxf failed', e);
+      window.alert('导出 DXF 失败：请查看控制台日志。');
     }
   };
 
@@ -19575,6 +20244,23 @@ const App = () => {
     return res;
   }, [hasWorkingFaceData, normalizedWorkingFaceDataVisible]);
 
+  const workfaceOutlineRects = useMemo(() => {
+    // 优先：导入工作面点 -> 非自交排序后的 loop（通常为 4 点矩形）
+    const loops = Array.isArray(normalizedWorkfaceLoops) ? normalizedWorkfaceLoops : [];
+    if (!loops.length) return [];
+    return loops
+      .map((wf) => {
+        const pts = Array.isArray(wf?.loop) ? wf.loop : [];
+        if (pts.length < 2) return null;
+        const cleaned = pts
+          .map((p) => ({ nx: Number(p?.nx), ny: Number(p?.ny) }))
+          .filter((p) => Number.isFinite(p.nx) && Number.isFinite(p.ny));
+        if (cleaned.length < 2) return null;
+        return { faceIndex: wf.faceIndex, pts: cleaned };
+      })
+      .filter(Boolean);
+  }, [normalizedWorkfaceLoops]);
+
   const normalizedPlannedWorkfaceLoops = useMemo(() => {
     const src0 = Array.isArray(plannedWorkfaceLoopsWorld) ? plannedWorkfaceLoopsWorld : [];
     // 兜底：协同调控/切换场景下，可能尚未把规划面 loops 挂到 plannedWorkfaceLoopsWorld，
@@ -19910,6 +20596,123 @@ const App = () => {
     return m;
   }, [normalizedGeneratedPoints]);
 
+  const generatedWorkfaceOutlineRects = useMemo(() => {
+    // 兜底：部分流程（例如协同调控注入）可能只生成了粉色“工作面定位控制点”，但未写回 workingFaceData。
+    // 此时仍需要在综合扰动主图上按“矩形轮廓”标出工作面。
+    const pts0 = Array.isArray(generatedByCat?.pink) ? generatedByCat.pink : [];
+    if (pts0.length < 2) return [];
+
+    const byFace = new Map();
+    for (const p of pts0) {
+      const faceIndex = Number(p?.faceIndex);
+      const k = Number.isFinite(faceIndex) ? faceIndex : 1;
+      if (!byFace.has(k)) byFace.set(k, []);
+      byFace.get(k).push(p);
+    }
+
+    const res = [];
+    const keys = Array.from(byFace.keys()).sort((a, b) => a - b);
+    for (const k of keys) {
+      const ptsRaw = (byFace.get(k) ?? []).filter((p) => Number.isFinite(p?.nx) && Number.isFinite(p?.ny));
+      if (ptsRaw.length < 2) continue;
+
+      // 优先：用非自交排序得到矩形轮廓
+      const loop = computeNonSelfIntersectingLoop(ptsRaw, (p) => p?.nx, (p) => p?.ny)
+        .map((p) => ({ nx: Number(p?.x), ny: Number(p?.y) }))
+        .filter((p) => Number.isFinite(p.nx) && Number.isFinite(p.ny));
+
+      if (loop.length >= 3) {
+        res.push({ faceIndex: k, pts: loop });
+        continue;
+      }
+
+      // 极端兜底：点数不足时用 AABB 画 rect
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of ptsRaw) {
+        const x = Number(p?.nx);
+        const y = Number(p?.ny);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      if (Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)) {
+        res.push({
+          faceIndex: k,
+          pts: [
+            { nx: minX, ny: minY },
+            { nx: maxX, ny: minY },
+            { nx: maxX, ny: maxY },
+            { nx: minX, ny: maxY },
+          ],
+        });
+      }
+    }
+    return res;
+  }, [generatedByCat]);
+
+  const odiWorkfaceOutlineRects = useMemo(() => {
+    const planned = Array.isArray(normalizedPlannedWorkfaceLoops)
+      ? normalizedPlannedWorkfaceLoops
+        .map((wf) => {
+          const pts = Array.isArray(wf?.loop) ? wf.loop : [];
+          if (pts.length < 2) return null;
+          const cleaned = pts
+            .map((p) => ({ nx: Number(p?.nx), ny: Number(p?.ny) }))
+            .filter((p) => Number.isFinite(p.nx) && Number.isFinite(p.ny));
+          if (cleaned.length < 2) return null;
+          return { faceIndex: wf.faceIndex, pts: cleaned };
+        })
+        .filter(Boolean)
+      : [];
+
+    const fromImport = Array.isArray(workfaceOutlineRects) ? workfaceOutlineRects : [];
+    const fromGenerated = Array.isArray(generatedWorkfaceOutlineRects) ? generatedWorkfaceOutlineRects : [];
+    const candidates = [...fromImport, ...planned, ...fromGenerated].filter(Boolean);
+    if (!candidates.length) return [];
+
+    const bboxOf = (pts) => {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const p of pts) {
+        const x = Number(p?.nx);
+        const y = Number(p?.ny);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      if (!(Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY))) return null;
+      return { minX, minY, maxX, maxY, area: Math.max(0, (maxX - minX) * (maxY - minY)) };
+    };
+
+    // 口径：综合扰动主图“圈工作面”按 faceIndex 至少一框；若多源/多环冲突，选 bbox 面积最大的那一个
+    const bestByFace = new Map();
+    for (const c of candidates) {
+      const pts = Array.isArray(c?.pts) ? c.pts : [];
+      if (pts.length < 2) continue;
+      const fi0 = Number(c?.faceIndex);
+      const fi = Number.isFinite(fi0) ? fi0 : 1;
+      const bbox = bboxOf(pts);
+      if (!bbox) continue;
+      const cur = bestByFace.get(fi);
+      if (!cur || bbox.area > (cur.__bbox?.area ?? -1) || (bbox.area === (cur.__bbox?.area ?? -1) && pts.length > (cur.pts?.length ?? 0))) {
+        bestByFace.set(fi, { faceIndex: fi, pts, __bbox: bbox });
+      }
+    }
+
+    return Array.from(bestByFace.values())
+      .sort((a, b) => (Number(a.faceIndex) || 0) - (Number(b.faceIndex) || 0))
+      .map((x) => ({ faceIndex: x.faceIndex, pts: x.pts }));
+  }, [workfaceOutlineRects, generatedWorkfaceOutlineRects, normalizedPlannedWorkfaceLoops]);
+
   const handleBoundaryImportClick = () => {
     boundaryFileInputRef.current?.click();
   };
@@ -20153,9 +20956,11 @@ const App = () => {
                   }
                   title="色带"
                 >
-                  <option value="viridis">Viridis</option>
-                  <option value="turbo">Turbo</option>
-                  <option value="blueRed">Blue-Red</option>
+                  {Object.keys(paletteStops).map((k) => (
+                    <option key={k} value={k}>
+                      {paletteLabels[k] ?? k}
+                    </option>
+                  ))}
                 </select>
 
                 <select
@@ -20360,17 +21165,17 @@ const App = () => {
             <label className="text-base font-bold text-slate-500 mb-3 block uppercase tracking-wider">数据导入中心</label>
             <div className="space-y-2">
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded text-base text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleBoundaryImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <Box size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入采区边界
+                  <Box size={20} className="text-slate-400 group-hover:text-blue-500" /> 导入采区边界
                 </span>
                 <div className="flex items-center gap-2">
                   {boundaryData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {boundaryData.length} 个点</span>
                   )}
-                  <FileUp size={16} className="text-slate-300" />
+                  <FileUp size={18} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -20381,17 +21186,17 @@ const App = () => {
                 onChange={handleBoundaryFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded text-base text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleDrillholeImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <MapPin size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔坐标
+                  <MapPin size={20} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔坐标
                 </span>
                 <div className="flex items-center gap-2">
                   {drillholeData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {drillholeData.length} 个点</span>
                   )}
-                  <FileUp size={16} className="text-slate-300" />
+                  <FileUp size={18} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -20402,17 +21207,17 @@ const App = () => {
                 onChange={handleDrillholeFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded text-base text-slate-600 hover:border-blue-500 hover:text-blue-600 transition-all group"
                 onClick={handleDrillholeLayersImportClick}
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <Layers size={18} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔数据
+                  <Layers size={20} className="text-slate-400 group-hover:text-blue-500" /> 导入钻孔数据
                 </span>
                 <div className="flex items-center gap-2">
                   {Object.keys(drillholeLayersById).length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {Object.keys(drillholeLayersById).length} 个钻孔</span>
                   )}
-                  <FileUp size={16} className="text-slate-300" />
+                  <FileUp size={18} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -20424,18 +21229,18 @@ const App = () => {
                 onChange={handleDrillholeLayersFileChange}
               />
               <button
-                className="w-full flex items-center justify-between px-4 py-2 bg-white border border-slate-200 rounded text-sm text-slate-600 hover:border-emerald-500 hover:text-emerald-600 transition-all group"
+                className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded text-base text-slate-600 hover:border-emerald-500 hover:text-emerald-600 transition-all group"
                 onClick={handleMeasuredConstraintImportClick}
                 type="button"
               >
                 <span className="flex items-center gap-2 font-medium">
-                  <ClipboardCheck size={18} className="text-slate-400 group-hover:text-emerald-500" /> 导入实测数据
+                  <ClipboardCheck size={20} className="text-slate-400 group-hover:text-emerald-500" /> 导入实测数据
                 </span>
                 <div className="flex items-center gap-2">
                   {measuredConstraintData.length > 0 && (
                     <span className="text-[10px] text-slate-400">已导入 {measuredConstraintData.length} 条</span>
                   )}
-                  <FileUp size={16} className="text-slate-300" />
+                  <FileUp size={18} className="text-slate-300" />
                 </div>
               </button>
               <input
@@ -20456,7 +21261,7 @@ const App = () => {
               <div>
                 <div className="text-sm text-slate-500 mb-2 font-bold">目标煤层选择</div>
                 <select
-                  className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-lg text-slate-700"
+                  className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
                   value={selectedCoal}
                   onChange={(e) => setSelectedCoal(e.target.value)}
                   disabled={coalSeams.length === 0}
@@ -20475,7 +21280,7 @@ const App = () => {
                 <div>
                   <div className="text-sm text-slate-500 mb-2 font-bold">含水层选择</div>
                   <select
-                    className="w-full bg-white border border-slate-200 rounded px-3 py-2 text-lg text-slate-700"
+                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${aquiferTypeOptions.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
                     value={selectedAquiferType}
                     onChange={(e) => setSelectedAquiferType(e.target.value)}
                     disabled={aquiferTypeOptions.length === 0}
@@ -20491,8 +21296,30 @@ const App = () => {
                 </div>
               )}
               <div>
-                <div className="text-sm text-slate-500 mb-2 font-bold">{activeTab === 'aquifer' ? '识别目标评价层（目标层下关键层）' : '识别目标评价层（最上层基岩）'}</div>
-                {activeTab !== 'aquifer' && (
+                <div className="text-sm text-slate-500 mb-2 font-bold">{
+                  activeTab === 'aquifer'
+                    ? '识别目标评价层（目标层下关键层）'
+                    : (activeTab === 'upward' ? '上煤层选择' : '识别目标评价层（最上层基岩）')
+                }</div>
+
+                {activeTab === 'upward' && (
+                  <select
+                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
+                    value={selectedUpperCoal}
+                    onChange={(e) => setSelectedUpperCoal(e.target.value)}
+                    disabled={coalSeams.length === 0}
+                  >
+                    {coalSeams.length === 0 ? (
+                      <option value="">请先导入钻孔分层数据（检索含“煤”的层位）</option>
+                    ) : (
+                      coalSeams.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))
+                    )}
+                  </select>
+                )}
+
+                {activeTab !== 'aquifer' && activeTab !== 'upward' && (
                   <div className={`flex items-start gap-2 rounded border p-3 ${identifiedTarget.name ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
                     {identifiedTarget.name ? (
                       <CheckCircle2 size={18} className="text-emerald-600 mt-0.5" />
@@ -20513,13 +21340,20 @@ const App = () => {
                   </div>
                   <div className="border border-slate-200 rounded bg-slate-50 max-h-40 overflow-auto">
                     {perBoreholeTargetList.length === 0 ? (
-                      <div className="p-3 text-sm text-slate-500">暂无结果（请先导入钻孔分层数据）</div>
+                      <div className="p-3 text-sm text-slate-500">
+                        <div>暂无结果</div>
+                        <div>请先导入钻孔分层数据</div>
+                      </div>
                     ) : (
                       <table className="w-full text-sm">
                         <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
                           <tr>
                             <th className="text-left px-3 py-2 text-slate-500 font-bold">钻孔</th>
-                            <th className="text-left px-3 py-2 text-slate-500 font-bold">{activeTab === 'aquifer' ? '目标含水层下关键层岩性' : '最上层基岩岩性'}</th>
+                            <th className="text-left px-3 py-2 text-slate-500 font-bold">{
+                              activeTab === 'aquifer'
+                                ? '目标含水层下关键层岩性'
+                                : (activeTab === 'upward' ? '上煤层' : '最上层基岩岩性')
+                            }</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -20624,13 +21458,55 @@ const App = () => {
             >
               <Redo2 size={16} />
             </button>
+            <div className="relative">
+              <button
+                data-clear-button
+                className="p-2 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-50"
+                onClick={() => setShowClearMenu((v) => !v)}
+                title="清空"
+                type="button"
+              >
+                <Trash2 size={16} />
+              </button>
+              {showClearMenu && (
+                <div
+                  data-clear-menu
+                  className="absolute right-0 top-full mt-2 w-44 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      setShowClearMenu(false);
+                      handleClearPage();
+                    }}
+                    type="button"
+                    title="仅清空中部 SVG 的派生渲染（保留钻孔/边界等输入）"
+                  >
+                    清空页面
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 text-xs text-rose-700 hover:bg-rose-50"
+                    onClick={() => {
+                      setShowClearMenu(false);
+                      handleClearAll();
+                    }}
+                    type="button"
+                    title="当前场景回到初始默认值（可撤回）"
+                  >
+                    清空全部
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button
-              className="p-2 rounded-lg bg-white border border-rose-200 text-rose-700 hover:bg-rose-50"
-              onClick={handleClearAll}
-              title="清空当前场景的输入数据与参数设置（可撤回）"
+              className="px-3 py-2 rounded-lg bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 text-xs font-bold"
+              onClick={() => {}}
+              title="导出分析报告（功能开发中）"
               type="button"
             >
-              <Trash2 size={16} />
+              导出分析报告
             </button>
           </div>
         </div>
@@ -20869,9 +21745,19 @@ const App = () => {
                          title="ODI 色带"
                        >
                          {Object.keys(paletteStops).map((k) => (
-                           <option key={k} value={k}>{k}</option>
+                           <option key={k} value={k}>{paletteLabels[k] ?? k}</option>
                          ))}
                        </select>
+
+                       <button
+                         className={`px-2 py-1 rounded text-xs border border-slate-200 ${
+                           odiVizInvertPalette ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'
+                         }`}
+                         onClick={() => setOdiVizInvertPalette((v) => !v)}
+                         title="色带翻转：高值/低值颜色互换"
+                       >
+                         反转
+                       </button>
                      </div>
 
                      <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
@@ -20885,7 +21771,7 @@ const App = () => {
                          step={1}
                          value={odiVizSteps}
                          onChange={(e) => setOdiVizSteps(Number(e.target.value))}
-                         className="w-24"
+                         className="w-16"
                          title="颜色分级数量（3~10）"
                        />
                        <div className="text-[11px] text-slate-600 font-mono w-5 -ml-2 text-right">{odiVizSteps}</div>
@@ -21014,6 +21900,116 @@ const App = () => {
               <div
                 className="flex-1 flex items-center justify-center p-3 relative"
               >
+                {showCadExportModal && (
+                  <div
+                    className="fixed inset-0 z-[100]"
+                    onMouseDown={(e) => {
+                      // 点击遮罩关闭（避免误关：导出中不允许关闭）
+                      if (cadExportBusy) return;
+                      if (e.target === e.currentTarget) setShowCadExportModal(false);
+                    }}
+                  >
+                    <div className="absolute inset-0 bg-black/35 backdrop-blur-[1px]" />
+                    <div className="absolute inset-0 flex items-center justify-center p-4">
+                      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-slate-200 overflow-hidden">
+                        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-bold text-slate-800">导出 CAD</div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">基于业务几何与工程坐标生成（非截图/位图）</div>
+                          </div>
+                          <button
+                            className={`px-2 py-1 rounded text-xs border ${cadExportBusy ? 'text-slate-300 border-slate-200 cursor-not-allowed' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                            onClick={() => { if (!cadExportBusy) setShowCadExportModal(false); }}
+                            type="button"
+                            title={cadExportBusy ? '导出中…' : '关闭'}
+                            disabled={cadExportBusy}
+                          >
+                            关闭
+                          </button>
+                        </div>
+
+                        <div className="px-5 py-4 space-y-4">
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="block">
+                              <div className="text-[11px] text-slate-600 font-bold mb-1">格式</div>
+                              <select
+                                className="w-full bg-white border border-slate-200 rounded px-2 py-2 text-xs text-slate-700"
+                                value={cadExportFormat}
+                                onChange={(e) => setCadExportFormat(e.target.value)}
+                                disabled={cadExportBusy}
+                              >
+                                <option value="dxf">DXF</option>
+                                <option value="dwg">DWG（需后端转换器）</option>
+                              </select>
+                            </label>
+                            <div className="text-[11px] text-slate-500 leading-5 pt-5">
+                              <div>单位：米（$INSUNITS=6）</div>
+                              <div>图层：BOUNDARY / FACE / PILLAR / TEXT / DIM</div>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className={`flex items-center gap-2 text-xs ${cadExportBusy ? 'text-slate-400' : 'text-slate-700'}`}>
+                              <input
+                                type="checkbox"
+                                className="accent-blue-600"
+                                checked={cadExportIncludeLabels}
+                                onChange={(e) => setCadExportIncludeLabels(e.target.checked)}
+                                disabled={cadExportBusy}
+                              />
+                              包含工作面编号标注
+                            </label>
+                            <label className={`flex items-center gap-2 text-xs ${cadExportBusy ? 'text-slate-400' : 'text-slate-700'}`}>
+                              <input
+                                type="checkbox"
+                                className="accent-blue-600"
+                                checked={cadExportIncludePillars}
+                                onChange={(e) => setCadExportIncludePillars(e.target.checked)}
+                                disabled={cadExportBusy}
+                              />
+                              包含煤柱/保护边界（若有）
+                            </label>
+                          </div>
+
+                          <div className="text-[11px] text-slate-500 leading-5">
+                            <div>DXF：直接由后端生成并下载。</div>
+                            <div>DWG：后端将 DXF 转 DWG；若未配置转换器会返回错误码。</div>
+                          </div>
+                        </div>
+
+                        <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-end gap-2">
+                          <button
+                            className={`px-3 py-2 rounded-lg text-xs font-bold border ${cadExportBusy ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed' : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'}`}
+                            onClick={() => setShowCadExportModal(false)}
+                            type="button"
+                            disabled={cadExportBusy}
+                          >
+                            取消
+                          </button>
+                          <button
+                            className={`px-4 py-2 rounded-lg text-xs font-bold border ${cadExportBusy ? 'bg-blue-200 text-white border-blue-200 cursor-wait' : 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'}`}
+                            onClick={async () => {
+                              try {
+                                await exportCadViaBackend({
+                                  format: cadExportFormat,
+                                  includeLabels: cadExportIncludeLabels,
+                                  includePillars: cadExportIncludePillars,
+                                });
+                                setShowCadExportModal(false);
+                              } catch {
+                                // exportCadViaBackend 内部会 alert
+                              }
+                            }}
+                            type="button"
+                          >
+                            {cadExportBusy ? '导出中…' : '开始导出'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* 智能规划：工作面悬停 Tooltip（蓝色工作面） */}
                 {mainViewMode === 'planning' && planningWorkfaceHover && planningWorkfaceTooltipData && (
                   <div
@@ -21499,6 +22495,31 @@ const App = () => {
                         </g>
                       ))}
 
+                      {/* 综合扰动结果：工作面“矩形轮廓”标记（粉色虚线框），避免仅显示点导致难以辨识工作面范围 */}
+                      {mainViewMode === 'odi' && showEvalWorkfaceLocPoints && !showWorkfaceOutline && odiWorkfaceOutlineRects.length > 0 && (
+                        <g pointerEvents="none">
+                          {odiWorkfaceOutlineRects.map((r) => {
+                            const pts = Array.isArray(r?.pts) ? r.pts : [];
+                            if (pts.length < 2) return null;
+                            const segs = pts.map((p) => `${p.nx},${p.ny}`);
+                            const closed = pts.length >= 3 ? [...segs, segs[0]] : segs;
+                            return (
+                              <polyline
+                                key={`wf-rect-${r.faceIndex}`}
+                                points={closed.join(' ')}
+                                fill="none"
+                                stroke="#ec4899"
+                                strokeWidth="2"
+                                strokeOpacity="0.65"
+                                strokeDasharray="7 6"
+                                strokeLinejoin="round"
+                                strokeLinecap="round"
+                              />
+                            );
+                          })}
+                        </g>
+                      )}
+
                       {/* 工作面坐标点（导入后立即显示，粉色；受“评价点-定位点”开关控制） */}
                       {hasWorkingFaceData && showEvalWorkfaceLocPoints && normalizedWorkingFaceDataVisible.map((p) => (
                         <g key={`wf-raw-${p.id}-${p.x}-${p.y}`}>
@@ -21506,9 +22527,9 @@ const App = () => {
                             cx={p.nx}
                             cy={p.ny}
                             r="4"
-                            fill={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ffffff' : '#ec4899'}
-                            stroke={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ec4899' : 'none'}
-                            strokeWidth={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? 1.8 : 0}
+                            fill={(mainViewMode === 'odi' || mainViewMode === 'planning') ? '#ec4899' : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ffffff' : '#ec4899')}
+                            stroke={(mainViewMode === 'odi' || mainViewMode === 'planning') ? 'none' : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ec4899' : 'none')}
+                            strokeWidth={(mainViewMode === 'odi' || mainViewMode === 'planning') ? 0 : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? 1.8 : 0)}
                             opacity="0.9"
                           />
                         </g>
@@ -21542,9 +22563,9 @@ const App = () => {
                               cx={p.nx}
                               cy={p.ny}
                               r="4.5"
-                              fill={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ffffff' : '#ec4899'}
-                              stroke={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ec4899' : 'none'}
-                              strokeWidth={Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? 1.8 : 0}
+                              fill={(mainViewMode === 'odi' || mainViewMode === 'planning') ? '#ec4899' : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ffffff' : '#ec4899')}
+                              stroke={(mainViewMode === 'odi' || mainViewMode === 'planning') ? 'none' : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? '#ec4899' : 'none')}
+                              strokeWidth={(mainViewMode === 'odi' || mainViewMode === 'planning') ? 0 : (Number(p.faceIndex) === Number(mainMapSelectedImportFaceNo) ? 1.8 : 0)}
                               opacity="0.95"
                             />
                           ))}
@@ -21561,6 +22582,7 @@ const App = () => {
 
                       {/* 选中工作面：四角白点叠加层（ODI/协同调控联动） */}
                       {(() => {
+                        if (mainViewMode === 'odi' || mainViewMode === 'planning') return null;
                         if (!coSelectedTarget) return null;
                         const cornersW = coGetHighlightCornersWorldForTarget(coSelectedTarget);
                         if (!cornersW || cornersW.length !== 4) return null;
@@ -21777,6 +22799,20 @@ const App = () => {
                               data-main-map-export-menu
                               className="absolute right-0 bottom-full mb-2 w-44 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden z-50"
                             >
+                              <button
+                                className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 ${(!hasSpatialData || !spatialBounds) ? 'text-slate-400 cursor-not-allowed' : 'text-slate-700'}`}
+                                disabled={!hasSpatialData || !spatialBounds}
+                                title={(!hasSpatialData || !spatialBounds) ? '请先导入空间数据（边界/钻孔/工作面/实测等），并确保主图坐标范围可用' : '导出 CAD（业务几何/工程坐标）'}
+                                onClick={() => {
+                                  if (!hasSpatialData || !spatialBounds) return;
+                                  setShowMainMapExportMenu(false);
+                                  setShowCadExportModal(true);
+                                }}
+                                type="button"
+                              >
+                                导出 CAD（DXF/DWG）
+                              </button>
+
                               <button
                                 className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50"
                                 onClick={() => {
@@ -24262,7 +25298,6 @@ const App = () => {
               <h2 className="text-[16px] font-bold text-slate-700 flex items-center gap-2 uppercase tracking-tight truncate">
                 <Grid size={16} className="text-red-500" /> 覆岩扰动综合评价
               </h2>
-              <span className="text-[9px] font-mono text-slate-400 bg-white px-2 py-0.5 rounded border border-slate-200 shrink-0">系统就绪: 100%</span>
             </div>
             <ChevronDown
               size={18}
@@ -24837,13 +25872,6 @@ const App = () => {
                 </div>
               </section>
 
-              {/* 底部系统自检信息 */}
-              <div className="pt-4 border-t border-slate-200">
-                <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono tracking-widest">
-                  <span>内核处理: 正常</span>
-                  <span>数据版本: 2024.12.Q4</span>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -25402,10 +26430,6 @@ const App = () => {
                             </button>
                           </div>
                         )}
-
-                        <div className="text-[10px] text-slate-500 leading-relaxed">
-                          该板块用于展示/关联原方案关键参数（后续按你定义的字段补齐）。
-                        </div>
                       </div>
 
                       {/* 2) 协同调控参数 - 布局层 */}
@@ -25846,31 +26870,33 @@ const App = () => {
                                 </div>
                               </div>
 
-                              <button
-                                type="button"
-                                disabled={!dynEnabled}
-                                onClick={() => {
-                                  if (!dynEnabled) return;
-                                  handleCocontrolOdiGlobalCompute();
-                                }}
-                                className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
-                                title="ODI全局计算：生成全局统一标尺 ODI*（缺少提取结果会提示并可跳转）"
-                              >
-                                ODI全局计算
-                              </button>
+                              <div className="grid grid-cols-2 gap-2">
+                                <button
+                                  type="button"
+                                  disabled={!dynEnabled}
+                                  onClick={() => {
+                                    if (!dynEnabled) return;
+                                    handleCocontrolOdiGlobalCompute();
+                                  }}
+                                  className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
+                                  title="ODI全局计算：生成全局统一标尺 ODI*（缺少提取结果会提示并可跳转）"
+                                >
+                                  ODI全局计算
+                                </button>
 
-                              <button
-                                type="button"
-                                disabled={!dynEnabled}
-                                onClick={() => {
-                                  if (!dynEnabled) return;
-                                  handleCocontrolOdiAnalysis();
-                                }}
-                                className={`w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'}`}
-                                title="生成 ODI 分析（ODI* 网格采样：排行 + 分布 + 推进曲线）"
-                              >
-                                ODI分析
-                              </button>
+                                <button
+                                  type="button"
+                                  disabled={!dynEnabled}
+                                  onClick={() => {
+                                    if (!dynEnabled) return;
+                                    handleCocontrolOdiAnalysis();
+                                  }}
+                                  className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'}`}
+                                  title="生成 ODI 分析（ODI* 网格采样：排行 + 分布 + 推进曲线）"
+                                >
+                                  ODI分析
+                                </button>
+                              </div>
                             </div>
                           );
                         })()}
@@ -26400,10 +27426,6 @@ const App = () => {
                       disabled={!Boolean(economicsParams.riskLinkEnabled)}
                     />
                   </div>
-                </div>
-
-                <div className="text-[10px] text-slate-400 leading-relaxed">
-                  说明：风险序列来自“采掘接续-阶段2（ODI风险）”。若未生成风险序列，风险联动不会触发。
                 </div>
               </div>
             </div>

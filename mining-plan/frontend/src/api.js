@@ -13,6 +13,8 @@ const API_HOST = (import.meta?.env?.VITE_API_HOST || DEFAULT_API_HOST);
 const API_PORT = String(import.meta?.env?.VITE_API_PORT || '3001');
 const API_BASE = (import.meta?.env?.VITE_API_BASE || `http://${API_HOST}:${API_PORT}/api`);
 
+export { API_BASE };
+
 // ==================== 通用请求封装（带重试机制）====================
 
 class ApiError extends Error {

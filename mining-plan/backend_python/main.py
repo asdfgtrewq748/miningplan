@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from routers import upload, boreholes, design, score, boundary, geology, succession, gnn_geology, planning
+from routers import upload, boreholes, design, score, boundary, geology, succession, gnn_geology, planning, export_cad
 from store import store
 from utils.logger import logger, log_api_request
 
@@ -64,6 +64,7 @@ app.include_router(geology.router, prefix="/api/geology", tags=["Geology"])
 app.include_router(succession.router, prefix="/api/succession", tags=["Succession"])
 app.include_router(gnn_geology.router, prefix="/api/gnn", tags=["GNN Geology"])
 app.include_router(planning.router, prefix="/api", tags=["Planning"])
+app.include_router(export_cad.router, prefix="/api/export", tags=["Export"])
 
 
 @app.get("/")

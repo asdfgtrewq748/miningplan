@@ -21,7 +21,7 @@ const SmoothnessSlider = ({
         step={step}
         value={Number(value)}
         onChange={(e) => onChange?.(Number(e.target.value))}
-        className={`w-20 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+        className={`w-16 ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
         disabled={disabled}
         title={title}
       />
