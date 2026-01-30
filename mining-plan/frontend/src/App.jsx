@@ -22308,13 +22308,65 @@ const App = () => {
                       })()}
                     </g>
                   )}
-                  {/* ODI 背景（未计算 ODI 时的占位底图） */}
+                  {/* ODI 背景（未计算 ODI 时的占位底图）：更自然的“等值圈”分布，避免默认形状过于像“马桶” */}
                   {!odiHeatmapHref && !hasSpatialData && showLayerInterpolation && (
-                    <>
-                      <path d="M200 100 Q 400 0 600 100 T 600 400 Q 400 500 200 400 Z" fill="rgba(59, 130, 246, 0.05)" stroke="#3b82f6" strokeWidth="1" strokeOpacity="0.3" />
-                      <path d="M250 150 Q 400 70 550 150 T 550 350 Q 400 430 250 350 Z" fill="rgba(59, 130, 246, 0.1)" stroke="#3b82f6" strokeWidth="2" strokeOpacity="0.5" />
-                      <path d="M300 200 Q 400 150 500 200 T 500 300 Q 400 350 300 300 Z" fill="rgba(59, 130, 246, 0.2)" stroke="#3b82f6" strokeWidth="3" />
-                    </>
+                    <g pointerEvents="none">
+                      <ellipse
+                        cx="400"
+                        cy="250"
+                        rx="290"
+                        ry="185"
+                        fill="rgba(59, 130, 246, 0.04)"
+                        stroke="#3b82f6"
+                        strokeWidth="1.2"
+                        strokeOpacity="0.22"
+                        transform="rotate(-10 400 250)"
+                      />
+                      <ellipse
+                        cx="390"
+                        cy="245"
+                        rx="245"
+                        ry="155"
+                        fill="rgba(59, 130, 246, 0.07)"
+                        stroke="#3b82f6"
+                        strokeWidth="1.8"
+                        strokeOpacity="0.32"
+                        transform="rotate(-6 400 250)"
+                      />
+                      <ellipse
+                        cx="410"
+                        cy="255"
+                        rx="200"
+                        ry="125"
+                        fill="rgba(59, 130, 246, 0.10)"
+                        stroke="#3b82f6"
+                        strokeWidth="2.2"
+                        strokeOpacity="0.42"
+                        transform="rotate(5 400 250)"
+                      />
+                      <ellipse
+                        cx="420"
+                        cy="252"
+                        rx="150"
+                        ry="95"
+                        fill="rgba(59, 130, 246, 0.14)"
+                        stroke="#3b82f6"
+                        strokeWidth="2.6"
+                        strokeOpacity="0.52"
+                        transform="rotate(12 400 250)"
+                      />
+                      <ellipse
+                        cx="415"
+                        cy="250"
+                        rx="100"
+                        ry="62"
+                        fill="rgba(59, 130, 246, 0.18)"
+                        stroke="#3b82f6"
+                        strokeWidth="3"
+                        strokeOpacity="0.62"
+                        transform="rotate(18 400 250)"
+                      />
+                    </g>
                   )}
 
                   {/* 计算得到的 ODI 归一化等值分布（热力） */}
