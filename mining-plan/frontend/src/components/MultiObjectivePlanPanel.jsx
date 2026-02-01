@@ -204,7 +204,7 @@ export default function MultiObjectivePlanPanel({
       >
         <div className="flex items-center gap-4">
           <h3 className="font-bold text-slate-700 flex items-center gap-2 text-base">
-            <Layers size={16} className="text-indigo-600" /> 多目标规划优化方案
+            <Layers size={16} className="text-blue-500" /> 多目标规划优化方案
           </h3>
         </div>
         <div className="flex gap-2 items-center">

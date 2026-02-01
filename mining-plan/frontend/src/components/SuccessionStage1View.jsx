@@ -891,7 +891,7 @@ export default function SuccessionStage1View({
           <div className="min-w-0">
             <div className="text-sm font-black text-slate-800">请先确认开采方案</div>
             <div className="text-xs text-slate-500 mt-1 leading-5">
-              当前未检测到“协同调控已确认方案”，也没有“智能规划已选中方案”。
+              当前未检测到“协同调控已确认方案”，也没有“采区规划已选中方案”。
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -899,7 +899,7 @@ export default function SuccessionStage1View({
                 onClick={source?.goPlanning}
                 className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-900 text-white hover:bg-slate-800"
               >
-                去智能规划选择
+                去采区规划选择
               </button>
               <button
                 type="button"

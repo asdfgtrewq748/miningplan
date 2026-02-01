@@ -2664,7 +2664,7 @@ const App = () => {
   const openWeightedDebugModal = () => {
     try {
       if (!planningWeightedResult) {
-        setPlanningWeightedDebugText(JSON.stringify({ ts: Date.now(), error: '暂无 weighted 结果：请先点击“启动智能采区规划”。' }, null, 2));
+        setPlanningWeightedDebugText(JSON.stringify({ ts: Date.now(), error: '暂无 weighted 结果：请先点击“启动采区规划”。' }, null, 2));
         setPlanningWeightedDebugOpen(true);
         return;
       }
@@ -7941,7 +7941,7 @@ const App = () => {
       const sig = String(planningEfficiencySelectedSig || planningRecoverySelectedSig || planningWeightedSelected?.sig || '').trim();
       return {
         ok: true,
-        label: '智能规划（当前选中）',
+        label: '采区规划（当前选中）',
         detail: sig ? `已选中方案：${sig.slice(0, 10)}…` : '已选中方案',
         kind: 'planning',
       };
@@ -7952,8 +7952,8 @@ const App = () => {
       const sig = String(planningEfficiencySelectedSig || planningRecoverySelectedSig || planningWeightedSelected?.sig || '').trim();
       return {
         ok: true,
-        label: '智能规划（已有方案）',
-        detail: sig ? `当前展示方案：${sig.slice(0, 10)}…` : '检测到智能规划结果；接续使用当前展示的工作面布置',
+        label: '采区规划（已有方案）',
+        detail: sig ? `当前展示方案：${sig.slice(0, 10)}…` : '检测到采区规划结果；接续使用当前展示的工作面布置',
         kind: 'planning',
       };
     }
@@ -7963,7 +7963,7 @@ const App = () => {
       return {
         ok: true,
         label: '已有工作面布置',
-        detail: '检测到工作面轮廓；接续已显示（建议在智能规划/协同调控明确确认来源）',
+        detail: '检测到工作面轮廓；接续已显示（建议在采区规划/协同调控明确确认来源）',
         kind: 'unknown',
       };
     }
@@ -19791,7 +19791,7 @@ const App = () => {
       }
     } catch (e) {
       console.error('handleStartIntelligentPlanning failed', e);
-      window.alert(`启动智能采区规划失败：${String(e?.message ?? e)}`);
+      window.alert(`启动采区规划失败：${String(e?.message ?? e)}`);
     }
   };
 
@@ -21395,7 +21395,7 @@ const App = () => {
               className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'planning' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
               onClick={() => switchMainViewModeWithRightPanel('planning')}
             >
-              智能规划
+              采区规划
             </button>
             <button
               className={`px-4 py-2 rounded-md text-[15px] font-bold transition-colors ${mainViewMode === 'cocontrol' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
@@ -22907,7 +22907,7 @@ const App = () => {
                           }}
                           disabled={!canToggleWorkfaceOutline}
                           title={(() => {
-                            if (!canToggleWorkfaceOutline) return '请先导入设计工作面坐标，或在智能规划里生成/注入规划工作面后再开启';
+                            if (!canToggleWorkfaceOutline) return '请先导入设计工作面坐标，或在采区规划里生成/注入规划工作面后再开启';
                             const importCount = Math.max(0, Math.floor(Number(workfaceCount) || 0));
                             const plannedCount = Math.max(0, Math.floor(Number(plannedWorkfaceLoopsWorld?.length ?? 0) || 0));
                             const genCount = Math.max(0, Math.floor(Number(generatedPoints?.faces?.length ?? 0) || 0));
@@ -23260,7 +23260,7 @@ const App = () => {
                   </div>
 
                   {!planningEfficiencyResult && (
-                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”，或调整煤柱/面宽范围以生成候选。</div>
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动采区规划”，或调整煤柱/面宽范围以生成候选。</div>
                   )}
 
                   {planningEfficiencyResult && !planningEfficiencyResult.ok && (
@@ -23396,7 +23396,7 @@ const App = () => {
                   </div>
 
                   {!planningEfficiencyResult && (
-                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”，或调整煤柱/面宽范围以生成候选。</div>
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动采区规划”，或调整煤柱/面宽范围以生成候选。</div>
                   )}
 
                   {planningEfficiencyResult && !planningEfficiencyResult.ok && (
@@ -23567,7 +23567,7 @@ const App = () => {
                   </div>
 
                   {!planningWeightedResult && (
-                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”（weighted 将按权重计算；当单个权重=1 时只计算对应模式），再查看综合候选表。</div>
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动采区规划”（weighted 将按权重计算；当单个权重=1 时只计算对应模式），再查看综合候选表。</div>
                   )}
 
                   {planningWeightedResult && !planningWeightedResult.ok && (
@@ -24042,7 +24042,7 @@ const App = () => {
                   </div>
 
                   {!planningRecoveryResult && (
-                    <div className="p-4 text-[11px] text-slate-500">请点击“启动智能采区规划”，或调整煤柱/面宽范围以生成候选。</div>
+                    <div className="p-4 text-[11px] text-slate-500">请点击“启动采区规划”，或调整煤柱/面宽范围以生成候选。</div>
                   )}
 
                   {planningRecoveryResult && !planningRecoveryResult.ok && (
@@ -24349,12 +24349,12 @@ const App = () => {
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50"
                   onClick={() => setShowMeasuredMapping((v) => !v)}
                 >
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                    <ClipboardCheck size={14} className="text-emerald-500" /> 实测分级对应分析
+                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-base">
+                    <ClipboardCheck size={16} className="text-red-500" /> 实测分级对应分析
                   </h3>
                   <div className="flex items-center gap-3">
                     {showMeasuredMapping && (
-                      <div className="text-[10px] text-slate-400 font-mono">
+                      <div className="text-[12px] text-slate-500 font-mono">
                         {(activeTab === 'surface' || activeTab === 'aquifer')
                           ? ((measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5)
                             ? '已分级'
@@ -24371,7 +24371,7 @@ const App = () => {
                   <div className="p-4">
                     {activeTab === 'aquifer' ? (
                       <div className="w-full overflow-x-auto">
-                        <table className="w-full table-fixed text-[11px]">
+                        <table className="w-full table-fixed text-[12px]">
                           <thead className="sticky top-0 bg-white border-b border-slate-100">
                             <tr>
                               <th className="w-1/3 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">扰动等级</th>
@@ -24419,7 +24419,7 @@ const App = () => {
                     ) : (activeTab === 'surface') ? (
                       (measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5) ? (
                         <div className="w-full overflow-x-auto">
-                          <table className="w-full table-fixed text-[11px]">
+                          <table className="w-full table-fixed text-[12px]">
                             <thead className="sticky top-0 bg-white border-b border-slate-100">
                               <tr>
                                 <th className="w-1/6 text-center py-2 px-3 text-slate-500 font-bold whitespace-nowrap">扰动等级</th>
@@ -24473,14 +24473,14 @@ const App = () => {
                           </table>
                         </div>
                       ) : (
-                        <div className="text-[11px] text-slate-500 leading-5">
+                        <div className="text-[12px] text-slate-500 leading-5">
                           {measuredConstraintData?.length
                             ? '已导入实测约束数据，请在右侧“分级响应详情”中点击“启动实测约束分区”。'
                             : '请先在左侧导入“实测约束数据”，再点击“启动实测约束分区”。'}
                         </div>
                       )
                     ) : (
-                      <div className="text-[11px] text-slate-500 leading-5">
+                      <div className="text-[12px] text-slate-500 leading-5">
                         该场景的实测分级对应分析后续再优化（界面功能保持一致）。
                       </div>
                     )}
@@ -24491,8 +24491,8 @@ const App = () => {
               {/* 误差分析趋势模块 - 可折叠 */}
               <section className={`bg-white rounded-2xl border border-slate-200 shadow-sm flex flex-col shrink-0 transition-all duration-300 ${showErrorAnalysis ? 'h-64' : 'h-14'}`}>
                 <div className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50" onClick={() => setShowErrorAnalysis(!showErrorAnalysis)}>
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                    <BarChart3 size={14} className="text-emerald-500" /> 评估结果误差分析趋势
+                  <h3 className="font-bold text-slate-700 flex items-center gap-2 text-base">
+                    <BarChart3 size={16} className="text-red-500" /> 评估结果误差分析趋势
                   </h3>
                   <div className="flex items-center gap-3">
                     {showErrorAnalysis && (
@@ -24500,7 +24500,7 @@ const App = () => {
                         {(() => {
                           const measuredLabel = getMeasuredValueLabelByScenario(activeTab);
                           return (
-                        <div className="flex items-center gap-3 text-[10px] text-slate-400 font-medium">
+                        <div className="flex items-center gap-3 text-[12px] text-slate-500 font-medium">
                           <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 bg-blue-500"></span> ODI</div>
                           <div className="flex items-center gap-1.5"><span className="w-3 h-0.5 border-b border-dashed border-red-500"></span> {measuredLabel}(m)</div>
                           <div className="flex items-center gap-1.5"><span className="w-3 h-2 bg-slate-300 rounded-sm"></span> 误差</div>
@@ -24509,7 +24509,7 @@ const App = () => {
                         })()}
                         <div className="h-4 w-px bg-slate-200"></div>
                         <select
-                          className="bg-white border border-slate-200 rounded px-2 py-1 text-[10px] font-bold text-slate-700"
+                          className="bg-white border border-slate-200 rounded px-2 py-1 text-[12px] font-bold text-slate-700"
                           value={selectedMeasuredLineId || ''}
                           onChange={(e) => setSelectedMeasuredLineId(e.target.value)}
                           title="测线选择（按导入文件分组）"
@@ -24538,23 +24538,23 @@ const App = () => {
                       const rightMax = Number.isFinite(measuredMaxAbs) ? Math.max(0, measuredMaxAbs) : 0;
 
                       if (!measuredConstraintLines?.length) {
-                        return <div className="h-full flex items-center justify-center text-[11px] text-slate-500">未导入实测测线数据</div>;
+                        return <div className="h-full flex items-center justify-center text-[12px] text-slate-500">未导入实测测线数据</div>;
                       }
                       if (!data.length) {
-                        return <div className="h-full flex items-center justify-center text-[11px] text-slate-500">暂无误差数据：请在右侧点击“计算误差”</div>;
+                        return <div className="h-full flex items-center justify-center text-[12px] text-slate-500">暂无误差数据：请在右侧点击“计算误差”</div>;
                       }
 
                       return (
                         <ResponsiveContainer width="100%" height="100%">
                           <ComposedChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                            <XAxis dataKey="id" tick={{ fontSize: 9, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                            <XAxis dataKey="id" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                             {/* 左轴1：误差柱状（0→1，自下而上） */}
                             <YAxis
                               yAxisId="err"
                               orientation="left"
                               domain={[0, 1]}
-                              tick={{ fontSize: 9, fill: '#94a3b8' }}
+                              tick={{ fontSize: 11, fill: '#94a3b8' }}
                               axisLine={false}
                               tickLine={false}
                             />
@@ -24573,12 +24573,12 @@ const App = () => {
                               orientation="right"
                               domain={[0, Math.max(0.000001, rightMax)]}
                               reversed
-                              tick={{ fontSize: 9, fill: '#94a3b8' }}
+                              tick={{ fontSize: 11, fill: '#94a3b8' }}
                               axisLine={false}
                               tickLine={false}
                             />
                             <Tooltip
-                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '10px' }}
+                              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', fontSize: '12px' }}
                               cursor={{ fill: '#f8fafc' }}
                               formatter={(value, name, props) => {
                                 const row = props?.payload;
@@ -24623,7 +24623,7 @@ const App = () => {
                 onClick={() => setCoAnalysisCollapsedPersist((v) => !v)}
               >
                 <h3 className="font-bold text-slate-700 flex items-center gap-2 text-base">
-                  <BarChart3 size={16} className="text-indigo-600" /> ODI 分析
+                  <BarChart3 size={16} className="text-emerald-600" /> ODI 分析
                 </h3>
                 <div className="flex items-center gap-3">
                   {!coAnalysisCollapsed && (
@@ -24909,9 +24909,9 @@ const App = () => {
                                 </div>
 
                                 <div className="mt-2 overflow-x-auto">
-                                  <table className="w-full table-auto text-[11px]">
+                                  <table className="w-full table-auto text-[12px]">
                                     <thead>
-                                      <tr className="text-slate-500 text-[10px]">
+                                      <tr className="text-slate-500 text-[11px]">
                                         <th className="text-center py-1 px-2 whitespace-nowrap">方案选择</th>
                                         <th className="text-center py-1 px-2 whitespace-nowrap">工作面编号</th>
                                         <th className="text-center py-1 px-2 whitespace-nowrap">来源</th>
@@ -26347,7 +26347,7 @@ const App = () => {
                   onClick={handleStartIntelligentPlanning}
                   type="button"
                 >
-                  <Zap size={18} className="text-white/90" /> 启动智能采区规划
+                  <Zap size={18} className="text-white/90" /> 启动采区规划
                 </button>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -27702,8 +27702,8 @@ const App = () => {
 
               <div className="mt-4 text-[11px] text-slate-400 leading-relaxed">
                 <div>说明：</div>
-                <div>1) 导入后不会自动触发智能规划计算（需手动点击按钮）。</div>
-                <div>2) 智能规划产物不会随文件导入（导入后会清空旧产物）。</div>
+                <div>1) 导入后不会自动触发采区规划计算（需手动点击按钮）。</div>
+                <div>2) 采区规划产物不会随文件导入（导入后会清空旧产物）。</div>
                 <div>3) 本次导入可撤回（Undo）。</div>
               </div>
             </div>
