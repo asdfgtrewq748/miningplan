@@ -7709,6 +7709,9 @@ const App = () => {
   const [drillholeLayersById, setDrillholeLayersById] = useState({});
   // 含水层扰动场景：含水层类型选择（来自“含水层标记”列，例如：1含、2含、3）
   const [selectedAquiferType, setSelectedAquiferType] = useState('');
+  // 全覆岩扰动评价场景：关键岩层（SK）选择
+  // 口径：0=全部SK；k=第k关键岩层（从上到下：地表→深部）
+  const [selectedSkLayerPick, setSelectedSkLayerPick] = useState(0);
   const [workingFaceData, setWorkingFaceData] = useState([]);
   // 协同调控：幽灵工作面（显示完整布局轮廓，当开启动态推进且长度缩短时显示）
   const [coWorkfaceGhosts, setCoWorkfaceGhosts] = useState({}); // { 'import-1': [{x,y}...], 'planned-2': ... }
@@ -10624,6 +10627,7 @@ const App = () => {
         errorAnalysisByLineId: {},
         measuredZoningResult: null,
         selectedAquiferType: '',
+        selectedSkLayerPick: 0,
       },
       aquifer: {
         boundaryData: [],
@@ -10681,6 +10685,7 @@ const App = () => {
         errorAnalysisByLineId: {},
         measuredZoningResult: null,
         selectedAquiferType: '',
+        selectedSkLayerPick: 0,
       },
       upward: {
         boundaryData: [],
@@ -10738,6 +10743,66 @@ const App = () => {
         errorAnalysisByLineId: {},
         measuredZoningResult: null,
         selectedAquiferType: '',
+        selectedSkLayerPick: 0,
+      },
+      full: {
+        boundaryData: [],
+        drillholeData: [],
+        drillholeLayersById: {},
+        workingFaceData: [],
+        generatedPoints: null,
+        mineActualHeightM: 4.5,
+        aquiferMineHeightByFace: [],
+        aquiferSelectedFaceNo: 1,
+        roofCavingAngleDeg: 0,
+        aquiferRoofCavingAngleByFace: [],
+        surfaceMineHeightByFace: [],
+        surfaceSelectedFaceNo: 1,
+        surfaceRoofCavingAngleByFace: [],
+        upwardMineHeightByFace: [],
+        upwardSelectedFaceNo: 1,
+        upwardRoofCavingAngleByFace: [],
+        paramExtractionResult: null,
+        odiResult: null,
+        showLayerDrillholes: true,
+        showLayerEvalPoints: true,
+        showLayerInterpolation: true,
+        showEvalBoundaryPoints: true,
+        showEvalWorkfaceLocPoints: true,
+        showEvalEdgeCtrlPoints: true,
+        showEvalCenterCtrlPoints: true,
+        odiLevelFilter: null,
+        odiVizPalette: 'blueRed',
+        odiVizInvertPalette: false,
+        odiVizSteps: 5,
+        odiVizRange: { min: '', max: '' },
+        aquiferOdiSmoothPasses: 0,
+        showBoundaryLabels: false,
+        showDrillholeLabels: false,
+        showWorkfaceOutline: false,
+        showMeasuredPoints: true,
+        miningHeight: 4.5,
+        stepLength: 25,
+        richFactor: 1.1,
+        scenarioWeights: { wd: 0.45, wo: 0.30, wf: 0.25 },
+        selectedCoal: '',
+        selectedUpperCoal: '',
+        geologyLayoutMode: '2x2',
+        geoPickA: 'Ti',
+        geoPickB: 'Hi',
+        mapVizSettings: {
+          Ti: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
+          Hi: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
+          Di: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
+          Mi: { palette: 'viridis', range: { enabled: false, min: '', max: '' } },
+        },
+        measuredConstraintData: [],
+        measuredConstraintLines: [],
+        selectedMeasuredLineId: '',
+        errorAnalysisByLineId: {},
+        measuredZoningResult: null,
+        selectedAquiferType: '',
+        selectedSkLayerPick: 0,
       },
     }),
     []
@@ -10747,6 +10812,7 @@ const App = () => {
     surface: cloneJson(scenarioDefaultsById.surface),
     aquifer: cloneJson(scenarioDefaultsById.aquifer),
     upward: cloneJson(scenarioDefaultsById.upward),
+    full: cloneJson(scenarioDefaultsById.full),
   }));
 
   const snapshotCurrentScenarioParams = () => ({
@@ -10801,6 +10867,7 @@ const App = () => {
     errorAnalysisByLineId: cloneJson(errorAnalysisByLineId),
     measuredZoningResult: cloneJson(measuredZoningResult),
     selectedAquiferType,
+    selectedSkLayerPick,
   });
 
   const applyScenarioParams = (p, options = {}) => {
@@ -10898,6 +10965,11 @@ const App = () => {
     setErrorAnalysisByLineId(p.errorAnalysisByLineId ?? {});
     setMeasuredZoningResultTracked(p.measuredZoningResult ?? null);
     setSelectedAquiferType(String(p.selectedAquiferType ?? ''));
+    {
+      const v = Number(p.selectedSkLayerPick);
+      const s = Number.isFinite(v) ? Math.max(0, Math.round(v)) : 0;
+      setSelectedSkLayerPick(s);
+    }
   };
 
   const handleScenarioSelect = (nextId) => {
@@ -12981,12 +13053,39 @@ const App = () => {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh'));
   }, [drillholeLayersById]);
 
+  const skLayerPickOptions = useMemo(() => {
+    const normalizeTag = (v) => String(v ?? '').replace(/\s+/g, '').toUpperCase().trim();
+    let maxCount = 0;
+    for (const layers of Object.values(drillholeLayersById ?? {})) {
+      let c = 0;
+      for (const layer of layers ?? []) {
+        const tag = normalizeTag(layer?.keyLayerTag);
+        if (tag && tag.includes('SK')) c += 1;
+      }
+      if (c > maxCount) maxCount = c;
+    }
+    const opts = [{ value: 0, label: '全部SK（集合）' }];
+    for (let i = 1; i <= maxCount; i += 1) {
+      opts.push({ value: i, label: `第${i}关键岩层（从上到下）` });
+    }
+    return opts;
+  }, [drillholeLayersById]);
+
   useEffect(() => {
     if (activeTab !== 'aquifer') return;
     if (!selectedAquiferType && aquiferTypeOptions.length > 0) {
       setSelectedAquiferType(aquiferTypeOptions[0]);
     }
   }, [activeTab, aquiferTypeOptions, selectedAquiferType]);
+
+  useEffect(() => {
+    if (activeTab !== 'full') return;
+    const cur = Math.max(0, Math.round(Number(selectedSkLayerPick) || 0));
+    const maxPick = Math.max(0, (skLayerPickOptions?.length ?? 1) - 1);
+    const next = Math.min(cur, maxPick);
+    if (next !== cur) setSelectedSkLayerPick(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, skLayerPickOptions]);
 
   useEffect(() => {
     if (!selectedCoal && coalSeams.length > 0) {
@@ -13046,6 +13145,56 @@ const App = () => {
     if (activeTab === 'upward') {
       const seam = String(selectedUpperCoal ?? '').trim();
       return { name: seam, reason: '' };
+    }
+
+    // 全覆岩扰动评价：目标评价层 = 关键岩层（第5列 keyLayerTag 包含 SK）
+    if (activeTab === 'full') {
+      const normalizeTag = (v) => String(v ?? '').replace(/\s+/g, '').toUpperCase().trim();
+
+      const pick = Math.max(0, Math.round(Number(selectedSkLayerPick) || 0));
+      if (pick <= 0) {
+        // 汇总名仅用于标题/副标题展示，不强行压缩为单岩性
+        let any = false;
+        for (const layers of Object.values(drillholeLayersById ?? {})) {
+          const ls = layers ?? [];
+          const hit = ls.some((l) => {
+            const tag = normalizeTag(l?.keyLayerTag);
+            return tag && tag.includes('SK');
+          });
+          if (hit) { any = true; break; }
+        }
+        if (!any) return { name: '', reason: '未在第5列（关键层标记）检测到包含“SK”的层。' };
+        return { name: '全部SK（集合）', reason: '口径：检索钻孔分层第5列关键层标记，包含“SK”即判为关键岩层；“全部SK”表示对命中的多层做聚合计算。' };
+      }
+
+      // 选择第k关键岩层：取“该序位岩性”的众数作为汇总展示
+      for (const layers of Object.values(drillholeLayersById ?? {})) {
+        const ls = layers ?? [];
+        const idxs = [];
+        for (let i = 0; i < ls.length; i += 1) {
+          const tag = normalizeTag(ls[i]?.keyLayerTag);
+          if (tag && tag.includes('SK')) idxs.push(i);
+        }
+        const idx = idxs[pick - 1];
+        if (!Number.isInteger(idx)) continue;
+        const name = String(ls[idx]?.name ?? '').trim();
+        if (!name) continue;
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+
+      if (counts.size === 0) {
+        return { name: '', reason: `未识别到第${pick}关键岩层（可能该序位在多数钻孔不存在）。` };
+      }
+
+      let bestName = '';
+      let bestCount = -1;
+      for (const [n, c] of counts.entries()) {
+        if (c > bestCount) {
+          bestName = n;
+          bestCount = c;
+        }
+      }
+      return { name: bestName, reason: `口径：第5列关键层标记包含“SK”即算；当前选择=第${pick}关键岩层（从上到下）。` };
     }
 
     for (const layers of Object.values(drillholeLayersById ?? {})) {
@@ -13117,6 +13266,46 @@ const App = () => {
       return out;
     }
 
+    if (activeTab === 'full') {
+      const normalizeTag = (v) => String(v ?? '').replace(/\s+/g, '').toUpperCase().trim();
+      const pick = Math.max(0, Math.round(Number(selectedSkLayerPick) || 0));
+
+      for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
+        const ls = layers ?? [];
+        const idxs = [];
+        const names = [];
+        for (let i = 0; i < ls.length; i += 1) {
+          const tag = normalizeTag(ls[i]?.keyLayerTag);
+          if (!(tag && tag.includes('SK'))) continue;
+          idxs.push(i);
+          const n = String(ls[i]?.name ?? '').trim();
+          if (n) names.push(n);
+        }
+        if (!idxs.length) continue;
+
+        if (pick > 0) {
+          const idx = idxs[pick - 1];
+          if (!Number.isInteger(idx)) continue;
+          out[bhId] = {
+            targetIdxs: [idx],
+            targetIdx: idx,
+            targetName: String(ls[idx]?.name ?? '').trim(),
+            targetNames: [String(ls[idx]?.name ?? '').trim()].filter(Boolean),
+          };
+          continue;
+        }
+
+        // 全部SK：保留全部命中层（从上到下），并把展示名拼接
+        out[bhId] = {
+          targetIdxs: idxs,
+          targetIdx: idxs[0],
+          targetName: names.filter(Boolean).join(' / '),
+          targetNames: names.filter(Boolean),
+        };
+      }
+      return out;
+    }
+
     // 其它场景：目标评价层=最上层基岩（与煤层选择无关）
     for (const [bhId, layers] of Object.entries(drillholeLayersById ?? {})) {
       const ls = layers ?? [];
@@ -13131,7 +13320,7 @@ const App = () => {
       };
     }
     return out;
-  }, [activeTab, drillholeLayersById, selectedUpperCoal]);
+  }, [activeTab, drillholeLayersById, selectedUpperCoal, selectedSkLayerPick]);
 
   const perBoreholeTargetList = useMemo(() => {
     return Object.entries(perBoreholeTarget ?? {})
@@ -13167,13 +13356,22 @@ const App = () => {
       const ls = lsRaw ?? [];
 
       const mark = perBoreholeTarget?.[bhId];
-      const targetIdx = mark?.targetIdx;
-      const hasTarget = Number.isInteger(targetIdx);
+      const targetIdxs = Array.isArray(mark?.targetIdxs)
+        ? mark.targetIdxs.map((v) => Math.round(Number(v))).filter((v) => Number.isFinite(v) && v >= 0)
+        : (Number.isInteger(mark?.targetIdx) ? [Number(mark.targetIdx)] : []);
+      const hasTarget = targetIdxs.length > 0;
 
-      // Ti/Di 依赖目标层
+      // Ti/Di/Ei 依赖目标层
       if (hasTarget) {
-        const tThickness = Number(ls[targetIdx]?.thickness);
-        if (Number.isFinite(tThickness)) {
+        let tiAgg = null;
+        let diAgg = null;
+        let eiAgg = null;
+
+        for (const targetIdx of targetIdxs) {
+          if (!(Number.isInteger(targetIdx) && targetIdx >= 0 && targetIdx < ls.length)) continue;
+          const tThickness = Number(ls[targetIdx]?.thickness);
+          if (!Number.isFinite(tThickness)) continue;
+
           const eMod = inferElasticModulus(ls[targetIdx]?.name);
           // Di：目标层埋深 = 目标层上覆岩层厚度累加（目标层顶深，不含目标层本身）
           let depthTop = 0;
@@ -13181,12 +13379,21 @@ const App = () => {
             const v = Number(ls[k]?.thickness);
             if (Number.isFinite(v)) depthTop += v;
           }
-          Ti.push({ id: bhId, x: coord.x, y: coord.y, value: tThickness });
-          Di.push({ id: bhId, x: coord.x, y: coord.y, value: depthTop });
+
+          // 聚合口径（仅当目标层集合>1时才影响结果；默认偏保守）：
+          // - Ti: 取最大（更厚）
+          // - Di: 取最小（更浅）
+          // - Ei: 取最小（更弱）
+          tiAgg = (tiAgg == null) ? tThickness : Math.max(Number(tiAgg), tThickness);
+          diAgg = (diAgg == null) ? depthTop : Math.min(Number(diAgg), depthTop);
           if (Number.isFinite(eMod)) {
-            Ei.push({ id: bhId, x: coord.x, y: coord.y, value: eMod });
+            eiAgg = (eiAgg == null) ? eMod : Math.min(Number(eiAgg), eMod);
           }
         }
+
+        if (Number.isFinite(tiAgg)) Ti.push({ id: bhId, x: coord.x, y: coord.y, value: Number(tiAgg) });
+        if (Number.isFinite(diAgg)) Di.push({ id: bhId, x: coord.x, y: coord.y, value: Number(diAgg) });
+        if (Number.isFinite(eiAgg)) Ei.push({ id: bhId, x: coord.x, y: coord.y, value: Number(eiAgg) });
       }
 
       // Mi/CoalThk 依赖所选煤层：Mi=“目标煤层”选择的煤层厚度（各场景一致）
@@ -13202,15 +13409,21 @@ const App = () => {
           }
 
           // Hi：煤层与目标层间距 = 两者之间岩层厚度累加（不含目标层与煤层本层）
-          if (hasTarget && coalIdx !== targetIdx) {
-            const a = Math.min(coalIdx, targetIdx);
-            const b = Math.max(coalIdx, targetIdx);
-            let hi = 0;
-            for (let k = a + 1; k <= b - 1; k++) {
-              const v = Number(ls[k]?.thickness);
-              if (Number.isFinite(v)) hi += v;
+          if (hasTarget) {
+            let bestHi = null;
+            for (const targetIdx of targetIdxs) {
+              if (!Number.isInteger(targetIdx)) continue;
+              if (coalIdx === targetIdx) continue;
+              const a = Math.min(coalIdx, targetIdx);
+              const b = Math.max(coalIdx, targetIdx);
+              let hi = 0;
+              for (let k = a + 1; k <= b - 1; k++) {
+                const v = Number(ls[k]?.thickness);
+                if (Number.isFinite(v)) hi += v;
+              }
+              bestHi = (bestHi == null) ? hi : Math.min(Number(bestHi), hi);
             }
-            Hi.push({ id: bhId, x: coord.x, y: coord.y, value: hi });
+            if (Number.isFinite(bestHi)) Hi.push({ id: bhId, x: coord.x, y: coord.y, value: Number(bestHi) });
           }
         }
       }
@@ -21128,7 +21341,7 @@ const App = () => {
             <h1 className="text-lg font-bold text-slate-800 tracking-tight">
               多场景覆岩扰动综合评估
               <br />
-              与采区智能规划系统
+              与采区规划协同调控系统
             </h1>
           </div>
         </div>
@@ -21141,7 +21354,8 @@ const App = () => {
               {[
                 { id: 'surface', label: '地表下沉场景', icon: <TrendingDown size={18} />, accent: 'bg-blue-600', active: 'bg-blue-600 border-blue-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
                 { id: 'aquifer', label: '含水层扰动场景', icon: <Droplets size={18} />, accent: 'bg-emerald-600', active: 'bg-emerald-600 border-emerald-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
-                { id: 'upward', label: '上行开采可行性', icon: <ArrowUpCircle size={18} />, accent: 'bg-amber-500', active: 'bg-amber-500 border-amber-500 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' }
+                { id: 'upward', label: '上行开采可行性', icon: <ArrowUpCircle size={18} />, accent: 'bg-amber-500', active: 'bg-amber-500 border-amber-500 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
+                { id: 'full', label: '全覆岩扰动评价', icon: <Layers size={18} />, accent: 'bg-purple-600', active: 'bg-purple-600 border-purple-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' }
               ].map(item => (
                 <button
                   key={item.id}
@@ -21261,7 +21475,7 @@ const App = () => {
               <div>
                 <div className="text-sm text-slate-500 mb-2 font-bold">目标煤层选择</div>
                 <select
-                  className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
+                  className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-base'} text-slate-700`}
                   value={selectedCoal}
                   onChange={(e) => setSelectedCoal(e.target.value)}
                   disabled={coalSeams.length === 0}
@@ -21295,11 +21509,34 @@ const App = () => {
                   </select>
                 </div>
               )}
+
+              {activeTab === 'full' && (
+                <div>
+                  <div className="text-sm text-slate-500 mb-2 font-bold">关键岩层（SK）选择</div>
+                  <select
+                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${skLayerPickOptions.length === 0 ? 'text-sm' : 'text-base'} text-slate-700`}
+                    value={selectedSkLayerPick}
+                    onChange={(e) => setSelectedSkLayerPick(Number(e.target.value))}
+                    disabled={skLayerPickOptions.length === 0}
+                  >
+                    {skLayerPickOptions.length === 0 ? (
+                      <option value={0}>请先导入钻孔分层数据（第5列关键层标记包含SK）</option>
+                    ) : (
+                      skLayerPickOptions.map((o) => (
+                        <option key={String(o.value)} value={o.value}>{o.label}</option>
+                      ))
+                    )}
+                  </select>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    口径：检索钻孔分层第5列关键层标记，包含“SK”即判为关键岩层；“全部SK”将作为目标层集合聚合计算。
+                  </div>
+                </div>
+              )}
               <div>
                 <div className="text-sm text-slate-500 mb-2 font-bold">{
                   activeTab === 'aquifer'
                     ? '识别目标评价层（目标层下关键层）'
-                    : (activeTab === 'upward' ? '上煤层选择' : '识别目标评价层（最上层基岩）')
+                    : (activeTab === 'upward' ? '上煤层选择' : (activeTab === 'full' ? '识别目标评价层（关键岩层SK）' : '识别目标评价层（最上层基岩）'))
                 }</div>
 
                 {activeTab === 'upward' && (
@@ -21327,7 +21564,7 @@ const App = () => {
                       <AlertTriangle size={18} className="text-amber-600 mt-0.5" />
                     )}
                     <div className="min-w-0">
-                      <div className="text-lg font-bold text-slate-800 truncate">{identifiedTarget.name || '未识别'}</div>
+                      <div className={`${(activeTab === 'full' && identifiedTarget.name === '全部SK（集合）') ? 'text-base' : 'text-lg'} font-bold text-slate-800 truncate`}>{identifiedTarget.name || '未识别'}</div>
                       <div className="text-xs text-slate-600 mt-1 leading-4">{identifiedTarget.reason}</div>
                     </div>
                   </div>
@@ -21352,7 +21589,7 @@ const App = () => {
                             <th className="text-left px-3 py-2 text-slate-500 font-bold">{
                               activeTab === 'aquifer'
                                 ? '目标含水层下关键层岩性'
-                                : (activeTab === 'upward' ? '上煤层' : '最上层基岩岩性')
+                                : (activeTab === 'upward' ? '上煤层' : (activeTab === 'full' ? '关键岩层（SK）' : '最上层基岩岩性'))
                             }</th>
                           </tr>
                         </thead>
@@ -21808,7 +22045,7 @@ const App = () => {
 
                      <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
 
-                     {(['aquifer', 'surface', 'upward'].includes(activeTab)) && (
+                     {(['aquifer', 'surface', 'upward', 'full'].includes(activeTab)) && (
                        <>
                          <SmoothnessSlider
                            value={activeTab === 'surface' ? surfaceOdiSmoothPasses : (activeTab === 'upward' ? upwardOdiSmoothPasses : aquiferOdiSmoothPasses)}
