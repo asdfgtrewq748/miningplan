@@ -33,6 +33,8 @@ import {
 import SystemLogo from './components/SystemLogo.jsx';
 import {
   ComposedChart,
+  LineChart,
+  BarChart,
   Line,
   Bar,
   XAxis,
@@ -167,6 +169,7 @@ const DEFAULT_ECONOMICS_PARAMS = {
 };
 
 const App = () => {
+  const VALID_SCENARIO_TABS = useMemo(() => ['surface', 'aquifer', 'upward'], []);
   const DEBUG_PANEL = import.meta.env.DEV;
   // Worker 抓包日志：在浏览器控制台执行 localStorage.setItem('mp.debugWorker','1') 并刷新即可开启。
   // 默认关闭，避免刷屏影响性能。
@@ -215,8 +218,6 @@ const App = () => {
       return { ...(p && typeof p === 'object' ? p : {}), mineCapacity: String(DEFAULT_PLANNING_PARAMS.mineCapacity ?? '500') };
     });
   }, [planningParams?.mineCapacity]);
-
-  
 
   const pickCoverageForDisplay = (cand) => {
     const c = cand ?? null;
@@ -3414,15 +3415,82 @@ const App = () => {
         }
       };
 
-      const hasAnyTonnage = candidates.some((c) => {
+      const tonnageFilledCount = candidates.reduce((acc, c) => {
         const t = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
-        return Number.isFinite(t) && t > 0;
-      });
+        return acc + (Number.isFinite(t) ? 1 : 0);
+      }, 0);
+      const hasAllTonnage = tonnageFilledCount >= candidates.length;
       const lastDoneCtx = String(efficiencyTonnageContextDoneByKeyRef.current.get(cacheKey) || '');
       const inFlightCtx = String(efficiencyTonnageContextInFlightByKeyRef.current.get(cacheKey) || '');
 
-      // 若已用相同口径成功回填且当前结果已有吨位，就不重复调用。
-      if (lastDoneCtx && lastDoneCtx === ctxKey && hasAnyTonnage) return;
+      // 关键修复：若用户提供了常数厚度（constant-first），则无需等待后端回填，
+      // 先把 TopK 候选的吨位按 coveredArea * thickness * rho 立即补齐，避免候选表大量显示“--”。
+      // 后端回填仍可作为兜底/调试，但在 constant-first 场景应保证表格稳定可读。
+      try {
+        const constM = Number(thickness?.constantM);
+        const rhoUse = Number(thickness?.rho);
+        const preferConst = (Number.isFinite(constM) && constM > 0) && (Number.isFinite(rhoUse) && rhoUse > 0);
+        if (preferConst && !hasAllTonnage) {
+          setPlanningEfficiencyResult((prev) => {
+            if (!prev?.ok) return prev;
+            const prevKey = String(prev?.cacheKey ?? '');
+            if (prevKey && prevKey !== cacheKey) return prev;
+
+            const cand0 = Array.isArray(prev?.candidates) ? prev.candidates : [];
+            const rows0 = Array.isArray(prev?.table?.rows) ? prev.table.rows : [];
+            if (!cand0.length && !rows0.length) return prev;
+
+            let changed = false;
+            const canApprox = (areaM2) => {
+              const a = Number(areaM2);
+              if (!Number.isFinite(a) || !(a > 0)) return null;
+              const ton = a * constM * rhoUse;
+              return Number.isFinite(ton) ? ton : null;
+            };
+
+            const cand1 = cand0.map((c) => {
+              const t0 = Number(c?.tonnageTotal ?? c?.metrics?.tonnageTotal);
+              if (Number.isFinite(t0)) return c;
+              const area = (c?.metrics?.faceAreaTotal ?? c?.coveredArea);
+              const t = canApprox(area);
+              if (!Number.isFinite(Number(t))) return c;
+              changed = true;
+              const next = { ...(c ?? {}), tonnageTotal: Number(t) };
+              if (next.metrics && typeof next.metrics === 'object') next.metrics.tonnageTotal = Number(t);
+              return next;
+            });
+
+            const rows1 = rows0.map((r) => {
+              const t0 = Number(r?.tonnageTotal);
+              if (Number.isFinite(t0)) return r;
+              const area = (r?.coveredArea ?? r?.coveredAreaRaw ?? null);
+              const t = canApprox(area);
+              if (!Number.isFinite(Number(t))) return r;
+              changed = true;
+              return { ...(r ?? {}), tonnageTotal: Number(t) };
+            });
+
+            if (!changed) return prev;
+            const next = {
+              ...(prev ?? {}),
+              candidates: cand1,
+              table: (prev?.table && typeof prev.table === 'object') ? { ...(prev.table ?? {}), rows: rows1 } : prev?.table,
+            };
+            try {
+              efficiencyCacheRef.current.set(cacheKey, { result: next, selectedSig: String(efficiencySelectedSigByKeyRef.current.get(cacheKey) || prev?.selectedCandidateKey || prev?.bestKey || '') });
+            } catch {
+              // ignore
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      // 若已用相同口径成功回填且当前结果已“基本填满吨位”，就不重复调用。
+      // 注意：不能只看 hasAnyTonnage，否则“只填了 1 条”也会被误判为完成，导致表格其余行永远是 --。
+      if (lastDoneCtx && lastDoneCtx === ctxKey && hasAllTonnage) return;
       // 若相同口径已在请求中，避免重复触发。
       if (inFlightCtx && inFlightCtx === ctxKey) return;
 
@@ -3463,8 +3531,9 @@ const App = () => {
               })),
               thickness,
               topK: Number(payloadUi?.stats?.topK) || 10,
-              // 提高小面积候选的采样命中率（避免个别候选 tonnage=0）
-              sampleStepM: Math.min(10, (thickness?.gridRes ?? 20)),
+              // 提高小面积候选的采样命中率（避免大量候选 tonnage=0/NaN 导致表格显示为 --）
+              // backend 内部会 clamp 到 [5,60]；这里显式给到更细步长。
+              sampleStepM: Math.min(6, (thickness?.gridRes ?? 20)),
               // 仅用于采样吨位；排序由前端按“效率主、储量辅”控制
               wTonnage: 1,
               wCoverage: 0,
@@ -3571,7 +3640,8 @@ const App = () => {
                 const loops = loopsFromCandidateForTonnage(c);
                 if (!loops.length) return null;
                 const stepM0 = Number(thickness?.gridRes ?? 20);
-                const stepM = Number.isFinite(stepM0) && stepM0 > 0 ? Math.min(10, stepM0) : 10;
+                // 与后端一致：更细步长减少“无采样点”导致的 tonnage=0
+                const stepM = Number.isFinite(stepM0) && stepM0 > 0 ? Math.min(6, stepM0) : 6;
                 const maxSamples = 18000;
 
                 let sampled = 0;
@@ -3612,7 +3682,16 @@ const App = () => {
               const tLocal = preferConst
                 ? (canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho) ?? estimateByThicknessField(c))
                 : (estimateByThicknessField(c) ?? canApprox((c?.metrics?.faceAreaTotal ?? c?.coveredArea), thickness?.constantM, thickness?.rho));
-              const t = (t0 != null && t0 > 0) ? t0 : tLocal;
+              // 修复：后端可能返回 0（例如采样步长过大导致无命中点），不应被当作“无值”直接丢弃，
+              // 否则表格会显示为 --。策略：优先用 backend 的正值；否则若本地估算有正值则用本地；
+              // 再否则保留 backend 的 0（至少显示 0.00 而不是 --）。
+              const t = (() => {
+                if (Number.isFinite(t0) && t0 > 0) return t0;
+                const tl = Number(tLocal);
+                if (Number.isFinite(tl) && tl > 0) return tl;
+                if (Number.isFinite(t0) && t0 >= 0) return t0;
+                return null;
+              })();
               const next = { ...(c ?? {}) };
               if (Number.isFinite(t)) next.tonnageTotal = t;
               if (next.metrics && typeof next.metrics === 'object' && Number.isFinite(t)) next.metrics.tonnageTotal = t;
@@ -6540,6 +6619,44 @@ const App = () => {
   });
   const [coOdiAnalysisExportCopyStatus, setCoOdiAnalysisExportCopyStatus] = useState('');
 
+  // 协同调控：ODI分析面板展示模式
+  // - full：排行表 + 详情图 + 圈定范围快照对比
+  // - analysisOnly：只看“所有工作面方案”的生产层分析（隐藏底部快照比较）
+  // - layoutDistOnly：只看“圈定范围 ODI 分布对比（5档）+ 方案概览表”
+  const [coOdiPanelViewMode, setCoOdiPanelViewMode] = useState('full'); // full | analysisOnly | layoutDistOnly
+
+  const coPendingRefreshAfterLayoutConfirmRef = useRef({ pending: false, at: 0 });
+  const coPendingSchemeSnapshotRef = useRef({
+    pending: false,
+    at: 0,
+    faceNo: null,
+    reason: '',
+    openPanel: false,
+    switchViewMode: false,
+    forceClearHistory: false,
+  });
+
+  // ODI 计算结果（分级响应 + 中间主图）
+  // 注意：此处必须在“布局确认后自动刷新”的 useEffect 之前声明，避免 TDZ。
+  const [odiResult, setOdiResult] = useState(null);
+
+  // 协同调控：几何/步长等变化会使旧 ODI 结果失效。
+  // 为避免“修改尺寸后插值热力图瞬间消失”造成困惑，这里保留旧插值展示，仅标记为过期。
+  const [coOdiInterpolationStale, setCoOdiInterpolationStale] = useState(false);
+  const [coOdiInterpolationStaleReason, setCoOdiInterpolationStaleReason] = useState('');
+
+  // 协同调控（布局阶段）：圈定范围 ODI 分布统计（不生成开采评价点；不叠加开采参数）
+  const CO_LAYOUT_DIST_MAX_SNAPSHOTS = 8;
+  const [coLayoutOdiScalePack, setCoLayoutOdiScalePack] = useState(null);
+  const [coLayoutOdiDistHistory, setCoLayoutOdiDistHistory] = useState([]);
+  const [coLayoutOdiDistCheckedKeys, setCoLayoutOdiDistCheckedKeys] = useState([]);
+  const [coLayoutOdiDistBusy, setCoLayoutOdiDistBusy] = useState(false);
+  const [coLayoutOdiDistLastError, setCoLayoutOdiDistLastError] = useState('');
+  const [coLayoutOdiDistUndoPack, setCoLayoutOdiDistUndoPack] = useState(null); // { history, checkedKeys, at }
+
+  // 协同调控：批量 ODI 计算（自动生成评价点 + 全参提取 + ODI + 刷新分析）
+  const [coBatchOdiComputeBusy, setCoBatchOdiComputeBusy] = useState(false);
+
   const lastAutoSeamThicknessRef = useRef(null);
   const mainCenterScrollRef = useRef(null);
   const planningOptPanelAnchorRef = useRef(null);
@@ -6557,6 +6674,291 @@ const App = () => {
     setCoAnalysisCollapsedPersist(false);
     setTimeout(() => coAnalysisSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }), 0);
   };
+
+  const renderCoLayoutDistComparePanel = ({ standalone = false } = {}) => {
+    const snaps0 = Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [];
+    const metricLabelRaw = String(snaps0?.[0]?.metric ?? 'ODI');
+    const metricDisplayLabel = (metricLabelRaw === 'ODI*' || metricLabelRaw === 'ODI') ? 'ODI数值' : metricLabelRaw;
+
+    const wrapCls = standalone
+      ? 'bg-white p-4'
+      : 'mt-6 bg-white p-4';
+
+    return (
+      <div className={wrapCls}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-bold text-slate-700 truncate">工作面圈定范围 {metricDisplayLabel} 分布对比</div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              className={`px-2 py-1 rounded border text-[10px] font-bold ${coLayoutOdiDistBusy ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50'}`}
+              disabled={coLayoutOdiDistBusy}
+              onClick={handleCocontrolLayoutOdiDistSnapshot}
+              title="添加一次当前导入面圈定范围的 ODI 分布方案"
+            >
+              {coLayoutOdiDistBusy ? '统计中…' : '添加方案'}
+            </button>
+            <button
+              type="button"
+              className="px-2 py-1 rounded border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+              onClick={() => { setCoLayoutOdiDistHistory([]); setCoLayoutOdiDistCheckedKeys([]); setCoLayoutOdiDistLastError(''); }}
+              title="清空对比方案"
+            >
+              清空
+            </button>
+          </div>
+        </div>
+
+        {coLayoutOdiDistLastError ? (
+          <div className="mt-2 text-[10px] text-rose-600 leading-relaxed">{coLayoutOdiDistLastError}</div>
+        ) : null}
+
+        {snaps0?.length ? (
+          (() => {
+            const snaps = snaps0;
+            const checked = Array.isArray(coLayoutOdiDistCheckedKeys) ? coLayoutOdiDistCheckedKeys : [];
+            const lineColors = ['#2563eb', '#16a34a', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9', '#14b8a6', '#f97316'];
+            const binColors = ['#e0f2fe', '#bae6fd', '#7dd3fc', '#38bdf8', '#0ea5e9', '#0284c7', '#0369a1', '#075985', '#0c4a6e', '#082f49'];
+
+            const statBarData = snaps.map((s, idx) => {
+              const label = String(s?.xLabel ?? s?.label ?? `#${idx + 1}`);
+              const mean = Number(s?.stats?.mean);
+              const p90 = Number(s?.stats?.p90);
+              const max = Number(s?.stats?.max);
+              const totalSum = Number(s?.totalSum);
+              return {
+                name: label,
+                mean: Number.isFinite(mean) ? mean : null,
+                p90: Number.isFinite(p90) ? p90 : null,
+                max: Number.isFinite(max) ? max : null,
+                totalSum: Number.isFinite(totalSum) ? totalSum : null,
+              };
+            });
+
+            const barData = snaps.map((s, idx) => {
+              const h = s?.hist10?.data ?? [];
+              const row = { name: String(s?.xLabel ?? s?.label ?? `#${idx + 1}`) };
+              for (let i = 0; i < 5; i++) {
+                const r = Number(h?.[i]?.ratio);
+                row[`b${i}`] = Number.isFinite(r) ? r : 0;
+              }
+              return row;
+            });
+
+            return (
+              <div className="mt-4">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="w-full">
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart data={statBarData} margin={{ top: 10, right: 12, bottom: 8, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
+                          <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} label={{ value: 'ODI数值', angle: -90, position: 'insideLeft', style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' } }} />
+                          <YAxis yAxisId="sum" orientation="right" domain={[0, 'auto']} tick={{ fontSize: 10 }} label={{ value: '区域ODI总计', angle: -90, position: 'insideRight', style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' } }} />
+                          <Tooltip
+                            formatter={(value, name) => {
+                              if (name === 'mean') return [coAnalysisFmt01(value, 3), '平均值'];
+                              if (name === 'p90') return [coAnalysisFmt01(value, 3), 'P90'];
+                              if (name === 'max') return [coAnalysisFmt01(value, 3), 'ODI极值'];
+                              if (name === 'totalSum') return [Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '--', 'ODI总计'];
+                              return [value, name];
+                            }}
+                          />
+                          <Bar dataKey="mean" fill="#60a5fa" name="mean" barSize={10} radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="p90" fill="#f59e0b" name="p90" barSize={10} radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="max" fill="#ef4444" name="max" barSize={10} radius={[4, 4, 0, 0]} />
+                          <Bar yAxisId="sum" dataKey="totalSum" fill="#8b5cf6" name="totalSum" barSize={10} radius={[4, 4, 0, 0]} />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 text-[11px] text-slate-600 font-bold text-center">统计对比（mean / P90 / max + 区域累计总值）</div>
+                  </div>
+
+                  <div className="w-full">
+                    <div className="h-64">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={barData} margin={{ top: 10, right: 12, bottom: 8, left: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
+                          <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`} />
+                          <Tooltip
+                            formatter={(value, name) => {
+                              const idx = Number(String(name || '').replace(/^b/, ''));
+                              const lo = Number.isFinite(idx) ? (idx / 5) : null;
+                              const hi = Number.isFinite(idx) ? ((idx + 1) / 5) : null;
+                              const label = (Number.isFinite(lo) && Number.isFinite(hi)) ? `${lo.toFixed(1)}~${hi.toFixed(1)}` : String(name);
+                              return [coAnalysisFmtPct(value, 1), label];
+                            }}
+                          />
+                          {Array.from({ length: 5 }, (_, i) => (
+                            <Bar
+                              key={`b${i}`}
+                              dataKey={`b${i}`}
+                              stackId="a"
+                              fill={binColors[i % binColors.length]}
+                              name={`b${i}`}
+                            />
+                          ))}
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="mt-2 text-[11px] text-slate-600 font-bold text-center">{metricDisplayLabel} 分箱占比（5档，100%堆叠）</div>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[11px] font-bold text-slate-700">数据表格（方案概览）</div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className={`px-2 py-1 rounded border text-[10px] font-bold ${(!coLayoutOdiDistUndoPack?.history?.length) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+                        disabled={!coLayoutOdiDistUndoPack?.history?.length}
+                        onClick={() => {
+                          const pack = coLayoutOdiDistUndoPack;
+                          if (!pack?.history?.length) return;
+                          setCoLayoutOdiDistHistory(pack.history);
+                          setCoLayoutOdiDistCheckedKeys(Array.isArray(pack.checkedKeys) ? pack.checkedKeys : []);
+                          setCoLayoutOdiDistUndoPack(null);
+                        }}
+                        title="撤回上一次删除"
+                      >
+                        撤回删除
+                      </button>
+
+                      <button
+                        type="button"
+                        className={`px-2 py-1 rounded border text-[10px] font-bold ${(!Array.isArray(coLayoutOdiDistCheckedKeys) || coLayoutOdiDistCheckedKeys.length === 0) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50'}`}
+                        disabled={!Array.isArray(coLayoutOdiDistCheckedKeys) || coLayoutOdiDistCheckedKeys.length === 0}
+                        onClick={() => {
+                          const checked = Array.isArray(coLayoutOdiDistCheckedKeys) ? coLayoutOdiDistCheckedKeys : [];
+                          if (!checked.length) return;
+                          setCoLayoutOdiDistUndoPack({
+                            history: Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [],
+                            checkedKeys: checked,
+                            at: Date.now(),
+                          });
+                          const set = new Set(checked.map((k) => String(k ?? '')));
+                          setCoLayoutOdiDistHistory((prev) => {
+                            const cur = Array.isArray(prev) ? prev : [];
+                            return cur.filter((s) => !set.has(String(s?.key ?? '')));
+                          });
+                          setCoLayoutOdiDistCheckedKeys([]);
+                          setCoLayoutOdiDistLastError('');
+                        }}
+                        title="删除已勾选的方案快照"
+                      >
+                        删除方案
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 overflow-x-auto rounded border border-slate-200">
+                    <table className="w-full text-[10px] table-auto">
+                      <thead className="bg-slate-50">
+                        <tr className="text-slate-600 text-center">
+                          <th className="px-2 py-1">序号</th>
+                          <th className="px-2 py-1">方案</th>
+                          <th className="px-2 py-1">记录时间</th>
+                          <th className="px-2 py-1">工作面宽度（m）</th>
+                          <th className="px-2 py-1">区段煤柱宽度（m）</th>
+                          <th className="px-2 py-1">工作面推进长度（m）</th>
+                          <th className="px-2 py-1">设计采高（m）</th>
+                          <th className="px-2 py-1">面积（m²）</th>
+                          <th className="px-2 py-1">储量（万吨）</th>
+                          <th className="px-2 py-1">ODI平均值</th>
+                          <th className="px-2 py-1">P90</th>
+                          <th className="px-2 py-1">P95</th>
+                          <th className="px-2 py-1">ODI极值</th>
+                          <th className="px-2 py-1">ODI总计</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {snaps.map((s, i) => (
+                          <tr
+                            key={s?.key ?? `row-${i}`}
+                            className="border-t border-slate-200 hover:bg-slate-50 cursor-pointer"
+                            onClick={() => {
+                              const no = Number(s?.faceNo);
+                              if (Number.isFinite(no) && no >= 1) setCoSelectedTarget({ kind: 'import', no: Math.round(no) });
+                            }}
+                          >
+                            <td className="px-2 py-1 text-center text-slate-600">{i + 1}</td>
+                            <td className="px-2 py-1 text-center" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={checked.includes(String(s?.key ?? ''))}
+                                onChange={(e) => {
+                                  const k = String(s?.key ?? '');
+                                  const nextChecked = e.target.checked;
+                                  setCoLayoutOdiDistCheckedKeys((prev) => {
+                                    const cur = Array.isArray(prev) ? prev : [];
+                                    if (!k) return cur;
+                                    const has = cur.includes(k);
+                                    if (nextChecked && !has) return [...cur, k];
+                                    if (!nextChecked && has) return cur.filter((x) => x !== k);
+                                    return cur;
+                                  });
+
+                                  if (nextChecked) {
+                                    const no = Number(s?.faceNo);
+                                    if (Number.isFinite(no) && no >= 1) setCoSelectedTarget({ kind: 'import', no: Math.round(no) });
+                                  }
+                                }}
+                              />
+                            </td>
+                            <td className="px-2 py-1 text-center">
+                              <div className="flex items-center justify-center gap-2">
+                                <span className="inline-block w-2 h-2 rounded-sm" style={{ background: lineColors[i % lineColors.length] }} />
+                                <span className="text-slate-800 font-medium truncate">{String(s?.timeStr ?? s?.label ?? `#${i + 1}`)}</span>
+                              </div>
+                            </td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.workfaceWidthM)) ? Number(s.workfaceWidthM) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.sectionPillarWidthM)) ? Number(s.sectionPillarWidthM) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.advanceLengthM)) ? Number(s.advanceLengthM) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.scheme?.miningHeightM)) ? Number(s.scheme.miningHeightM).toFixed(2) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.areaM2)) ? Math.round(Number(s.areaM2)) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.reservesWanTon)) ? Number(s.reservesWanTon).toFixed(2) : '--'}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.mean, 3)}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.p90, 3)}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.p95, 3)}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.max, 3)}</td>
+                            <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.totalSum)) ? Number(s.totalSum).toFixed(2) : '--'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            );
+          })()
+        ) : (
+          <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/60 p-3 text-[11px] text-slate-500">
+            暂无方案：请先点选一个导入面（No.k），然后点击“ODI分布统计（当前导入面）/添加方案”。
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // 布局确认后：自动计算完成（ODI结果刷新）时，自动刷新 ODI 分析图表
+  useEffect(() => {
+    const pending = coPendingRefreshAfterLayoutConfirmRef.current;
+    if (!pending?.pending) return;
+    if (!(odiResult?.points?.length >= 3)) return;
+    coPendingRefreshAfterLayoutConfirmRef.current = { pending: false, at: 0 };
+    setCoOdiPanelViewMode('analysisOnly');
+    try {
+      handleCocontrolOdiAnalysis({ force: false });
+      openCoAnalysisPanel();
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [odiResult]);
 
   const sanitize01 = (v, fallback) => {
     const n = Number(v);
@@ -6766,6 +7168,7 @@ const App = () => {
       pad: 18,
       clampRange: { min: 0, max: 1 },
       kNearest: 24,
+      smoothPasses: activeTab === 'surface' ? surfaceOdiSmoothPasses : (activeTab === 'upward' ? upwardOdiSmoothPasses : 0),
     });
   };
 
@@ -6854,6 +7257,21 @@ const App = () => {
     return { n, bins, data };
   };
 
+  const coAnalysisQuantileCurve = (values01, { stepPct = 5 } = {}) => {
+    const xs = (values01 ?? []).filter((v) => Number.isFinite(v));
+    const step = Math.max(1, Math.min(20, Math.round(Number(stepPct) || 5)));
+    const out = [];
+    for (let p = 0; p <= 100; p += step) {
+      const q = xs.length ? quantile(xs, clamp(p / 100, 0, 1)) : null;
+      out.push({ p, q: Number.isFinite(q) ? clamp(Number(q), 0, 1) : null });
+    }
+    if (out.length && out[out.length - 1]?.p !== 100) {
+      const q = xs.length ? quantile(xs, 1) : null;
+      out.push({ p: 100, q: Number.isFinite(q) ? clamp(Number(q), 0, 1) : null });
+    }
+    return out;
+  };
+
   const coAnalysisBuildPercentSlicePredicate = (axis, baselineEnd, bbox, pct) => {
     const p = clamp(Number(pct) / 100, 0, 1);
     const end = String(baselineEnd ?? '').trim();
@@ -6923,130 +7341,205 @@ const App = () => {
   const coAnalysisFmtPct = (v, digits = 1) => (Number.isFinite(Number(v)) ? `${(Number(v) * 100).toFixed(digits)}%` : '--');
 
 
-  const handleCocontrolOdiGlobalCompute = () => {
-    // 一键：基于 unionPoints 计算全局统一标尺 ODI*（允许主图可视化 renorm，但统计按 ODI* 绝对值）
-    // 口径约束：按钮强制走默认口径（不需要用户调整任何参数）
-    const includeGeoOnly = Boolean(coScaleConfig?.includeGeoOnly);
-    let geoRes = paramExtractionGeoResult;
+  function ensureOdiStarGlobalScaleFromFull({ silent = true, allowAutoExtract = true } = {}) {
+    // 统一口径：
+    // - 点集：paramExtractionFullResult.points（全参插值提取）
+    // - 权重：scenarioWeights
+    // - 标尺：全域分位数端点（qLo/qHi）winsorize 映射到 0~1
     let fullRes = paramExtractionFullResult;
-
-    // 缺前置时：自动执行对应提取（不跳转到“综合扰动结果”）
-    const needGeo = includeGeoOnly && !((geoRes?.points ?? []).length);
-    const needFull = !((fullRes?.points ?? []).length);
-    if (needGeo || needFull) {
-      if (needGeo) geoRes = handleExtractGeologyInterpolatedParams() ?? geoRes;
-      if (needFull) fullRes = handleExtractHighPrecisionParams() ?? fullRes;
+    if (allowAutoExtract && !((fullRes?.points ?? []).length)) {
+      fullRes = handleExtractHighPrecisionParams() ?? fullRes;
     }
-
-    const geoPts0 = geoRes?.points ?? [];
     const fullPts0 = fullRes?.points ?? [];
-
-    const missing = [];
-    if (!fullPts0.length) missing.push('全参插值提取');
-    if (includeGeoOnly && !geoPts0.length) missing.push('地质插值提取');
-    if (missing.length) {
-      window.alert(`ODI全局计算失败：自动提取未完成（缺少：${missing.join(' / ')}）。\n\n请先检查：钻孔坐标/分层数据、采区边界、目标煤层、评价点生成等输入是否齐全，然后再点击“ODI全局计算”。`);
-      return;
+    if (!fullPts0.length) {
+      if (!silent) window.alert('ODI* 全域标尺构建失败：缺少“全参插值提取”结果。');
+      return { ok: false, error: 'missing-full' };
     }
 
-    // 统一标尺端点：全局分位数（默认 P5/P95；更抗异常值）
     const qLo = clamp(Number(coScaleConfig?.qLo), 0, 1);
     const qHi = clamp(Number(coScaleConfig?.qHi), 0, 1);
     if (!Number.isFinite(qLo) || !Number.isFinite(qHi) || qHi <= qLo) {
-      window.alert('ODI全局计算失败：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
-      return;
+      if (!silent) window.alert('ODI* 全域标尺构建失败：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
+      return { ok: false, error: 'bad-quantile' };
     }
 
-    // 就地 quantile：避免引用后置 const（TDZ 风险）
-    const quantileLocal = (values, q) => {
-      const xs = (values ?? []).filter((v) => Number.isFinite(v)).slice().sort((a, b) => a - b);
-      const n = xs.length;
-      if (!n) return null;
-      const qq = clamp(Number(q), 0, 1);
-      if (n === 1) return xs[0];
-      const idx = (n - 1) * qq;
-      const lo = Math.floor(idx);
-      const hi = Math.min(n - 1, lo + 1);
-      const t = idx - lo;
-      const a = xs[lo];
-      const b = xs[hi];
-      const v = a + (b - a) * t;
-      return Number.isFinite(v) ? v : null;
-    };
+    const pts = fullPts0.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (pts.length < 3) {
+      if (!silent) window.alert('ODI* 全域标尺构建失败：可用于计算的全参点集不足（<3）。');
+      return { ok: false, error: 'too-few-points' };
+    }
 
-    const unionPts = [
-      ...(includeGeoOnly ? geoPts0.map((p) => ({ ...p, __coSource: 'geo' })) : []),
-      ...fullPts0.map((p) => ({ ...p, __coSource: 'full' })),
-    ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
-
-    // 固定默认权重（与现有“ODI计算（全参提取 + 插值）”一致）
-    const computed = computeOdi(unionPts, { wd: 0.45, wo: 0.30, wf: 0.25 });
+    const computed = computeOdi(pts, scenarioWeights);
     if (!computed || computed?.error) {
-      window.alert(computed?.error || 'ODI全局计算失败：ODI_raw 计算失败。');
-      return;
+      if (!silent) window.alert(computed?.error || 'ODI* 全域标尺构建失败：ODI_raw 计算失败。');
+      return { ok: false, error: 'compute-odi-failed' };
     }
 
     const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
     if (raw.length < 3) {
-      window.alert('ODI全局计算失败：可用于计算标尺的 ODI_raw 样本不足（<3）。');
-      return;
+      if (!silent) window.alert('ODI* 全域标尺构建失败：可用于计算标尺的 ODI_raw 样本不足（<3）。');
+      return { ok: false, error: 'too-few-raw' };
     }
 
-    const qLowValue = quantileLocal(raw, qLo);
-    const qHighValue = quantileLocal(raw, qHi);
+    const qLowValue = quantile(raw, qLo);
+    const qHighValue = quantile(raw, qHi);
     if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue)) {
-      window.alert('ODI全局计算失败：分位数计算失败。');
-      return;
+      if (!silent) window.alert('ODI* 全域标尺构建失败：分位数计算失败。');
+      return { ok: false, error: 'quantile-failed' };
     }
     if (qHighValue <= qLowValue) {
-      window.alert('ODI全局计算失败：ODI_raw 分位数范围退化（qHigh<=qLow），无法构建 0-1 映射标尺。');
-      return;
+      if (!silent) window.alert('ODI* 全域标尺构建失败：ODI_raw 分位数范围退化（qHigh<=qLow）。');
+      return { ok: false, error: 'degenerate-range' };
     }
 
     const stamp = new Date().toISOString();
+    const w = scenarioWeights ?? {};
     const scaleKey = [
-      `tab=${String(activeTab ?? '')}`,
-      `coal=${String(selectedCoal ?? '')}`,
-      `geoAt=${String(geoRes?.doneAt ?? '')}`,
+      'odiStar=1',
+      'scope=full',
       `fullAt=${String(fullRes?.doneAt ?? '')}`,
       `q=${qLo}-${qHi}`,
-      'global=1',
-      `incGeo=${includeGeoOnly ? 1 : 0}`,
-      `wd=0.45;wo=0.30;wf=0.25`,
+      `wd=${Number(w.wd)};wo=${Number(w.wo)};wf=${Number(w.wf)}`,
     ].join('|');
 
     const pack = {
       computedAt: stamp,
       scaleKey,
-      scaleMode: 'global-quantile',
+      scaleMode: 'global-quantile-full',
       qLo,
       qHi,
       qLowValue,
       qHighValue,
-      includeGeoOnly,
+      includeGeoOnly: false,
       counts: {
-        geo: includeGeoOnly ? geoPts0.length : 0,
+        geo: 0,
         full: fullPts0.length,
-        union: unionPts.length,
+        union: fullPts0.length,
         validOdiRaw: raw.length,
       },
       keptFactorKeys: computed.keptFactorKeys ?? [],
     };
 
     const ptsAll = computed.points ?? [];
-    const geoPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'geo');
-    const fullPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'full');
-
     setCoScalePack(pack);
-    setCoOdiUnionResult({ computedAt: stamp, points: ptsAll, geoPoints, fullPoints });
+    setCoOdiUnionResult({ computedAt: stamp, points: ptsAll, geoPoints: [], fullPoints: ptsAll });
     setCoScaleDirty(false);
-    setCoControlEnabled(true);
+    return { ok: true, scalePack: pack, unionResult: { computedAt: stamp, points: ptsAll, geoPoints: [], fullPoints: ptsAll } };
+  }
 
+  const handleCocontrolOdiGlobalCompute = () => {
+    // 一键：按统一口径（A：全参点集全域标尺 + 方案1：scenarioWeights）构建 ODI* 标尺
+    const built = ensureOdiStarGlobalScaleFromFull({ silent: false, allowAutoExtract: true });
+    if (!built?.ok) return;
+    setCoControlEnabled(true);
     switchMainViewModeWithRightPanel('cocontrol');
   };
 
+  const handleCocontrolOdiGlobalUpdateField = ({ silent = false, recordSnapshot = false } = {}) => {
+    // 生产层：ODI全局计算（更新场）
+    // 目标：生产参数（采高/推进长度等）变化后，更新 odiResult/odiFieldPack，并覆盖当前插值显示。
+    const t = coSelectedTarget;
+    if (!t) {
+      if (!silent) window.alert('请先在主图点选一个工作面。');
+      return;
+    }
+    const entry = getCoEntryForTarget(t);
+    if (!Boolean(entry?.layoutConfirmed)) {
+      if (!silent) window.alert('请先完成“布局确认”，再进行生产层 ODI 全局计算。');
+      return;
+    }
+
+    // 方案对比：按钮点击时默认记录一条快照（静默，不切换面板）。
+    // 注意：若外部已挂起（例如“ODI分析（方案对比）”），这里不覆写 pending。
+    if (recordSnapshot) {
+      const cur = coPendingSchemeSnapshotRef.current;
+      if (!cur?.pending) {
+        coPendingSchemeSnapshotRef.current = {
+          pending: true,
+          at: Date.now(),
+          faceNo: Number(t?.no),
+          reason: 'manual-global-update:snapshot',
+          openPanel: false,
+          switchViewMode: false,
+          forceClearHistory: false,
+        };
+      }
+    }
+
+    // 统一口径：确保全域 ODI* 标尺可用（不强制切换视图/面板）
+    if (!(coScalePack && coOdiUnionResult)) {
+      try {
+        ensureOdiStarGlobalScaleFromFull({ silent: true, allowAutoExtract: true });
+      } catch {
+        // ignore
+      }
+    }
+
+    try {
+      // 体验：手动触发时强制打开插值层/评价点
+      setShowLayerInterpolation(true);
+      setShowLayerEvalPoints(true);
+      setShowEvalWorkfaceLocPoints(true);
+    } catch {
+      // ignore
+    }
+
+    // 冻结热力图：避免 scalePack/unionResult 先更新导致主图出现“中间态”闪现
+    try {
+      const keyOverride = coBuildAutoOdiKey(t, entry);
+      coOdiFieldUpdateKeyRef.current = String(keyOverride || '');
+      setCoOdiFieldUpdateBusy(true);
+
+      const scheduled = coRequestAutoOdi({
+        reason: 'manual-global-update',
+        debounceMs: 0,
+        force: true,
+        silent: Boolean(silent),
+        forceRegenPoints: false,
+        keyOverride,
+      });
+      if (!scheduled) {
+        coOdiFieldUpdateKeyRef.current = '';
+        setCoOdiFieldUpdateBusy(false);
+      }
+    } catch {
+      coOdiFieldUpdateKeyRef.current = '';
+      setCoOdiFieldUpdateBusy(false);
+    }
+  };
+
+  const handleCocontrolOdiSchemeAnalyze = () => {
+    // 生产层：ODI分析（方案快照对比）
+    // 内置动作：更新场 → 追加方案快照 → 打开快照对比视图（不额外暴露“保存快照”按钮）
+    const t = coSelectedTarget;
+    if (!t || String(t?.kind ?? '') !== 'import') {
+      window.alert('请先在主图点选一个“导入面（No.k）”，再进行方案快照对比分析。');
+      return;
+    }
+    const entry = getCoEntryForTarget(t);
+    if (!Boolean(entry?.layoutConfirmed)) {
+      window.alert('请先完成“布局确认”，再进行方案快照对比分析。');
+      return;
+    }
+
+    setCoOdiPanelViewMode('layoutDistOnly');
+    openCoAnalysisPanel();
+
+    // 挂起：等待 odiFieldPack 更新完成后再追加快照（避免取到旧场）
+    coPendingSchemeSnapshotRef.current = {
+      pending: true,
+      at: Date.now(),
+      faceNo: Number(t?.no),
+      reason: 'manual-scheme-analyze',
+      openPanel: true,
+      switchViewMode: true,
+      forceClearHistory: false,
+    };
+    handleCocontrolOdiGlobalUpdateField({ silent: false, recordSnapshot: false });
+  };
+
   const handleCocontrolOdiAnalysis = async ({ force = true } = {}) => {
-    // 协同调控分析：ODI*（统一标尺）网格采样 + 工作面统计 + 推进曲线
+    // 协同调控分析：基于“当前主图 ODI 插值场（已全局 min-max→0~1）”进行网格采样 + 工作面统计 + 推进曲线
     if (coOdiAnalysisBusy) return;
     setCoOdiAnalysisBusy(true);
     setCoOdiAnalysisLastError('');
@@ -7060,108 +7553,11 @@ const App = () => {
       // 推进曲线档位：固定 0~100，每 5% 一档（共 21 个点）
       const percents = Array.from({ length: 21 }, (_, i) => i * 5);
 
-      // 统一标尺 ODI* 前置：coScalePack + coOdiUnionResult。
-      // 历史上它需要用户手动点击“统一标尺计算”；但为了减少门槛，这里在必要时自动构建。
-      let scalePack = coScalePack;
-      let unionResult = coOdiUnionResult;
-      if (!scalePack || !unionResult) {
-        const geoPts0 = paramExtractionGeoResult?.points ?? [];
-        const fullPts0 = paramExtractionFullResult?.points ?? [];
-
-        const includeGeoOnly = Boolean(coScaleConfig?.includeGeoOnly);
-
-        const missing = [];
-        if (!fullPts0.length) missing.push('全参插值提取');
-        if (includeGeoOnly && !geoPts0.length) missing.push('地质插值提取');
-        if (missing.length) {
-          throw new Error(`未检测到统一标尺 ODI*：缺少“${missing.join(' / ')}”结果。请先在“综合扰动结果 → 覆岩扰动综合评价”里完成对应提取，再点击 ODI分析。`);
-        }
-
-        const qLo = clamp(Number(coScaleConfig?.qLo), 0, 1);
-        const qHi = clamp(Number(coScaleConfig?.qHi), 0, 1);
-        if (!Number.isFinite(qLo) || !Number.isFinite(qHi) || qHi <= qLo) {
-          throw new Error('未检测到统一标尺 ODI*：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
-        }
-
-        const unionPts = [
-          ...(includeGeoOnly ? geoPts0.map((p) => ({ ...p, __coSource: 'geo' })) : []),
-          ...fullPts0.map((p) => ({ ...p, __coSource: 'full' })),
-        ].filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
-
-        const computed = computeOdi(unionPts, scenarioWeights);
-        if (!computed || computed?.error) {
-          throw new Error(computed?.error || '未检测到统一标尺 ODI*：ODI_raw 计算失败。');
-        }
-
-        const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
-        if (raw.length < 3) {
-          throw new Error('未检测到统一标尺 ODI*：可用于计算标尺的 ODI_raw 样本不足（<3）。');
-        }
-
-        const qLowValue = quantile(raw, qLo);
-        const qHighValue = quantile(raw, qHi);
-        if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue)) {
-          throw new Error('未检测到统一标尺 ODI*：分位数计算失败。');
-        }
-
-        const stamp = new Date().toISOString();
-        const scaleKey = [
-          `tab=${String(activeTab ?? '')}`,
-          `coal=${String(selectedCoal ?? '')}`,
-          `geoAt=${String(paramExtractionGeoResult?.doneAt ?? '')}`,
-          `fullAt=${String(paramExtractionFullResult?.doneAt ?? '')}`,
-          `q=${qLo}-${qHi}`,
-          `incGeo=${includeGeoOnly ? 1 : 0}`,
-          `wd=${Number(scenarioWeights?.wd)};wo=${Number(scenarioWeights?.wo)};wf=${Number(scenarioWeights?.wf)}`,
-        ].join('|');
-
-        scalePack = {
-          computedAt: stamp,
-          scaleKey,
-          scaleMode: 'quantile',
-          qLo,
-          qHi,
-          qLowValue,
-          qHighValue,
-          includeGeoOnly,
-          counts: {
-            geo: includeGeoOnly ? geoPts0.length : 0,
-            full: fullPts0.length,
-            union: unionPts.length,
-            validOdiRaw: raw.length,
-          },
-          keptFactorKeys: computed.keptFactorKeys ?? [],
-        };
-
-        const ptsAll = computed.points ?? [];
-        const geoPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'geo');
-        const fullPoints = ptsAll.filter((p) => String(p?.__coSource ?? '') === 'full');
-        unionResult = { computedAt: stamp, points: ptsAll, geoPoints, fullPoints };
-
-        // 同步写回 state：让主图（以及后续分析）都能直接使用 ODI*
-        setCoScalePack(scalePack);
-        setCoOdiUnionResult(unionResult);
-        setCoScaleDirty(false);
-        setCoControlEnabled(true);
+      // 同步口径：直接复用当前主图插值场（odiFieldPack），它已经做了“当前结果全局 min-max→0~1”。
+      const fieldPack = odiFieldPack;
+      if (!(fieldPack?.field && fieldPack?.gridW && fieldPack?.gridH)) {
+        throw new Error('缺少 ODI 插值场：请先完成 ODI 计算/插值（主图出现 ODI 热力图）再执行 ODI 分析。');
       }
-
-      const basePts = (unionResult?.fullPoints?.length ? unionResult.fullPoints : (unionResult?.points ?? []))
-        .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
-      if (basePts.length < 3) throw new Error('ODI* 样本点不足，无法构建插值场。');
-
-      const samples = basePts
-        .map((p) => {
-          const v = applyUnifiedScaleToOdiRaw(p?.odi, scalePack);
-          return Number.isFinite(v) ? ({ id: String(p?.id ?? ''), x: p.x, y: p.y, value: clamp(v, 0, 1) }) : null;
-        })
-        .filter((s) => s && Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.value));
-      if (samples.length < 3) throw new Error('ODI* 插值样本点不足（有效点<3）。');
-
-      const worldBounds = coAnalysisGetWorldBounds();
-      if (!worldBounds) throw new Error('无法确定插值域范围（worldBounds）。请先导入边界/钻孔/工作面等空间数据。');
-
-      const fieldPack = coAnalysisBuildFieldPack(samples, worldBounds);
-      if (!fieldPack?.field) throw new Error('ODI* 插值场构建失败。');
 
       const faces = [];
       const faceRaw = [];
@@ -7169,11 +7565,6 @@ const App = () => {
       if (!targets.length) throw new Error('未检测到任何工作面（导入面或规划面）。');
 
       const maxSamplesPerFace = 20000;
-
-      // 归一化口径（分析用）：在“所有工作面采样点”范围内再次做 min/max 映射到 0~1
-      // 目的：避免插值场/网格未命中极值导致统计分布整体偏低（例如基本 <0.7）。
-      let globalVMin = Infinity;
-      let globalVMax = -Infinity;
 
       for (const t of targets) {
         const no = (t.kind === 'import') ? Number(t.no) : null;
@@ -7206,8 +7597,6 @@ const App = () => {
             const v = sampleFieldAtWorldXY(fieldPack, x, y);
             if (!Number.isFinite(v)) continue;
             const vv = clamp(v, 0, 1);
-            if (vv < globalVMin) globalVMin = vv;
-            if (vv > globalVMax) globalVMax = vv;
             points.push({ x, y, v: vv });
           }
           if (points.length >= maxSamplesPerFace) break;
@@ -7228,15 +7617,10 @@ const App = () => {
       }
 
       if (!faceRaw.length) throw new Error('未能从任何工作面采样到有效点（可能：工作面太小/步长过大/插值域不覆盖）。');
-      if (!Number.isFinite(globalVMin) || !Number.isFinite(globalVMax)) throw new Error('工作面采样值为空，无法统计。');
-      if (globalVMax <= globalVMin) throw new Error('工作面采样值范围退化（max<=min），无法进行 0-1 归一化。');
-
-      const denomAll = (globalVMax - globalVMin) || 1;
-      const map01 = (v) => clamp((Number(v) - globalVMin) / denomAll, 0, 1);
 
       for (const f0 of faceRaw) {
         const pts0 = f0.points ?? [];
-        const values = pts0.map((p) => map01(p.v));
+        const values = pts0.map((p) => Number(p?.v)).filter((v) => Number.isFinite(v));
         const stats = coAnalysisStats(values, thresholds);
         const hist = coAnalysisHistogram(values, { binCount: 20 });
 
@@ -7248,7 +7632,7 @@ const App = () => {
           .map((p) => ({
             x: Number(p?.x),
             y: Number(p?.y),
-            v01: map01(p?.v),
+            v01: Number(p?.v),
           }))
           .filter((p) => Number.isFinite(p?.x) && Number.isFinite(p?.y) && Number.isFinite(p?.v01))
           .sort((a, b) => {
@@ -7259,7 +7643,9 @@ const App = () => {
           });
         const nAll = ptsSorted.length;
 
-        const curve = percents.map((pct) => {
+        // 推进曲线：补充“最大值变化速率”（方案1：按推进百分比档位的离散斜率 Δmax/Δpct）
+        // 口径：pct=0 为占位点，不参与真实统计，因此 rate 从首个 pct>0 点开始才计算。
+        const curveBase = percents.map((pct) => {
           // 口径：推进进度为 0% 时按 0 记（不参与真实统计）
           if (pct <= 0) {
             return {
@@ -7289,6 +7675,20 @@ const App = () => {
             exceedT2: st.exceedT2,
             exceedT3: st.exceedT3,
           };
+        });
+
+        const curve = curveBase.map((row, idx) => {
+          const pct = Number(row?.pct);
+          if (!(pct > 0)) return { ...row, maxRate: null };
+          const prev = curveBase[idx - 1];
+          const prevPct = Number(prev?.pct);
+          const prevMax = Number(prev?.max);
+          const curMax = Number(row?.max);
+          const denom = pct - prevPct;
+          if (!(prevPct > 0) || !Number.isFinite(prevMax) || !Number.isFinite(curMax) || !(denom > 0)) {
+            return { ...row, maxRate: null };
+          }
+          return { ...row, maxRate: (curMax - prevMax) / denom };
         });
 
         faces.push({
@@ -7336,7 +7736,7 @@ const App = () => {
           percents,
           sortKey: coOdiAnalysisSortKey,
           sortDesc: coOdiAnalysisSortDesc,
-          valueRenorm: { mode: 'workfaces', rawMin: globalVMin, rawMax: globalVMax },
+          valueRenorm: { mode: 'workface-domain-minmax-field' },
         },
         faces,
       });
@@ -7759,8 +8159,6 @@ const App = () => {
   // 协同调控：需要同时保留 geo-only 与 full 两套提取结果（当前 paramExtractionResult 会被覆盖）
   const [paramExtractionGeoResult, setParamExtractionGeoResult] = useState(null);
   const [paramExtractionFullResult, setParamExtractionFullResult] = useState(null);
-  // ODI 计算结果（分级响应 + 中间主图）
-  const [odiResult, setOdiResult] = useState(null);
   const [odiScaleReference, setOdiScaleReference] = useState(null);
 
   // 协同调控：统一标尺（P5/P95 联合分位数）与 ODI* 输出开关
@@ -7771,6 +8169,44 @@ const App = () => {
   const [coScalePack, setCoScalePack] = useState(null); // { qLo,qHi,qLowValue,qHighValue,includeGeoOnly,counts,computedAt,scaleKey,keptFactorKeys }
   const [coOdiUnionResult, setCoOdiUnionResult] = useState(null); // { computedAt, points, geoPoints, fullPoints }
   const [coScaleDirty, setCoScaleDirty] = useState(true);
+
+  // 统一口径（A + 方案1）：全参点集 + scenarioWeights 的全域 ODI* 标尺。
+  // 只要全参提取/权重/分位数端点变化，就自动刷新标尺（静默），保证“综合扰动”与“协同调控”一致。
+  const odiStarDesiredScaleKey = useMemo(() => {
+    const fullAt = String(paramExtractionFullResult?.doneAt ?? '');
+    const fullLen = (paramExtractionFullResult?.points ?? []).length;
+    if (!fullAt || fullLen < 3) return '';
+    // 注意：此处处于组件顶部区域，不能引用后面才初始化的 const clamp（否则 TDZ 报错）。
+    const clamp01Local = (v) => {
+      const x = Number(v);
+      return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : NaN;
+    };
+    const qLo = clamp01Local(coScaleConfig?.qLo);
+    const qHi = clamp01Local(coScaleConfig?.qHi);
+    const w = scenarioWeights ?? {};
+    if (!(Number.isFinite(qLo) && Number.isFinite(qHi) && qHi > qLo)) return '';
+    return [
+      'odiStar=1',
+      'scope=full',
+      `fullAt=${fullAt}`,
+      `q=${qLo}-${qHi}`,
+      `wd=${Number(w.wd)};wo=${Number(w.wo)};wf=${Number(w.wf)}`,
+    ].join('|');
+  }, [paramExtractionFullResult, coScaleConfig, scenarioWeights]);
+
+  useEffect(() => {
+    const desired = String(odiStarDesiredScaleKey || '');
+    if (!desired) return;
+    const curMode = String(coScalePack?.scaleMode ?? '');
+    const curKey = String(coScalePack?.scaleKey ?? '');
+    if (curMode.startsWith('global-') && curKey === desired) return;
+    try {
+      ensureOdiStarGlobalScaleFromFull({ silent: true, allowAutoExtract: false });
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [odiStarDesiredScaleKey]);
 
   // 协同调控：面板显示缩放（仅影响右侧面板展示，便于在一个窗口内看全）
   const [coPanelScalePct, setCoPanelScalePct] = useState(100); // 65~100
@@ -8319,6 +8755,21 @@ const App = () => {
     return { minX, maxX, minY, maxY };
   };
 
+  const coComputePolygonAreaM2 = (pts) => {
+    const arr = (pts ?? [])
+      .map((p) => ({ x: Number(p?.x), y: Number(p?.y) }))
+      .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (arr.length < 3) return null;
+    let s = 0;
+    for (let i = 0; i < arr.length; i += 1) {
+      const a = arr[i];
+      const b = arr[(i + 1) % arr.length];
+      s += a.x * b.y - b.x * a.y;
+    }
+    const area = Math.abs(s) / 2;
+    return (Number.isFinite(area) && area > 0) ? area : null;
+  };
+
   const coGetImportFacePointsWorld = (no) => {
     const src = Array.isArray(workingFaceData) ? workingFaceData : [];
     const base = (Number(no) - 1) * 4;
@@ -8714,7 +9165,7 @@ const App = () => {
 
     // 4) 几何变化后：派生结果作废，并触发自动算（会自动补齐评价点）
     // 体验优化：拖动 Slider 时不立刻清空评价点，否则画面会瞬间“全消失”被误判为删除。
-    coInvalidateDerivedAfterWorkfaceChange({ keepGeneratedPoints: true });
+    coInvalidateDerivedAfterWorkfaceChange({ keepGeneratedPoints: true, keepOdiResult: true, staleReason: 'dyn-advance-geometry-change' });
     coRequestAutoOdi({ 
       reason: reason || 'dyn-length-change', 
       forceRegenPoints: true, 
@@ -8939,11 +9390,11 @@ const App = () => {
     }));
 
     // 几何变化后：评价点/提取结果作废（避免口径不一致）
-    setGeneratedPoints(null);
-    setParamExtractionResult(null);
-    setParamExtractionGeoResult(null);
-    setParamExtractionFullResult(null);
-    setOdiResult(null);
+    coInvalidateDerivedAfterWorkfaceChange({
+      keepGeneratedPoints: false,
+      keepOdiResult: true,
+      staleReason: 'ws-shift-geometry-change',
+    });
   };
 
   const coListAllFaceBBoxes = (excludeTarget) => {
@@ -9229,14 +9680,22 @@ const App = () => {
     return s;
   };
 
-  const coInvalidateDerivedAfterWorkfaceChange = ({ keepGeneratedPoints = false } = {}) => {
+  const coInvalidateDerivedAfterWorkfaceChange = ({ keepGeneratedPoints = false, keepOdiResult = false, staleReason = '' } = {}) => {
     if (!keepGeneratedPoints) {
       setGeneratedPoints(null);
     }
     setParamExtractionResult(null);
-    setParamExtractionGeoResult(null);
     setParamExtractionFullResult(null);
-    setOdiResult(null);
+
+    if (keepOdiResult) {
+      setCoOdiInterpolationStale(true);
+      setCoOdiInterpolationStaleReason(String(staleReason || 'derived-invalidated'));
+    } else {
+      setOdiResult(null);
+      setCoOdiInterpolationStale(false);
+      setCoOdiInterpolationStaleReason('');
+    }
+
     setCoScalePack(null);
     setCoOdiUnionResult(null);
     setCoScaleDirty(true);
@@ -9566,7 +10025,29 @@ const App = () => {
 
   const coConfirmLayoutForSelected = () => {
     if (!coSelectedTarget) return;
+    setCoOdiPanelViewMode('analysisOnly');
+    openCoAnalysisPanel();
+    setShowLayerInterpolation(true);
+    setShowLayerEvalPoints(true);
+    coPendingRefreshAfterLayoutConfirmRef.current = { pending: true, at: Date.now() };
+
     coUpdateEntry(coSelectedTarget, (cur) => ({ ...cur, layoutConfirmed: true, layoutNeedsReconfirm: false }));
+
+    // 布局确认：按当前坐标定位点自动生成评价点 + 全参提取 + ODI 计算
+    // 注意：必须强制触发（不受“自动算开关”影响），并强制重生成点位保证与当前几何一致。
+    setTimeout(() => {
+      try {
+        coRequestAutoOdi({
+          reason: 'layout-confirm',
+          debounceMs: 0,
+          forceRegenPoints: true,
+          force: true,
+          silent: false,
+        });
+      } catch {
+        // ignore
+      }
+    }, 0);
   };
 
   const coMarkLayoutDirtyForSelected = () => {
@@ -10021,11 +10502,11 @@ const App = () => {
     }
 
     // 3) 几何变化后：评价点/提取结果作废（避免口径不一致）
-    setGeneratedPoints(null);
-    setParamExtractionResult(null);
-    setParamExtractionGeoResult(null);
-    setParamExtractionFullResult(null);
-    setOdiResult(null);
+    coInvalidateDerivedAfterWorkfaceChange({
+      keepGeneratedPoints: false,
+      keepOdiResult: true,
+      staleReason: 'layout-geometry-change',
+    });
   };
 
   const coUpdateProductionForSelected = (patch) => {
@@ -10045,7 +10526,6 @@ const App = () => {
     // 采高变化会影响 Mi=min(煤厚,采高) 等派生参数与 ODI；必须作废缓存，避免显示/计算复用旧值。
     if (Object.prototype.hasOwnProperty.call(patch, 'miningHeightM')) {
       setParamExtractionResult(null);
-      setParamExtractionGeoResult(null);
       setParamExtractionFullResult(null);
       setOdiResult(null);
       setCoScalePack(null);
@@ -10077,6 +10557,10 @@ const App = () => {
     }
   }, [coAutoOdiEnabled]);
 
+  // 协同调控：手动“ODI全局计算（更新场）”期间冻结热力图，避免中间态场/色标造成闪现。
+  const [coOdiFieldUpdateBusy, setCoOdiFieldUpdateBusy] = useState(false);
+  const coOdiFieldUpdateKeyRef = useRef('');
+
   // 协同调控：自动算请求（需要时自动生成评价点，再 ODI 计算）
   const coAutoOdiPendingRef = useRef(null); // { key, stepM, requestedAt }
   const coAutoOdiTimerRef = useRef(0);
@@ -10088,19 +10572,19 @@ const App = () => {
     const k = coGetKey(t);
     return `${String(k)}|Ldyn=${String(production.advanceLengthM ?? '')}|end=${String(production.advanceBaselineEnd ?? '')}|step=${String(production.advanceStepM ?? '')}|mh=${String(production.miningHeightM ?? '')}|L=${String(layout.advanceLengthM ?? '')}|ok=${Boolean(entry?.layoutConfirmed) ? '1' : '0'}`;
   };
-  const coRequestAutoOdi = ({ reason = '', debounceMs = 350, stepOverrideM = null, forceRegenPoints = false, keyOverride = null, workingFaceDataOverride = null, plannedWorkfaceLoopsOverride = null } = {}) => {
-    if (!coAutoOdiEnabled) return;
+  const coRequestAutoOdi = ({ reason = '', debounceMs = 350, stepOverrideM = null, forceRegenPoints = false, keyOverride = null, workingFaceDataOverride = null, plannedWorkfaceLoopsOverride = null, force = false, silent = true } = {}) => {
+    if (!coAutoOdiEnabled && !force) return false;
     const t = coSelectedTarget;
-    if (!t) return;
+    if (!t) return false;
 
     const entry = getCoEntryForTarget(t);
-    if (!Boolean(entry?.layoutConfirmed)) return;
+    if (!Boolean(entry?.layoutConfirmed)) return false;
     const wfPick = Array.isArray(workingFaceDataOverride) ? workingFaceDataOverride : workingFaceData;
     const hasWf = Array.isArray(wfPick) && wfPick.length;
     const plannedFallback = (t.kind === 'planned' && Array.isArray(plannedWorkfaceLoopsWorld)) ? plannedWorkfaceLoopsWorld : null;
     const plannedPick = Array.isArray(plannedWorkfaceLoopsOverride) ? plannedWorkfaceLoopsOverride : plannedFallback;
     const hasPlannedLoops = Array.isArray(plannedPick) && plannedPick.length;
-    if (!drillholeData?.length || (!hasWf && !hasPlannedLoops)) return;
+    if (!drillholeData?.length || (!hasWf && !hasPlannedLoops)) return false;
 
     const stepOverride0 = Number(stepOverrideM);
     const stepM0 = Math.max(1, Math.round((Number.isFinite(stepOverride0) && stepOverride0 > 0) ? stepOverride0 : (Number(entry?.production?.advanceStepM) || 25)));
@@ -10118,7 +10602,7 @@ const App = () => {
       // 先确保有评价点（自动算口径：必要时强制重生成；否则没有就生成，有则复用）
       if (forceRegenPoints || !generatedPoints) {
         try {
-          generatePoints({ silent: true, stepOverrideM: stepM0, workingFaceDataOverride, plannedWorkfaceLoopsOverride: plannedPick });
+          generatePoints({ silent: Boolean(silent), stepOverrideM: stepM0, workingFaceDataOverride, plannedWorkfaceLoopsOverride: plannedPick });
         } catch {
           // ignore
         }
@@ -10127,11 +10611,13 @@ const App = () => {
 
       try {
         const isDyn = String(reason || '').includes('dyn');
-        cocontrolComputeOdiAll({ silent: true, preserveScale: isDyn });
+        cocontrolComputeOdiAll({ silent: Boolean(silent), preserveScale: isDyn });
       } catch {
         // ignore
       }
     }, Math.max(0, Number(debounceMs) || 0));
+
+    return true;
   };
 
   useEffect(() => {
@@ -10536,6 +11022,15 @@ const App = () => {
   const [projectImportScope, setProjectImportScope] = useState('all'); // 'current' | 'all'
   const [projectImportFile, setProjectImportFile] = useState(null);
 
+  // 数据导入模板帮助弹窗（中部工具栏按钮触发）
+  const [showDataTemplateHelpModal, setShowDataTemplateHelpModal] = useState(false);
+  const [dataTemplateActiveKey, setDataTemplateActiveKey] = useState('boundary');
+
+  // 导出分析报告（按中部板块抽取关键数据）
+  const [showExportAnalysisReportModal, setShowExportAnalysisReportModal] = useState(false);
+  const [exportAnalysisReportDraft, setExportAnalysisReportDraft] = useState(null); // { meta, board, data, warnings }
+  const [exportAnalysisReportViewMode, setExportAnalysisReportViewMode] = useState('json'); // json | md
+
   const closeProjectSaveModal = () => setShowProjectSaveModal(false);
   const closeProjectImportModal = () => {
     setShowProjectImportModal(false);
@@ -10547,16 +11042,527 @@ const App = () => {
     }
   };
 
+  const closeDataTemplateHelpModal = () => {
+    setShowDataTemplateHelpModal(false);
+  };
+
+  const closeExportAnalysisReportModal = () => {
+    setShowExportAnalysisReportModal(false);
+    setExportAnalysisReportDraft(null);
+  };
+
+  const getMainBoardLabelCn = (mode) => {
+    const m = String(mode || '');
+    if (m === 'odi') return '综合扰动结果';
+    if (m === 'geology') return '地质参数分析';
+    if (m === 'planning') return '采区规划';
+    if (m === 'cocontrol') return '协同调控';
+    if (m === 'succession') return '采掘接续';
+    if (m === 'economics') return '经济分析';
+    return m || 'unknown';
+  };
+
+  const buildFieldPackInfo = (pack) => {
+    if (!pack || typeof pack !== 'object') return null;
+    const gridW = Number(pack?.gridW);
+    const gridH = Number(pack?.gridH);
+    const hasField = Boolean(pack?.field);
+    const bounds = pack?.bounds && typeof pack.bounds === 'object' ? {
+      minX: Number(pack.bounds.minX),
+      minY: Number(pack.bounds.minY),
+      maxX: Number(pack.bounds.maxX),
+      maxY: Number(pack.bounds.maxY),
+      pad: pack.bounds.pad,
+    } : null;
+    return {
+      hasField,
+      gridW: Number.isFinite(gridW) ? gridW : null,
+      gridH: Number.isFinite(gridH) ? gridH : null,
+      width: Number(pack?.width) || null,
+      height: Number(pack?.height) || null,
+      bounds,
+    };
+  };
+
+  const buildExportReportPreviewDraft = (draft) => {
+    if (!draft || typeof draft !== 'object') return { error: 'empty' };
+    const d = draft;
+    const boardKey = String(d?.board?.key ?? '');
+    const preview = {
+      meta: d?.meta ?? null,
+      board: d?.board ?? null,
+      global: d?.global ?? null,
+      warnings: Array.isArray(d?.warnings) ? d.warnings : [],
+      data: d?.data ?? null,
+      note: '预览已裁剪：下载 JSON 可获取全量数据。'
+    };
+
+    // 对“明显很大”的数组做裁剪，避免 JSON 预览卡死
+    if (boardKey === 'odi') {
+      const odi0 = (d?.data && typeof d.data === 'object') ? d.data : {};
+      const pointsLen = Array.isArray(odi0?.odiResult?.points) ? odi0.odiResult.points.length : null;
+      const rawPtsLen = Array.isArray(odi0?.paramExtractionFullResult?.points) ? odi0.paramExtractionFullResult.points.length : null;
+      preview.data = {
+        ...odi0,
+        odiResult: odi0?.odiResult ? { ...odi0.odiResult, points: Array.isArray(odi0?.odiResult?.points) ? odi0.odiResult.points.slice(0, 200) : odi0?.odiResult?.points } : odi0?.odiResult,
+        paramExtractionFullResult: odi0?.paramExtractionFullResult ? { ...odi0.paramExtractionFullResult, points: Array.isArray(odi0?.paramExtractionFullResult?.points) ? odi0.paramExtractionFullResult.points.slice(0, 200) : odi0?.paramExtractionFullResult?.points } : odi0?.paramExtractionFullResult,
+        previewInfo: {
+          odiPointsTotal: pointsLen,
+          paramPointsTotal: rawPtsLen,
+          previewPointsKept: 200,
+        },
+      };
+    }
+
+    if (boardKey === 'economics') {
+      const eco0 = (d?.data && typeof d.data === 'object') ? d.data : {};
+      const rows = Array.isArray(eco0?.result?.rows) ? eco0.result.rows : [];
+      preview.data = {
+        ...eco0,
+        result: eco0?.result ? { ...eco0.result, rows: rows.slice(0, 60), rowsCount: rows.length, rowsTrimmed: rows.length > 60 } : eco0?.result,
+      };
+    }
+
+    if (boardKey === 'succession') {
+      const s0 = (d?.data && typeof d.data === 'object') ? d.data : {};
+      const monthly = Array.isArray(s0?.plan?.monthlyPreview) ? s0.plan.monthlyPreview : (Array.isArray(s0?.plan?.monthly) ? s0.plan.monthly : []);
+      const riskRows = Array.isArray(s0?.risk?.rowsPreview) ? s0.risk.rowsPreview : (Array.isArray(s0?.risk?.rows) ? s0.risk.rows : []);
+      preview.data = {
+        ...s0,
+        plan: s0?.plan ? { ...s0.plan, monthlyPreview: monthly.slice(0, 24) } : s0?.plan,
+        risk: s0?.risk ? { ...s0.risk, rowsPreview: riskRows.slice(0, 24) } : s0?.risk,
+      };
+    }
+
+    return preview;
+  };
+
+  const buildExportReportMarkdownSummary = (draft) => {
+    const payload = draft ?? { error: 'empty report' };
+    const boardName = payload?.board?.name || '未知板块';
+    const boardKey = payload?.board?.key || '';
+    const t = payload?.meta?.generatedAtLocal || payload?.meta?.generatedAtISO || '';
+    const warns = Array.isArray(payload?.warnings) ? payload.warnings : [];
+
+    const warnBlock = warns.length
+      ? `\n## 提示\n${warns.map((w) => `- ${String(w || '')}`).join('\n')}\n`
+      : '';
+
+    const global = payload?.global && typeof payload.global === 'object' ? payload.global : {};
+    const mainViewMode = String(global?.mainViewMode ?? boardKey);
+    const activeTab0 = String(global?.activeTab ?? '');
+
+    return `# 分析报告（${boardName}）\n\n- 生成时间：${t}\n- 板块标识：${boardKey}\n- mainViewMode：${mainViewMode}\n- activeTab：${activeTab0 || '--'}\n\n${warnBlock}\n## 说明\n\n- 本 Markdown 为摘要预览版。\n- 完整数据请下载 JSON（包含全量数组/点位）。\n`;
+  };
+
+  const trimArray = (arr, maxLen = 20) => {
+    const a = Array.isArray(arr) ? arr : [];
+    const n = Math.max(0, Math.floor(Number(maxLen) || 0));
+    if (!n) return [];
+    return a.length > n ? a.slice(0, n) : a;
+  };
+
+  const extractPlanningResultSummary = (r) => {
+    if (!r || typeof r !== 'object') return null;
+    const cand = Array.isArray(r?.candidates) ? r.candidates : (Array.isArray(r?.candidateList) ? r.candidateList : null);
+    const top = (() => {
+      const list = Array.isArray(cand) ? cand : [];
+      const it = list?.[0] ?? null;
+      if (!it || typeof it !== 'object') return null;
+      const faceCount = Array.isArray(it?.faces) ? it.faces.length : (Array.isArray(it?.workfaces) ? it.workfaces.length : null);
+      return {
+        signature: it?.signature ?? it?.sig ?? null,
+        score: (it?.score ?? it?.obj ?? it?.objective ?? null),
+        faceCount,
+      };
+    })();
+    return {
+      ok: Boolean(r?.ok),
+      computedAt: r?.computedAt ?? null,
+      candidateCount: Array.isArray(cand) ? cand.length : null,
+      selectedCandidateKey: r?.selectedCandidateKey ?? null,
+      bestKey: r?.bestKey ?? null,
+      topCandidate: top,
+    };
+  };
+
+  const buildExportAnalysisReportDraft = () => {
+    const generatedAt = new Date();
+    const boardKey = String(mainViewMode || '');
+    const boardName = getMainBoardLabelCn(boardKey);
+
+    const warnings = [];
+    const global = {
+      mainViewMode: boardKey,
+      activeTab,
+      miningHeightM: Number(miningHeight) || null,
+      stepLengthM: Number(stepLength) || null,
+      hasBoundary: Array.isArray(boundaryData) && boundaryData.length >= 3,
+      boundaryPoints: Array.isArray(boundaryData) ? boundaryData.length : 0,
+      drillholeCoordsCount: Array.isArray(drillholeData) ? drillholeData.length : 0,
+      drillholeLayersCount: (drillholeLayersById && typeof drillholeLayersById === 'object') ? Object.keys(drillholeLayersById).length : 0,
+    };
+
+    const dataByBoard = (() => {
+      if (boardKey === 'odi') {
+        const odiReady = Boolean(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH);
+        if (!odiReady) warnings.push('当前未检测到 ODI 插值场（请先计算/更新 ODI 场）。');
+        if (!Boolean(odiResult?.points?.length >= 3)) warnings.push('当前未检测到 odiResult 点位结果（请先完成全参提取 + ODI 计算）。');
+
+        // 口径：综合扰动结果“全部”——导出 odiResult + paramExtractionFullResult 全量（但仍不导出插值网格数组本体）。
+        return {
+          scenario: { activeTab },
+          scaleConfig: cloneJson(coScaleConfig),
+          scalePack: coScalePack ? {
+            computedAt: coScalePack?.computedAt ?? null,
+            scaleMode: coScalePack?.scaleMode ?? null,
+            qLo: coScalePack?.qLo ?? null,
+            qHi: coScalePack?.qHi ?? null,
+            qLowValue: coScalePack?.qLowValue ?? null,
+            qHighValue: coScalePack?.qHighValue ?? null,
+            includeGeoOnly: Boolean(coScalePack?.includeGeoOnly),
+            keptFactorKeys: Array.isArray(coScalePack?.keptFactorKeys) ? coScalePack.keptFactorKeys : [],
+            counts: coScalePack?.counts ?? null,
+            scaleKeyHead: String(coScalePack?.scaleKey ?? '').slice(0, 240),
+          } : null,
+          unionResult: coOdiUnionResult ? {
+            computedAt: coOdiUnionResult?.computedAt ?? null,
+            pointsLen: Array.isArray(coOdiUnionResult?.points) ? coOdiUnionResult.points.length : null,
+            geoPointsLen: Array.isArray(coOdiUnionResult?.geoPoints) ? coOdiUnionResult.geoPoints.length : null,
+            fullPointsLen: Array.isArray(coOdiUnionResult?.fullPoints) ? coOdiUnionResult.fullPoints.length : null,
+          } : null,
+          odiFieldPack: buildFieldPackInfo(odiFieldPack),
+          lastCoOdiAnalysis: coOdiAnalysisResult ? {
+            ok: Boolean(coOdiAnalysisResult?.ok),
+            computedAt: coOdiAnalysisResult?.computedAt ?? null,
+            error: coOdiAnalysisResult?.error ?? null,
+            facesLen: Array.isArray(coOdiAnalysisResult?.faces) ? coOdiAnalysisResult.faces.length : null,
+            config: coOdiAnalysisResult?.config ?? null,
+          } : null,
+          odiResult: odiResult ? cloneJson(odiResult) : null,
+          paramExtractionFullResult: (typeof paramExtractionFullResult !== 'undefined' && paramExtractionFullResult) ? cloneJson(paramExtractionFullResult) : null,
+        };
+      }
+
+      if (boardKey === 'geology') {
+        const thkReady = Boolean(coalThicknessField?.field && coalThicknessField?.gridW && coalThicknessField?.gridH);
+        if (!((drillholeData?.length ?? 0) >= 3)) warnings.push('钻孔坐标数量不足（<3）：地质参数分析的空间插值/统计可能不稳定。');
+        if (!((Object.keys(drillholeLayersById ?? {}).length ?? 0) >= 1)) warnings.push('当前未导入钻孔分层数据：煤厚/关键层/含水层标记汇总将为空。');
+        if (!thkReady) warnings.push('当前未检测到煤厚插值场（coalThicknessField）。');
+
+        const coordsById = (() => {
+          const m = new Map();
+          for (const r of (drillholeData ?? [])) {
+            const id = String(r?.id ?? '').trim();
+            const x = Number(r?.x);
+            const y = Number(r?.y);
+            if (!id) continue;
+            if (!(Number.isFinite(x) && Number.isFinite(y))) continue;
+            m.set(id, { x, y });
+          }
+          return m;
+        })();
+
+        const coalName = String(selectedCoal || coalSeams?.[0] || '').trim();
+        if (!coalName) warnings.push('当前未选择煤层名称（selectedCoal 为空）：煤厚样本将尝试用“名称包含煤”的分层做兜底。');
+
+        const coalThicknessSamples = [];
+        const keyLayerMarks = [];
+        const aquiferMarks = [];
+
+        for (const [bhId, layersRaw] of Object.entries(drillholeLayersById ?? {})) {
+          const id = String(bhId || '').trim();
+          if (!id) continue;
+          const coord = coordsById.get(id) || null;
+          const x = coord ? coord.x : null;
+          const y = coord ? coord.y : null;
+          const layers = Array.isArray(layersRaw) ? layersRaw : [];
+
+          // 煤厚样本：优先用“选中煤层精确匹配”，否则兜底为所有包含“煤”的层厚度求和
+          let coalThkM = null;
+          let coalMethod = 'none';
+          if (coalName) {
+            const idx = layers.findIndex((l) => String(l?.name ?? '').trim() === coalName);
+            if (idx >= 0) {
+              const t = Number(layers[idx]?.thickness);
+              if (Number.isFinite(t) && t > 0) {
+                coalThkM = t;
+                coalMethod = 'exactName';
+              }
+            }
+          }
+          if (coalThkM == null) {
+            const sum = layers
+              .filter((l) => String(l?.name ?? '').includes('煤'))
+              .map((l) => Number(l?.thickness))
+              .filter((v) => Number.isFinite(v) && v > 0)
+              .reduce((a, b) => a + b, 0);
+            if (Number.isFinite(sum) && sum > 0) {
+              coalThkM = sum;
+              coalMethod = 'containsCoalSum';
+            }
+          }
+
+          if (coalThkM != null) {
+            coalThicknessSamples.push({ id, x, y, coalName: coalName || null, coalThkM, method: coalMethod });
+          }
+
+          for (const l of layers) {
+            const seq = (l?.seq == null) ? null : Number(l.seq);
+            const name = String(l?.name ?? '').trim() || null;
+            const thickness = Number(l?.thickness);
+            const aquiferTag = String(l?.aquiferTag ?? '').trim();
+            const keyLayerTag = String(l?.keyLayerTag ?? '').trim();
+
+            if (keyLayerTag) {
+              keyLayerMarks.push({ id, x, y, seq: Number.isFinite(seq) ? seq : null, name, thickness: Number.isFinite(thickness) ? thickness : null, keyLayerTag });
+            }
+            if (aquiferTag) {
+              aquiferMarks.push({ id, x, y, seq: Number.isFinite(seq) ? seq : null, name, thickness: Number.isFinite(thickness) ? thickness : null, aquiferTag });
+            }
+          }
+        }
+
+        return {
+          coalThicknessSamples, // 煤层厚度样本（每孔一条）
+          keyLayerMarks, // 关键层标记（逐层）
+          aquiferMarks, // 含水层标记（逐层）
+          coalThicknessField: buildFieldPackInfo(coalThicknessField),
+        };
+      }
+
+      if (boardKey === 'planning') {
+        const pickActive = () => {
+          const mode = String(planningOptMode || 'efficiency');
+          if (mode === 'recovery') return { mode, result: planningRecoveryResult, selectedSig: String(planningRecoverySelectedSig || '') };
+          if (mode === 'weighted') return { mode, result: planningWeightedResult, selectedSig: String(planningWeightedSelected?.sig || '') };
+          // disturbance/efficiency 都以 efficiencyResult 为主（disturbance 是其派生排序）
+          return { mode, result: planningEfficiencyResult, selectedSig: String(planningEfficiencySelectedSig || '') };
+        };
+
+        const { mode, result, selectedSig } = pickActive();
+        const candidates = Array.isArray(result?.candidates) ? result.candidates : [];
+        if (!Boolean(result?.ok) || !candidates.length) warnings.push('当前模式未检测到规划候选结果（请先运行计算）。');
+
+        const topK = 10;
+        const topKCandidates = candidates.slice(0, topK).map((c) => {
+          const sig = String(c?.signature ?? '').trim() || null;
+          const faceCount = Array.isArray(c?.faces) ? c.faces.length : (Array.isArray(c?.workfaces) ? c.workfaces.length : null);
+          return {
+            signature: sig,
+            score: (c?.score ?? c?.obj ?? c?.objective ?? null),
+            faceCount,
+            wb: c?.wb ?? null,
+            ws: c?.ws ?? null,
+            N: c?.N ?? null,
+            B: c?.B ?? null,
+          };
+        });
+
+        const selectedCandidate = (() => {
+          const sig0 = String(selectedSig || '').trim();
+          if (sig0) {
+            const hit = candidates.find((c) => String(c?.signature ?? '').trim() === sig0) ?? null;
+            if (hit) return cloneJson(hit);
+          }
+          // 兜底：用 bestKey/selectedCandidateKey 或第一个候选
+          const k1 = String(result?.selectedCandidateKey ?? '').trim();
+          const k2 = String(result?.bestKey ?? '').trim();
+          const hit2 = candidates.find((c) => String(c?.signature ?? '').trim() === k1 || String(c?.signature ?? '').trim() === k2) ?? null;
+          return cloneJson(hit2 ?? candidates?.[0] ?? null);
+        })();
+
+        return {
+          optMode: mode,
+          params: cloneJson(planningParams),
+          selectedSig: String(selectedSig || '').trim() || null,
+          selectedCandidate,
+          topK,
+          topKCandidates,
+          resultSummary: extractPlanningResultSummary(result),
+        };
+      }
+
+      if (boardKey === 'cocontrol') {
+        const snaps = Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [];
+        const checked = Array.isArray(coLayoutOdiDistCheckedKeys) ? coLayoutOdiDistCheckedKeys : [];
+        if (!snaps.length) warnings.push('当前没有协同调控的方案快照历史（可先在协同调控里添加方案快照）。');
+
+        const selected = coSelectedTarget ? {
+          kind: coSelectedTarget?.kind ?? null,
+          no: coSelectedTarget?.no ?? null,
+          name: coSelectedTarget?.name ?? null,
+        } : null;
+
+        const lastSnap = snaps.length ? snaps[snaps.length - 1] : null;
+        return {
+          selectedTarget: selected,
+          analysisGridStepM: Number(coOdiAnalysisGridStepM) || null,
+          scaleConfig: cloneJson(coScaleConfig),
+          lastCoOdiAnalysis: coOdiAnalysisResult ? {
+            ok: Boolean(coOdiAnalysisResult?.ok),
+            computedAt: coOdiAnalysisResult?.computedAt ?? null,
+            error: coOdiAnalysisResult?.error ?? null,
+            facesLen: Array.isArray(coOdiAnalysisResult?.faces) ? coOdiAnalysisResult.faces.length : null,
+          } : null,
+          schemeSnapshots: {
+            count: snaps.length,
+            checkedCount: checked.length,
+            last: lastSnap ? {
+              key: lastSnap?.key ?? null,
+              label: lastSnap?.label ?? null,
+              xLabel: lastSnap?.xLabel ?? null,
+              schemeSeq: lastSnap?.schemeSeq ?? null,
+              faceNo: lastSnap?.faceNo ?? null,
+              computedAt: lastSnap?.computedAt ?? null,
+              stepM: lastSnap?.stepM ?? null,
+              n: lastSnap?.n ?? null,
+              metric: lastSnap?.metric ?? null,
+              stats: lastSnap?.stats ?? null,
+              areaM2: lastSnap?.areaM2 ?? null,
+              reservesWanTon: lastSnap?.reservesWanTon ?? null,
+              totalSum: lastSnap?.totalSum ?? null,
+              scheme: lastSnap?.scheme ?? null,
+            } : null,
+            preview: snaps.slice(Math.max(0, snaps.length - 12)).map((s) => ({
+              key: s?.key ?? null,
+              label: s?.label ?? null,
+              xLabel: s?.xLabel ?? null,
+              schemeSeq: s?.schemeSeq ?? null,
+              faceNo: s?.faceNo ?? null,
+              computedAt: s?.computedAt ?? null,
+              stats: s?.stats ?? null,
+            })),
+          },
+        };
+      }
+
+      if (boardKey === 'succession') {
+        if (!Boolean(successionStage1Plan?.ok)) warnings.push('当前未检测到接续阶段1排程结果（请先在“采掘接续”生成排程）。');
+        return {
+          params: cloneJson(successionStage1Params),
+          selectedFaceIndex: successionSelectedFaceIndex ?? null,
+          plan: successionStage1Plan ? {
+            ok: Boolean(successionStage1Plan?.ok),
+            computedAt: successionStage1Plan?.computedAt ?? null,
+            months: Array.isArray(successionStage1Plan?.monthly) ? successionStage1Plan.monthly.length : null,
+            facesCount: Array.isArray(successionStage1Plan?.faces) ? successionStage1Plan.faces.length : null,
+            monthlyPreview: trimArray(successionStage1Plan?.monthly, 24),
+          } : null,
+          risk: successionStage2Risk ? {
+            ok: Boolean(successionStage2Risk?.ok),
+            computedAt: successionStage2Risk?.computedAt ?? null,
+            metric: successionStage2Risk?.metric ?? null,
+            rowsCount: Array.isArray(successionStage2Risk?.rows) ? successionStage2Risk.rows.length : null,
+            rowsPreview: trimArray(successionStage2Risk?.rows, 24),
+          } : null,
+          stage3: successionStage3Result ? {
+            ok: Boolean(successionStage3Result?.ok),
+            computedAt: successionStage3Result?.computedAt ?? null,
+            summary: successionStage3Result?.summary ?? null,
+          } : null,
+        };
+      }
+
+      if (boardKey === 'economics') {
+        if (!Boolean(economicsResult?.ok)) warnings.push(String(economicsResult?.reason || '当前缺少经济分析可用的输入（通常需要先生成接续排程）。'));
+        const rows = Array.isArray(economicsResult?.rows) ? economicsResult.rows : [];
+        return {
+          params: cloneJson(economicsParams),
+          result: economicsResult ? {
+            ok: Boolean(economicsResult?.ok),
+            computedAt: economicsResult?.computedAt ?? null,
+            reason: economicsResult?.reason ?? null,
+            summary: economicsResult?.summary ?? null,
+            rowsCount: rows.length,
+            rows: rows.length <= 240 ? rows : rows.slice(0, 240),
+            rowsTrimmed: rows.length > 240,
+          } : null,
+        };
+      }
+
+      return { note: 'unknown board' };
+    })();
+
+    const draft = {
+      meta: {
+        generatedAtISO: generatedAt.toISOString(),
+        generatedAtLocal: `${generatedAt.getFullYear()}-${String(generatedAt.getMonth() + 1).padStart(2, '0')}-${String(generatedAt.getDate()).padStart(2, '0')} ${String(generatedAt.getHours()).padStart(2, '0')}:${String(generatedAt.getMinutes()).padStart(2, '0')}:${String(generatedAt.getSeconds()).padStart(2, '0')}`,
+      },
+      board: { key: boardKey, name: boardName },
+      global,
+      data: dataByBoard,
+      warnings,
+    };
+
+    return draft;
+  };
+
   useEffect(() => {
-    if (!showProjectSaveModal && !showProjectImportModal) return;
+    if (!showProjectSaveModal && !showProjectImportModal && !showDataTemplateHelpModal && !showExportAnalysisReportModal) return;
     const onKeyDown = (e) => {
       if (String(e.key) !== 'Escape') return;
       closeProjectSaveModal();
       closeProjectImportModal();
+      closeDataTemplateHelpModal();
+      closeExportAnalysisReportModal();
     };
     window.addEventListener('keydown', onKeyDown, { capture: true });
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
-  }, [showProjectSaveModal, showProjectImportModal]);
+  }, [showProjectSaveModal, showProjectImportModal, showDataTemplateHelpModal, showExportAnalysisReportModal]);
+
+  const dataTemplateItems = useMemo(() => ([
+    {
+      key: 'boundary',
+      title: '导入采区边界',
+      desc: '边界点列表（支持表头；分隔符可用逗号/空格/制表符）',
+      filename: '采区边界_模板.csv',
+      href: '/templates/采区边界_模板.csv',
+      format: ['id,x,y', 'B-1,100,100', 'B-2,700,80', '...'],
+      notes: ['至少 3 个点；建议按顺/逆时针顺序。', '当前导入器期望至少包含 3 列：id,x,y。'],
+    },
+    {
+      key: 'borehole-coordinates',
+      title: '导入钻孔坐标',
+      desc: '钻孔位置点（钻孔名/编号 + 坐标）',
+      filename: '钻孔坐标_模板.csv',
+      href: '/templates/钻孔坐标_模板.csv',
+      format: ['id,x,y', 'ZK-01,320,210', 'ZK-02,450,260', '...'],
+      notes: ['id 建议与“钻孔分层数据”的文件名一致（不含扩展名），便于自动匹配。'],
+    },
+    {
+      key: 'borehole-layers',
+      title: '导入钻孔数据',
+      desc: '钻孔分层（单孔一个文件或合并文件均可；系统会按行读取）',
+      filename: '钻孔分层数据_模板.csv',
+      href: '/templates/钻孔分层数据_模板.csv',
+      format: ['seq,name,thickness,aquiferTag,keyLayerTag', '1,粉砂岩,8.2,,', '2,16-3煤,3.1,,SK1', '...'],
+      notes: ['必填列：seq,name,thickness。', '可选列：aquiferTag（含水层标记）、keyLayerTag（关键岩层标记，如 SK1/SK2）。'],
+    },
+    {
+      key: 'measured',
+      title: '导入实测数据',
+      desc: '实测约束测点（用于误差/分区；可多文件导入，按文件分组为测线）',
+      filename: '实测数据_模板.csv',
+      href: '/templates/实测数据_模板.csv',
+      format: ['id,x,y,measured', 'MP-001,210,120,12.5', 'MP-002,230,120,11.8', '...'],
+      notes: ['第 4 列 measured 为“实测值”（随场景含义不同，但格式一致）。'],
+    },
+    {
+      key: 'workface-export',
+      title: '导出工作面坐标',
+      desc: '工作面坐标文件格式示例（用于外部处理/回填；本系统也支持按 4 点一组导入工作面）',
+      filename: '工作面坐标_模板.csv',
+      href: '/templates/工作面坐标_模板.csv',
+      format: ['id,x,y', 'WF-1-1,100,100', 'WF-1-2,200,100', 'WF-1-3,200,160', 'WF-1-4,100,160'],
+      notes: ['导入工作面坐标时：每 4 个点视为 1 个工作面（No.1~No.n），按导入顺序编号。', '点的顺序建议按矩形轮廓依次填写（顺/逆时针均可）。'],
+    },
+  ]), []);
+
+  const activeTemplate = useMemo(
+    () => dataTemplateItems.find((it) => it.key === dataTemplateActiveKey) ?? dataTemplateItems[0],
+    [dataTemplateItems, dataTemplateActiveKey]
+  );
 
   const uid = useId();
   const [mapVizSettings, setMapVizSettings] = useState({
@@ -10847,6 +11853,8 @@ const App = () => {
     odiVizSteps,
     odiVizRange: cloneJson(odiVizRange),
     aquiferOdiSmoothPasses,
+    surfaceOdiSmoothPasses,
+    upwardOdiSmoothPasses,
     showBoundaryLabels,
     showDrillholeLabels,
     showWorkfaceOutline,
@@ -10945,6 +11953,16 @@ const App = () => {
       const s = Number.isFinite(v) ? Math.max(0, Math.min(6, Math.round(v))) : 2;
       setAquiferOdiSmoothPasses(s);
     }
+    {
+      const v = Number(p.surfaceOdiSmoothPasses);
+      const s = Number.isFinite(v) ? Math.max(0, Math.min(6, Math.round(v))) : 2;
+      setSurfaceOdiSmoothPasses(s);
+    }
+    {
+      const v = Number(p.upwardOdiSmoothPasses);
+      const s = Number.isFinite(v) ? Math.max(0, Math.min(6, Math.round(v))) : 2;
+      setUpwardOdiSmoothPasses(s);
+    }
     setShowBoundaryLabels(Boolean(p.showBoundaryLabels));
     setShowDrillholeLabels(Boolean(p.showDrillholeLabels));
     setShowWorkfaceOutline(Boolean(p.showWorkfaceOutline));
@@ -10974,6 +11992,7 @@ const App = () => {
 
   const handleScenarioSelect = (nextId) => {
     if (!nextId || nextId === activeTab) return;
+    if (!VALID_SCENARIO_TABS.includes(nextId)) return;
     const currentId = activeTab;
     const currentSnapshot = snapshotCurrentScenarioParams();
     const nextParams = scenarioParamsById?.[nextId] ?? scenarioDefaultsById?.[nextId];
@@ -11104,7 +12123,8 @@ const App = () => {
     }
     isRestoringRef.current = true;
     try {
-      const tab = String(snap.activeTab ?? 'surface');
+      const tabRaw = String(snap.activeTab ?? 'surface');
+      const tab = VALID_SCENARIO_TABS.includes(tabRaw) ? tabRaw : 'surface';
       const merged = snap.scenarioParamsById ?? {};
       const nextScenarioParams = merged?.[tab] ?? scenarioDefaultsById?.[tab];
       const preservePlanningResults = Boolean(snap?.__preservePlanningResults);
@@ -11277,7 +12297,8 @@ const App = () => {
   });
 
   useEffect(() => {
-    const isEditableTarget = (el) => {
+    const isEditableTarget = (target) => {
+      const el = target;
       if (!el) return false;
       if (el.isContentEditable) return true;
       const tag = String(el.tagName ?? '').toUpperCase();
@@ -11814,16 +12835,29 @@ const App = () => {
     const cleaned = String(text ?? '').replace(/^\uFEFF/, '');
     const lines = cleaned.split(/\r?\n/);
     const points = [];
+    let autoId = 1;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
       const parts = line.split(/[\s,]+/).filter(Boolean);
-      if (parts.length < 3) continue;
+      if (parts.length < 2) continue;
 
-      const id = String(parts[0]).trim();
-      const x = Number(parts[1]);
-      const y = Number(parts[2]);
+      // 兼容：
+      // - 3 列：id,x,y
+      // - 2 列：x,y（自动补 id）
+      let id = '';
+      let x = NaN;
+      let y = NaN;
+      if (parts.length >= 3) {
+        id = String(parts[0]).trim();
+        x = Number(parts[1]);
+        y = Number(parts[2]);
+      } else {
+        id = `B-${autoId++}`;
+        x = Number(parts[0]);
+        y = Number(parts[1]);
+      }
       if (!id || Number.isNaN(x) || Number.isNaN(y)) continue;
 
       points.push({ id, x, y });
@@ -12932,8 +13966,24 @@ const App = () => {
     // 固定默认权重：computeOdi 内置默认 { wd:0.45, wo:0.30, wf:0.25 }
     // 动态推演时保持全局 ODI 标尺（峰值恒定）
     const scaleCtx = (preserveScale && odiScaleReference) ? odiScaleReference : null;
-    const r = computeOdi(pts, null, scaleCtx);
+    const r = computeOdi(pts, scenarioWeights, scaleCtx);
     setOdiResult(r);
+    setCoOdiInterpolationStale(false);
+    setCoOdiInterpolationStaleReason('');
+
+    // 手动“ODI全局计算（更新场）”完成：解除热力图冻结（避免中间态闪现）
+    try {
+      if (coOdiFieldUpdateBusy) {
+        const keyPending = String(coOdiFieldUpdateKeyRef.current || '');
+        const keyNow = coSelectedTarget ? String(coBuildAutoOdiKey(coSelectedTarget) || '') : '';
+        if (!keyPending || (keyNow && keyPending === keyNow)) {
+          coOdiFieldUpdateKeyRef.current = '';
+          setCoOdiFieldUpdateBusy(false);
+        }
+      }
+    } catch {
+      // ignore
+    }
 
     // 若为全量计算（非动态推演），则更新全局标尺基准
     if (!preserveScale && Number.isFinite(r.minOdi) && Number.isFinite(r.maxOdi)) {
@@ -12947,10 +13997,586 @@ const App = () => {
     return r;
   };
 
+  const coLayoutEnsureScalePack = () => {
+    // 布局阶段统一标尺：基于“地质插值提取”的全局点集计算 ODI_raw 分位数端点，并映射到 ODI*（0~1）
+    // 口径：不依赖 generatedPoints（不生成开采评价点）。
+    // 优先 1：直接复用 geo-only 提取结果（最符合布局阶段口径）
+    const geoPts0 = (paramExtractionGeoResult?.points ?? []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+
+    // 优先 2：若没有 geo-only 结果，但已有全参提取结果（综合扰动已算过），则从 fullResult 派生“geo-only 点集”避免重复插值提取
+    const fullPts0 = (paramExtractionFullResult?.points ?? []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    const derivedFromFull = (!geoPts0.length) && fullPts0.length;
+    const ptsForScale = geoPts0.length
+      ? geoPts0
+      : (derivedFromFull
+        ? fullPts0.map((p) => {
+          const trueCoalThk = Number(p?.trueCoalThk);
+          const Mi = Number.isFinite(trueCoalThk) ? trueCoalThk : Number(p?.Mi);
+          return {
+            id: String(p?.id ?? ''),
+            cat: 'layout',
+            faceIndex: null,
+            x: Number(p?.x),
+            y: Number(p?.y),
+            Ti: Number(p?.Ti),
+            Ei: Number.isFinite(Number(p?.Ei)) ? Number(p?.Ei) : null,
+            Hi: Number(p?.Hi),
+            Di: Number(p?.Di),
+            Mi: Number.isFinite(Mi) ? Mi : null,
+            delta: 0,
+            lpi: 0,
+            lci: 0,
+            trueCoalThk: Number.isFinite(trueCoalThk) ? trueCoalThk : null,
+            inWorkface: true,
+            onWorkfaceEdge: false,
+          };
+        })
+        : []);
+
+    let ensuredGeoRes = paramExtractionGeoResult;
+    if (!ptsForScale.length) {
+      ensuredGeoRes = handleExtractGeologyInterpolatedParams() ?? ensuredGeoRes;
+    }
+    const ptsFinal = (ptsForScale.length ? ptsForScale : (ensuredGeoRes?.points ?? []));
+    if (!ptsFinal.length) throw new Error('未检测到可用于布局阶段的点集：无法构建布局阶段 ODI* 标尺。');
+
+    const qLo = clamp(Number(coScaleConfig?.qLo), 0, 1);
+    const qHi = clamp(Number(coScaleConfig?.qHi), 0, 1);
+    if (!Number.isFinite(qLo) || !Number.isFinite(qHi) || qHi <= qLo) {
+      throw new Error('布局阶段 ODI* 标尺构建失败：分位数设置不合法（要求 0<=qLo<qHi<=1）。');
+    }
+
+    const computed = computeOdi(ptsFinal, scenarioWeights);
+    if (!computed || computed?.error) throw new Error(computed?.error || '布局阶段 ODI* 标尺构建失败：ODI_raw 计算失败。');
+
+    const raw = (computed.points ?? []).map((p) => Number(p?.odi)).filter((v) => Number.isFinite(v));
+    if (raw.length < 3) throw new Error('布局阶段 ODI* 标尺构建失败：可用于计算标尺的 ODI_raw 样本不足（<3）。');
+
+    const qLowValue = quantile(raw, qLo);
+    const qHighValue = quantile(raw, qHi);
+    if (!Number.isFinite(qLowValue) || !Number.isFinite(qHighValue) || !(qHighValue > qLowValue)) {
+      throw new Error('布局阶段 ODI* 标尺构建失败：ODI_raw 分位数范围退化（qHigh<=qLow）。');
+    }
+
+    const stamp = new Date().toISOString();
+    const scaleKey = [
+      'layout=1',
+      `tab=${String(activeTab ?? '')}`,
+      `coal=${String(selectedCoal ?? '')}`,
+      `geoAt=${String(paramExtractionGeoResult?.doneAt ?? '')}`,
+      `fullAt=${String(paramExtractionFullResult?.doneAt ?? '')}`,
+      `derivedFromFull=${derivedFromFull ? '1' : '0'}`,
+      `q=${qLo}-${qHi}`,
+      `wd=${Number(scenarioWeights?.wd)};wo=${Number(scenarioWeights?.wo)};wf=${Number(scenarioWeights?.wf)}`,
+    ].join('|');
+
+    const pack = {
+      computedAt: stamp,
+      scaleKey,
+      scaleMode: 'layout-geo-quantile',
+      qLo,
+      qHi,
+      qLowValue,
+      qHighValue,
+      includeGeoOnly: true,
+      counts: {
+        geo: geoPts0.length,
+        full: fullPts0.length,
+        used: ptsFinal.length,
+        validOdiRaw: raw.length,
+      },
+      keptFactorKeys: computed.keptFactorKeys ?? [],
+    };
+    setCoLayoutOdiScalePack(pack);
+    return pack;
+  };
+
+  const handleCocontrolLayoutOdiDistSnapshot = () => {
+    // 协同调控：布局阶段“圈定范围”ODI* 分布快照（用于对比不同位置/尺寸）
+    if (coLayoutOdiDistBusy) return;
+    setCoLayoutOdiDistBusy(true);
+    setCoLayoutOdiDistLastError('');
+    try {
+      // 若历史快照来自其它口径（例如 odiFieldPack），为避免混淆，这里自动清空后再追加。
+      if (Array.isArray(coLayoutOdiDistHistory) && coLayoutOdiDistHistory.length) {
+        const src0 = String(coLayoutOdiDistHistory?.[0]?.source ?? '');
+        if (src0 && src0 !== 'layout-sampling') {
+          setCoLayoutOdiDistHistory([]);
+          setCoLayoutOdiDistCheckedKeys([]);
+        }
+      }
+
+      const t = coSelectedTarget;
+      if (!t || String(t?.kind ?? '') !== 'import') {
+        throw new Error('请先在主图点选一个“导入面（No.k）”，再统计圈定范围 ODI* 分布。');
+      }
+      const no = Number(t?.no);
+      if (!(Number.isFinite(no) && no >= 1)) throw new Error('导入面编号不合法。');
+
+      const poly = coGetImportFacePointsWorld(no);
+      if (!poly || poly.length < 3) throw new Error('无法获取当前导入面圈定范围（poly 为空）。');
+      const bbox = coGetBBoxFromPoints(poly);
+      if (!bbox) throw new Error('无法计算圈定范围 bbox。');
+
+      // 采样步长（布局口径对比）：以 1m 为目标精度，但必须保证覆盖全域。
+      // 关键修复：如果固定 1m 但 maxSamples 太小，旧逻辑会“扫到上限就 break”，只统计到前 2 万个点，导致均值/P90 对几何变化不敏感。
+      // 新逻辑：当预计样本数过大时自动放大步长，让采样尽量均匀覆盖整个圈定范围。
+      const entry = getCoEntryForTarget(t);
+      const stepBaseM = 1;
+
+      // 前置：确保地质插值场可用（与“地质插值提取”一致的门槛）
+      if (!(drillholeData?.length >= 3) || Object.keys(drillholeLayersById ?? {}).length === 0) {
+        throw new Error('请先导入“钻孔坐标数据”和“钻孔分层数据”。');
+      }
+      if (!(boundaryData?.length >= 1)) {
+        throw new Error('请先导入“采区边界坐标”。');
+      }
+      if (!(boreholeParamSamples?.Ti?.length >= 3) || !(boreholeParamSamples?.Di?.length >= 3) || !(boreholeParamSamples?.Ei?.length >= 3)) {
+        throw new Error('需要足够的钻孔样本（Ti/Di/Ei 至少 3 个有效点）。');
+      }
+      if (!(boreholeParamSamples?.CoalThk?.length >= 3)) {
+        throw new Error('需要“目标煤层厚度（煤厚）”样本：请确认已选择目标煤层且钻孔分层中含该煤层。');
+      }
+
+      const maxSamples = 60000;
+      const pts = [];
+      const bboxArea = Math.max(0, (Number(bbox.maxX) - Number(bbox.minX)) * (Number(bbox.maxY) - Number(bbox.minY)));
+      const expected = (Number.isFinite(bboxArea) && bboxArea > 0) ? (bboxArea / (stepBaseM * stepBaseM)) : 0;
+      const usedStepM = (Number.isFinite(expected) && expected > maxSamples)
+        ? Math.max(stepBaseM, Math.ceil(Math.sqrt(bboxArea / Math.max(1, maxSamples)) * 1.05))
+        : stepBaseM;
+      const stepM = Math.max(1, Math.round(usedStepM));
+
+      const x0 = Math.floor(Number(bbox.minX) / stepM) * stepM;
+      const x1 = Math.ceil(Number(bbox.maxX) / stepM) * stepM;
+      const y0 = Math.floor(Number(bbox.minY) / stepM) * stepM;
+      const y1 = Math.ceil(Number(bbox.maxY) / stepM) * stepM;
+      for (let y = y0; y <= y1; y += stepM) {
+        for (let x = x0; x <= x1; x += stepM) {
+          if (pts.length >= maxSamples) break;
+          const p = { x, y };
+          if (!polygonContainsPoint(poly, p)) continue;
+
+          // 布局阶段口径：不叠加开采因素（delta/lpi/lci=0）；保留地质参数 + 煤厚。
+          const Ti = sampleFieldAtWorldXY(contourData.Ti, x, y);
+          const Ei = sampleFieldAtWorldXY(contourData.Ei, x, y);
+          const Hi = sampleFieldAtWorldXY(contourData.Hi, x, y);
+          const Di = sampleFieldAtWorldXY(contourData.Di, x, y);
+          const Mi = sampleFieldAtWorldXY(coalThicknessField, x, y);
+          if (!Number.isFinite(Ti) || !Number.isFinite(Hi) || !Number.isFinite(Di)) continue;
+
+          pts.push({
+            id: `LAYOUT-No.${no}-${pts.length + 1}`,
+            cat: 'layout',
+            faceIndex: null,
+            x,
+            y,
+            Ti,
+            Ei: Number.isFinite(Ei) ? Ei : null,
+            Hi,
+            Di,
+            Mi: Number.isFinite(Mi) ? Mi : null,
+            delta: 0,
+            lpi: 0,
+            lci: 0,
+            trueCoalThk: Number.isFinite(Mi) ? Mi : null,
+            inWorkface: true,
+            onWorkfaceEdge: false,
+          });
+        }
+        if (pts.length >= maxSamples) break;
+      }
+
+      if (pts.length < 3) throw new Error('圈定范围内有效采样点不足（<3）：可能步长过大或插值域缺失。');
+
+      const computed = computeOdi(pts, scenarioWeights);
+      if (!computed || computed?.error) throw new Error(computed?.error || '圈定范围 ODI_raw 计算失败。');
+
+      const scalePack = coLayoutOdiScalePack ?? coLayoutEnsureScalePack();
+      const valuesStar = (computed.points ?? [])
+        .map((p) => {
+          const v = applyUnifiedScaleToOdiRaw(p?.odi, scalePack);
+          return Number.isFinite(v) ? clamp(Number(v), 0, 1) : null;
+        })
+        .filter((v) => Number.isFinite(v));
+      if (valuesStar.length < 3) throw new Error('圈定范围内有效 ODI* 值不足（<3）。');
+
+      const stats = coAnalysisStats(valuesStar, null);
+      const hist10 = coAnalysisHistogram(valuesStar, { binCount: 5 });
+      const quantileCurve = coAnalysisQuantileCurve(valuesStar, { stepPct: 5 });
+
+      const stamp = (() => {
+        try {
+          const d = new Date();
+          const pad2 = (n) => String(n).padStart(2, '0');
+          return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+        } catch {
+          return 'snapshot';
+        }
+      })();
+      const label = `No.${no} ${stamp}`;
+
+      const layout0 = entry?.layout ?? coDefaultLayout;
+      const workfaceWidthM = Number(layout0?.workfaceWidthM);
+      const sectionPillarWidthM = Number(layout0?.sectionPillarWidthM);
+      const advanceLengthM = Number(layout0?.advanceLengthM);
+
+      // 面积口径：用当前几何的精确面积（不依赖采样步长/点数），避免方案比选出现“宽度变了但面积没变”。
+      const areaM2 = coComputePolygonAreaM2(poly);
+
+      // ODI 总计口径：用均值 * 面积（更稳定；避免因采样网格相位/点数变化导致总计跳动）。
+      const meanOdiStar = Number(stats?.mean);
+      const totalSum = (Number.isFinite(meanOdiStar) && Number.isFinite(areaM2)) ? (meanOdiStar * areaM2) : null;
+
+      // 储量：用“煤厚场”的独立均值采样（与 ODI 分布采样解耦），再乘以面积与密度。
+      const thkPack = coComputeMeanCoalThicknessForTarget(t, { stepBaseM: 1, maxSamples: 20000 });
+      const meanThk = Number(thkPack?.meanCoalThkM);
+      const rho0 = Number(planningParams?.coalDensity);
+      const rho = (Number.isFinite(rho0) && rho0 > 0) ? rho0 : 1.4;
+      const reservesWanTon = (Number.isFinite(areaM2) && areaM2 > 0 && Number.isFinite(meanThk) && meanThk > 0)
+        ? (areaM2 * meanThk * rho / 10000)
+        : null;
+
+      const snap = {
+        key: `layout:import:No.${no}:${Date.now()}`,
+        label,
+        faceNo: no,
+        timeStr: stamp,
+        stepM,
+        computedAt: Date.now(),
+        n: valuesStar.length,
+        stats,
+        hist10,
+        quantileCurve,
+        metric: 'ODI*',
+        source: 'layout-sampling',
+        workfaceWidthM: Number.isFinite(workfaceWidthM) ? workfaceWidthM : null,
+        sectionPillarWidthM: Number.isFinite(sectionPillarWidthM) ? sectionPillarWidthM : null,
+        advanceLengthM: Number.isFinite(advanceLengthM) ? advanceLengthM : null,
+        areaM2: Number.isFinite(areaM2) ? areaM2 : null,
+        reservesWanTon: Number.isFinite(reservesWanTon) ? reservesWanTon : null,
+        totalSum: Number.isFinite(totalSum) ? totalSum : null,
+      };
+
+      setCoLayoutOdiDistHistory((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        const next = [...cur, snap];
+        return next.length > CO_LAYOUT_DIST_MAX_SNAPSHOTS ? next.slice(-CO_LAYOUT_DIST_MAX_SNAPSHOTS) : next;
+      });
+
+      if (mainViewMode === 'cocontrol') {
+        setTimeout(() => openCoAnalysisPanel(), 0);
+      }
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      setCoLayoutOdiDistLastError(msg);
+    } finally {
+      setCoLayoutOdiDistBusy(false);
+    }
+  };
+
+  const handleCocontrolLayoutOdiFieldDistAll = () => {
+    // 布局未确认时：如果已有 ODI 插值场（0~1），则直接在各导入面圈定范围内采样场值，输出分布快照（按方案对比）
+    if (coLayoutOdiDistBusy) return;
+    setCoLayoutOdiDistBusy(true);
+    setCoLayoutOdiDistLastError('');
+    try {
+      const fieldPack = odiFieldPack;
+      if (!(fieldPack?.field && fieldPack?.gridW && fieldPack?.gridH)) {
+        throw new Error('缺少 ODI 插值场：请先完成 ODI 计算/插值（例如在综合扰动结果里完成 ODI 计算），再执行布局层 ODI 分布分析。');
+      }
+
+      const targetsAll = (() => {
+        try { return coAnalysisAllFaceTargets(); } catch { return []; }
+      })();
+      const targets = (targetsAll ?? []).filter((t) => String(t?.kind ?? '') === 'import');
+      if (!targets.length) throw new Error('未检测到任何“导入面”，无法统计圈定范围 ODI 分布。');
+
+      const useUnified = Boolean(coScalePack && coOdiUnionResult && String(coScalePack?.scaleMode ?? '').startsWith('global-'));
+      const metric = useUnified ? 'ODI*' : 'ODI';
+
+      const maxSamplesPerFace = 20000;
+      const snaps = [];
+      for (const t of targets) {
+        const no = Number(t?.no);
+        if (!(Number.isFinite(no) && no >= 1)) continue;
+        const poly = coGetImportFacePointsWorld(no);
+        if (!poly || poly.length < 3) continue;
+        const bbox = coGetBBoxFromPoints(poly);
+        if (!bbox) continue;
+
+        // 步长：用于“分布统计”的网格采样精度（与生产推进步长无关）。
+        // 建议在面板把 coOdiAnalysisGridStepM 设为 1，以获得 1m 精度。
+        const entry = getCoEntryForTarget(t);
+        const stepM = Math.max(1, Math.round(Number(coOdiAnalysisGridStepM) || 25));
+
+        const values = [];
+        let thkSum = 0;
+        let thkN = 0;
+        const x0 = Math.floor(Number(bbox.minX) / stepM) * stepM;
+        const x1 = Math.ceil(Number(bbox.maxX) / stepM) * stepM;
+        const y0 = Math.floor(Number(bbox.minY) / stepM) * stepM;
+        const y1 = Math.ceil(Number(bbox.maxY) / stepM) * stepM;
+
+        for (let y = y0; y <= y1; y += stepM) {
+          for (let x = x0; x <= x1; x += stepM) {
+            if (values.length >= maxSamplesPerFace) break;
+            if (!polygonContainsPoint(poly, { x, y })) continue;
+            const v = sampleFieldAtWorldXY(fieldPack, x, y);
+            if (!Number.isFinite(v)) continue;
+            values.push(clamp(Number(v), 0, 1));
+
+            const thk = sampleFieldAtWorldXY(coalThicknessField, x, y);
+            if (Number.isFinite(thk) && Number(thk) > 0) {
+              thkSum += Number(thk);
+              thkN += 1;
+            }
+          }
+          if (values.length >= maxSamplesPerFace) break;
+        }
+
+        if (values.length < 3) continue;
+
+        const stats = coAnalysisStats(values, null);
+        const hist10 = coAnalysisHistogram(values, { binCount: 5 });
+        const quantileCurve = coAnalysisQuantileCurve(values, { stepPct: 5 });
+        const polyArea = coComputePolygonAreaM2(poly);
+        const meanOdi = Number(stats?.mean);
+        const areaM2 = polyArea;
+        const totalSum = (Number.isFinite(meanOdi) && Number.isFinite(areaM2)) ? (meanOdi * areaM2) : null;
+
+        const thkPack = coComputeMeanCoalThicknessForTarget(t, { stepBaseM: Math.max(1, stepM), maxSamples: 20000 });
+        const meanThk = Number(thkPack?.meanCoalThkM);
+        const rho0 = Number(planningParams?.coalDensity);
+        const rho = (Number.isFinite(rho0) && rho0 > 0) ? rho0 : 1.4;
+        const reservesWanTon = (Number.isFinite(areaM2) && areaM2 > 0 && Number.isFinite(meanThk) && meanThk > 0)
+          ? (areaM2 * meanThk * rho / 10000)
+          : null;
+
+        const stamp = (() => {
+          try {
+            const d = new Date();
+            const pad2 = (n) => String(n).padStart(2, '0');
+            return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+          } catch {
+            return 'snapshot';
+          }
+        })();
+
+        const layout0 = entry?.layout ?? coDefaultLayout;
+        const workfaceWidthM = Number(layout0?.workfaceWidthM);
+        const sectionPillarWidthM = Number(layout0?.sectionPillarWidthM);
+        const advanceLengthM = Number(layout0?.advanceLengthM);
+
+        snaps.push({
+          key: `layout:field:import:No.${no}:${Date.now()}`,
+          label: `No.${no} ${stamp}`,
+          faceNo: no,
+          timeStr: stamp,
+          stepM,
+          computedAt: Date.now(),
+          n: values.length,
+          stats,
+          hist10,
+          quantileCurve,
+          metric,
+          source: 'odiFieldPack',
+          workfaceWidthM: Number.isFinite(workfaceWidthM) ? workfaceWidthM : null,
+          sectionPillarWidthM: Number.isFinite(sectionPillarWidthM) ? sectionPillarWidthM : null,
+          advanceLengthM: Number.isFinite(advanceLengthM) ? advanceLengthM : null,
+          areaM2: Number.isFinite(areaM2) ? areaM2 : null,
+          reservesWanTon: Number.isFinite(reservesWanTon) ? reservesWanTon : null,
+          totalSum: Number.isFinite(totalSum) ? totalSum : null,
+        });
+      }
+
+      if (!snaps.length) {
+        throw new Error('圈定范围内有效采样点不足：可能步长过大、导入面过小，或 ODI 插值域未覆盖该范围。');
+      }
+
+      setCoLayoutOdiDistHistory(snaps);
+
+      if (mainViewMode === 'cocontrol') {
+        setTimeout(() => openCoAnalysisPanel(), 0);
+      }
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      setCoLayoutOdiDistLastError(msg);
+    } finally {
+      setCoLayoutOdiDistBusy(false);
+    }
+  };
+
+  const coAddSchemeSnapshotFromFieldPack = ({ fieldPack, forceClearHistory = false, openPanel = false } = {}) => {
+    // 生产层方案快照：基于“当前 odiFieldPack（0~1）”在圈定范围内采样，追加一条快照。
+    // 口径：方案差异仅来自生产参数（采高/推进长度等），几何保持不变。
+    if (coLayoutOdiDistBusy) return;
+    setCoLayoutOdiDistBusy(true);
+    setCoLayoutOdiDistLastError('');
+    try {
+      const pack = fieldPack;
+      if (!(pack?.field && pack?.gridW && pack?.gridH)) {
+        throw new Error('缺少 ODI 插值场：请先点击“ODI全局计算”更新当前参数下的 ODI 场。');
+      }
+
+      const t = coSelectedTarget;
+      if (!t || String(t?.kind ?? '') !== 'import') {
+        throw new Error('请先在主图点选一个“导入面（No.k）”，再进行方案快照对比分析。');
+      }
+      const no = Number(t?.no);
+      if (!(Number.isFinite(no) && no >= 1)) throw new Error('导入面编号不合法。');
+
+      // 进入方案对比时：若历史快照来自其它口径（layout-sampling），自动清空，避免混淆。
+      const needClearBySrc = (() => {
+        if (forceClearHistory) return true;
+        if (!Array.isArray(coLayoutOdiDistHistory) || !coLayoutOdiDistHistory.length) return false;
+        const src0 = String(coLayoutOdiDistHistory?.[0]?.source ?? '');
+        return Boolean(src0 && src0 !== 'odiFieldPack');
+      })();
+      if (needClearBySrc) {
+        setCoLayoutOdiDistHistory([]);
+        setCoLayoutOdiDistCheckedKeys([]);
+      }
+
+      const poly = coGetImportFacePointsWorld(no);
+      if (!poly || poly.length < 3) throw new Error('无法获取当前导入面圈定范围（poly 为空）。');
+      const bbox = coGetBBoxFromPoints(poly);
+      if (!bbox) throw new Error('无法计算圈定范围 bbox。');
+
+      const entry = getCoEntryForTarget(t);
+
+      const maxSamples = 60000;
+      const stepBase0 = Math.max(1, Math.round(Number(coOdiAnalysisGridStepM) || 1));
+      const bboxArea = Math.max(0, (Number(bbox.maxX) - Number(bbox.minX)) * (Number(bbox.maxY) - Number(bbox.minY)));
+      const expected = (Number.isFinite(bboxArea) && bboxArea > 0) ? (bboxArea / (stepBase0 * stepBase0)) : 0;
+      const usedStepM = (Number.isFinite(expected) && expected > maxSamples)
+        ? Math.max(stepBase0, Math.ceil(Math.sqrt(bboxArea / Math.max(1, maxSamples)) * 1.05))
+        : stepBase0;
+      const stepM = Math.max(1, Math.round(usedStepM));
+
+      const values = [];
+      let thkSum = 0;
+      let thkN = 0;
+      const x0 = Math.floor(Number(bbox.minX) / stepM) * stepM;
+      const x1 = Math.ceil(Number(bbox.maxX) / stepM) * stepM;
+      const y0 = Math.floor(Number(bbox.minY) / stepM) * stepM;
+      const y1 = Math.ceil(Number(bbox.maxY) / stepM) * stepM;
+      for (let y = y0; y <= y1; y += stepM) {
+        for (let x = x0; x <= x1; x += stepM) {
+          if (values.length >= maxSamples) break;
+          if (!polygonContainsPoint(poly, { x, y })) continue;
+          const v = sampleFieldAtWorldXY(pack, x, y);
+          if (!Number.isFinite(v)) continue;
+          values.push(clamp(Number(v), 0, 1));
+
+          const thk = sampleFieldAtWorldXY(coalThicknessField, x, y);
+          if (Number.isFinite(thk) && Number(thk) > 0) {
+            thkSum += Number(thk);
+            thkN += 1;
+          }
+        }
+        if (values.length >= maxSamples) break;
+      }
+      if (values.length < 3) throw new Error('圈定范围内有效采样点不足（<3）：可能步长过大、导入面过小或插值域未覆盖。');
+
+      const useUnified = Boolean(coScalePack && coOdiUnionResult && String(coScalePack?.scaleMode ?? '').startsWith('global-'));
+      const metric = useUnified ? 'ODI*' : 'ODI';
+
+      const stats = coAnalysisStats(values, null);
+      const hist10 = coAnalysisHistogram(values, { binCount: 5 });
+      const quantileCurve = coAnalysisQuantileCurve(values, { stepPct: 5 });
+
+      const stamp = (() => {
+        try {
+          const d = new Date();
+          const pad2 = (n) => String(n).padStart(2, '0');
+          const pad3 = (n) => String(n).padStart(3, '0');
+          return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
+        } catch {
+          return 'snapshot';
+        }
+      })();
+
+      const schemeSeq = (() => {
+        const prev = Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [];
+        const n0 = prev.filter((s) => (Number(s?.faceNo) === no) && (String(s?.source ?? '') === 'odiFieldPack')).length;
+        return n0 + 1;
+      })();
+
+      const mh = Number(entry?.production?.miningHeightM);
+      const L = Number(entry?.production?.advanceLengthM);
+      const mhStr = Number.isFinite(mh) ? mh.toFixed(2) : String(entry?.production?.miningHeightM ?? '');
+      const LStr = Number.isFinite(L) ? String(Math.round(L)) : String(entry?.production?.advanceLengthM ?? '');
+      const mhLabel = (mhStr && String(mhStr).trim()) ? String(mhStr).trim() : '--';
+      const LLabel = (LStr && String(LStr).trim()) ? String(LStr).trim() : '--';
+      const xLabel = `#${schemeSeq} mh=${mhLabel} L=${LLabel}`;
+      const label = `No.${no} #${schemeSeq} mh=${mhLabel} L=${LLabel} ${stamp}`;
+
+      const layout0 = entry?.layout ?? coDefaultLayout;
+      const workfaceWidthM = Number(layout0?.workfaceWidthM);
+      const sectionPillarWidthM = Number(layout0?.sectionPillarWidthM);
+      const advanceLengthM = Number(layout0?.advanceLengthM);
+      const gridArea = Number.isFinite(Number(stepM)) ? (Number(stepM) * Number(stepM)) : 1;
+      const areaM2 = Number(values.length || 0) * gridArea;
+      const totalSum = values.reduce((acc, v) => acc + (Number.isFinite(Number(v)) ? Number(v) : 0), 0) * gridArea;
+
+      const meanThk = (thkN > 0) ? (thkSum / thkN) : null;
+      const rho0 = Number(planningParams?.coalDensity);
+      const rho = (Number.isFinite(rho0) && rho0 > 0) ? rho0 : 1.4;
+      const reservesWanTon = (Number.isFinite(areaM2) && areaM2 > 0 && Number.isFinite(meanThk) && meanThk > 0)
+        ? (areaM2 * meanThk * rho / 10000)
+        : null;
+
+      const snap = {
+        key: `scheme:field:import:No.${no}:${Date.now()}`,
+        label,
+        xLabel,
+        schemeSeq,
+        faceNo: no,
+        timeStr: stamp,
+        stepM,
+        computedAt: Date.now(),
+        n: values.length,
+        stats,
+        hist10,
+        quantileCurve,
+        metric,
+        source: 'odiFieldPack',
+        workfaceWidthM: Number.isFinite(workfaceWidthM) ? workfaceWidthM : null,
+        sectionPillarWidthM: Number.isFinite(sectionPillarWidthM) ? sectionPillarWidthM : null,
+        advanceLengthM: Number.isFinite(advanceLengthM) ? advanceLengthM : null,
+        areaM2: Number.isFinite(areaM2) ? areaM2 : null,
+        reservesWanTon: Number.isFinite(reservesWanTon) ? reservesWanTon : null,
+        totalSum: Number.isFinite(totalSum) ? totalSum : null,
+        scheme: {
+          miningHeightM: Number.isFinite(Number(entry?.production?.miningHeightM)) ? Number(entry.production.miningHeightM) : null,
+          advanceLengthM: Number.isFinite(Number(entry?.production?.advanceLengthM)) ? Number(entry.production.advanceLengthM) : null,
+          advanceStepM: stepM,
+        },
+      };
+
+      setCoLayoutOdiDistHistory((prev) => {
+        const cur = Array.isArray(prev) ? prev : [];
+        const next = [...cur, snap];
+        return next.length > CO_LAYOUT_DIST_MAX_SNAPSHOTS ? next.slice(-CO_LAYOUT_DIST_MAX_SNAPSHOTS) : next;
+      });
+
+      if (openPanel && mainViewMode === 'cocontrol') {
+        setTimeout(() => openCoAnalysisPanel(), 0);
+      }
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      setCoLayoutOdiDistLastError(msg);
+    } finally {
+      setCoLayoutOdiDistBusy(false);
+    }
+  };
+
   const handleCocontrolComputeOdiAll = () => {
     // 兜底：协同调控里修改几何/步长后经常会把 generatedPoints 作废。
     // 若当前没有评价点，则先按可用数据源自动生成，再继续全参提取 + ODI。
-    if (!generatedPoints) {
+    const needRegenPoints = !generatedPoints;
+    if (needRegenPoints) {
       try {
         const entry = getCoEntryForTarget(coSelectedTarget);
         const step0 = Math.max(1, Math.round(Number(entry?.production?.advanceStepM) || Number(stepLength) || 25));
@@ -12969,9 +14595,68 @@ const App = () => {
       } catch {
         // ignore
       }
+
+      // 生成点位会触发状态更新；延后一拍再计算，避免读取到旧的 generatedPoints。
+      setTimeout(() => {
+        try {
+          cocontrolComputeOdiAll({ silent: false });
+        } catch {
+          // ignore
+        }
+      }, 0);
+      return;
     }
 
     cocontrolComputeOdiAll({ silent: false });
+  };
+
+  const handleCocontrolBatchOdiCompute = () => {
+    // 目标：一键对“当前页面所有工作面（导入面+规划面）”生成评价点并计算 ODI，随后自动刷新分析面板。
+    if (coBatchOdiComputeBusy) return;
+    setCoBatchOdiComputeBusy(true);
+    try {
+      setCoOdiPanelViewMode('analysisOnly');
+      openCoAnalysisPanel();
+      setShowLayerInterpolation(true);
+      setShowLayerEvalPoints(true);
+      setShowEvalWorkfaceLocPoints(true);
+
+      // 分析刷新：复用“布局确认后自动刷新”的机制，等待 odiResult 更新后触发。
+      coPendingRefreshAfterLayoutConfirmRef.current = { pending: true, at: Date.now() };
+
+      // 步长：优先取当前选中面的生产层步长；否则回退全局 stepLength/25。
+      const entry = coSelectedTarget ? getCoEntryForTarget(coSelectedTarget) : null;
+      const step0 = Math.max(1, Math.round(Number(entry?.production?.advanceStepM) || Number(stepLength) || 25));
+
+      // 强制重生成点位，保证与当前页面工作面几何一致（包含规划面 loops 的情况）。
+      if (!workingFaceData?.length && mainViewMode === 'cocontrol' && Array.isArray(plannedWorkfaceLoopsWorld) && plannedWorkfaceLoopsWorld.length) {
+        const wfOverride = deriveWorkingFacePointsFromPlannedLoops(plannedWorkfaceLoopsWorld);
+        generatePoints({
+          silent: true,
+          stepOverrideM: step0,
+          workingFaceDataOverride: wfOverride,
+          plannedWorkfaceLoopsOverride: plannedWorkfaceLoopsWorld,
+        });
+      } else {
+        generatePoints({ silent: true, stepOverrideM: step0 });
+      }
+
+      // 同样延后一拍再算（等待 generatedPoints 落地）。
+      setTimeout(() => {
+        try {
+          cocontrolComputeOdiAll({ silent: false });
+        } catch (e) {
+          const msg = String(e?.message ?? e);
+          window.alert(msg || 'ODI计算失败。');
+        } finally {
+          setCoBatchOdiComputeBusy(false);
+        }
+      }, 0);
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      window.alert(msg || 'ODI计算失败。');
+      setCoBatchOdiComputeBusy(false);
+    }
   };
 
   const parseStratificationText = (text) => {
@@ -13441,6 +15126,38 @@ const App = () => {
     }
   }, [boreholeParamSamples]);
 
+  // 协同调控：地质插值提取缓存的失效键（只依赖“地质输入”，不依赖工作面几何/采高）
+  // 目的：
+  // - 导入/调整工作面时保留 geo-only 提取结果，供“ODI分布统计（布局阶段）”复用
+  // - 当边界/钻孔/分层/煤层选择变化时，自动作废旧 geo-only 结果，避免用到过期插值场
+  const coGeoExtractionInvalidateKey = useMemo(() => {
+    const bHash = hashBoundaryLoopWorld(boundaryData);
+    const dhN = Number(drillholeData?.length ?? 0);
+    const layersN = Object.keys(drillholeLayersById ?? {}).length;
+    const TiN = Number(boreholeParamSamples?.Ti?.length ?? 0);
+    const DiN = Number(boreholeParamSamples?.Di?.length ?? 0);
+    const EiN = Number(boreholeParamSamples?.Ei?.length ?? 0);
+    const HiN = Number(boreholeParamSamples?.Hi?.length ?? 0);
+    const thkHash = String(coCoalThkHash ?? '');
+    const coal = String(selectedCoal ?? '').trim();
+    return `tab=${String(activeTab ?? '')}|coal=${coal}|dhN=${dhN}|layersN=${layersN}|TiN=${TiN}|DiN=${DiN}|EiN=${EiN}|HiN=${HiN}|thk=${thkHash}|b=${bHash}`;
+  }, [activeTab, selectedCoal, drillholeData, drillholeLayersById, boreholeParamSamples, coCoalThkHash, boundaryData]);
+  const coGeoExtractionInvalidateKeyRef = useRef('');
+  useEffect(() => {
+    const key = String(coGeoExtractionInvalidateKey ?? '');
+    if (coGeoExtractionInvalidateKeyRef.current === key) return;
+
+    // 首次赋值仅记录，不触发清空
+    if (coGeoExtractionInvalidateKeyRef.current) {
+      if (paramExtractionGeoResult?.points?.length) setParamExtractionGeoResult(null);
+      if (coLayoutOdiScalePack) setCoLayoutOdiScalePack(null);
+      if (coLayoutOdiDistHistory?.length) setCoLayoutOdiDistHistory([]);
+      if (coLayoutOdiDistLastError) setCoLayoutOdiDistLastError('');
+    }
+    coGeoExtractionInvalidateKeyRef.current = key;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coGeoExtractionInvalidateKey]);
+
   const autoSeamThicknessInfo = useMemo(() => {
     const coal = String(selectedCoal ?? '').trim();
     if (!coal) return null;
@@ -13816,10 +15533,8 @@ const App = () => {
       return { min: vMin, max: vMax, total };
     };
 
-    const useUnified = Boolean(coControlEnabled && coScalePack && coOdiUnionResult);
-    const basePts = useUnified
-      ? (coOdiUnionResult?.fullPoints?.length ? coOdiUnionResult.fullPoints : (coOdiUnionResult?.points ?? []))
-      : (odiResult?.points ?? []);
+    const useUnified = Boolean(coScalePack && coOdiUnionResult && String(coScalePack?.scaleMode ?? '').startsWith('global-'));
+    const basePts = (odiResult?.points ?? []);
 
     const pts = basePts
       .map((p) => {
@@ -13857,33 +15572,63 @@ const App = () => {
     if (samples.length < 3) return null;
 
     // 仅“含水层扰动场景”使用 GIS 自然邻域插值法；其它场景保持 ODI 原插值（IDW）。
+    const smoothPasses = activeTab === 'surface'
+      ? surfaceOdiSmoothPasses
+      : (activeTab === 'upward' ? upwardOdiSmoothPasses : aquiferOdiSmoothPasses);
+
     const pack = activeTab === 'aquifer'
       ? computeFieldNaturalNeighbor(samples, 500, 400, boundaryData, worldBounds, {
           pad: 18,
           clampRange: { min: 0, max: 1 },
           kNearest: 32,
-          smoothPasses: aquiferOdiSmoothPasses,
+          smoothPasses,
         })
       : computeFieldIdwWorld(samples, 500, 400, worldBounds, {
           pad: 18,
           clampRange: { min: 0, max: 1 },
           kNearest: 24,
+          smoothPasses,
         });
     if (!pack?.field) return pack;
-    // 可视化口径：插值场按“场自身 min/max”再次归一化到 0~1，使色标/热力图覆盖完整区间
-    // 注意：这会改变“场值”的绝对语义（从样本归一化 → 场归一化），但更符合“最大值要看到 1”的展示诉求。
-    // 修正：动态推演时（存在 odiScaleReference）必须禁止场再次归一化，否则会导致峰值颜色随面积缩小而漂移。
-    // 但协同调控（ODI* 统一标尺）主图希望按“工作面范围”拉伸到 0~1，因此不能被 odiScaleReference 误伤。
-    if (odiScaleReference && !(useUnified && mainViewMode === 'cocontrol')) return pack;
 
-    // 协同调控主图：按“工作面采样范围”归一化（与 ODI 分析口径一致）
-    if (useUnified && mainViewMode === 'cocontrol') {
-      const range = computeWorkfacesValueRange01(pack, coOdiAnalysisGridStepM);
-      if (range) return renormField01ByRange(pack, range.min, range.max);
+    // 用户需求：将“当前 ODI 计算结果”再做一次全局 min-max → 0~1 归一化，保证最终场值总是铺满 0~1。
+    // 这里采用“工作面域全局 min/max”（在所有工作面内部采样插值场得到），使工作面排行/分析与主图口径一致，且最大值稳定为 1。
+    const workfaceRange = computeWorkfacesValueRange01(pack, coOdiAnalysisGridStepM);
+    if (workfaceRange?.min != null && workfaceRange?.max != null) {
+      return renormField01ByRange(pack, workfaceRange.min, workfaceRange.max);
     }
-
+    // 兜底：若无法取到工作面域范围，则按全图场自身 min/max 归一化
     return renormField01(pack);
-  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, odiScaleReference, mainViewMode, workfaceCount, plannedWorkfaceLoopsWorld, generatedPoints, coOdiAnalysisGridStepM]);
+  }, [activeTab, odiResult, boundaryData, drillholeData, workingFaceData, measuredConstraintData, aquiferOdiSmoothPasses, surfaceOdiSmoothPasses, upwardOdiSmoothPasses, coControlEnabled, coScalePack, coOdiUnionResult, workfaceCount, plannedWorkfaceLoopsWorld, generatedPoints, coOdiAnalysisGridStepM]);
+
+  // 方案快照（生产参数方案对比）：等待 odiFieldPack 就绪后再采样并追加快照
+  useEffect(() => {
+    const pending = coPendingSchemeSnapshotRef.current;
+    if (!pending?.pending) return;
+    if (!(odiFieldPack?.field && odiFieldPack?.gridW && odiFieldPack?.gridH)) return;
+    coPendingSchemeSnapshotRef.current = {
+      pending: false,
+      at: 0,
+      faceNo: null,
+      reason: '',
+      openPanel: false,
+      switchViewMode: false,
+      forceClearHistory: false,
+    };
+
+    try {
+      if (pending?.switchViewMode) setCoOdiPanelViewMode('layoutDistOnly');
+      coAddSchemeSnapshotFromFieldPack({
+        fieldPack: odiFieldPack,
+        forceClearHistory: Boolean(pending?.forceClearHistory),
+        openPanel: Boolean(pending?.openPanel),
+      });
+      if (pending?.openPanel) openCoAnalysisPanel();
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [odiFieldPack]);
 
   // 采掘接续（阶段2）：基于 ODI 场/ODI* 场对“阶段1甘特推进进度”做按月风险采样
   // 注意：依赖数组会读取 odiFieldPack，因此必须放在 odiFieldPack 初始化之后。
@@ -13898,7 +15643,7 @@ const App = () => {
     const stepM = Math.max(5, Math.round(Number(successionStage2Params?.sampleStepM) || 25));
 
     const wantOdiStar = Boolean(successionStage2Params?.useOdiStarWhenAvailable);
-    const canOdiStar = Boolean(wantOdiStar && coControlEnabled && coScalePack && coOdiUnionResult);
+    const canOdiStar = Boolean(wantOdiStar && coScalePack && coOdiUnionResult && String(coScalePack?.scaleMode ?? '').startsWith('global-'));
 
     const buildOdiStarFieldPack = () => {
       if (!canOdiStar) return null;
@@ -14600,7 +16345,7 @@ const App = () => {
 
   const odiHeatmapHref = useMemo(() => {
     if (!odiFieldPack?.field) return null;
-    // 归一化后：范围固定 0~1（允许用户手动缩放/过滤）
+    // 色标默认按 0~1 映射；若用户手动输入范围，则按输入范围映射/过滤。
     const clip = Number.isInteger(odiLevelFilter) && odiLevelFilter >= 0 && odiLevelFilter <= 4
       ? odiLevelRanges[odiLevelFilter]
       : null;
@@ -14610,6 +16355,7 @@ const App = () => {
       const v = Number(s);
       return Number.isFinite(v) ? v : null;
     };
+
     const autoMin = 0;
     const autoMax = 1;
     const vMin = parseNumOrNull(odiVizRange.min);
@@ -14618,6 +16364,9 @@ const App = () => {
     const effMax = vMax == null ? autoMax : Math.max(autoMin, Math.min(autoMax, vMax));
     const hasUserRange = (vMin != null || vMax != null) && effMax > effMin;
     const filterRange = hasUserRange ? { min: effMin, max: effMax } : null;
+
+    const colorMin = hasUserRange ? effMin : autoMin;
+    const colorMax = hasUserRange ? effMax : autoMax;
 
     // 3) 中间主图分级：默认 5 级；滑块为 N 级时基于这 5 段“等值”派生 N 段
     const breaks = (() => {
@@ -14744,13 +16493,27 @@ const App = () => {
       }
       if (uniq[0] > 0) uniq.unshift(0);
       if (uniq[uniq.length - 1] < 1) uniq.push(1);
-      return uniq.length >= 2 ? uniq : null;
+
+      // 注意：renderHeatmapDataUrl 的 breaks 运行在 t-space（t=(v-min)/(max-min)）上。
+      // 因此需要将“绝对值断点（0~1）”映射到当前色标范围的 t-space，才能保证分级视觉与数值一致。
+      const denom = (colorMax - colorMin) || 1;
+      const mapToT = (absV) => clamp((Number(absV) - colorMin) / denom, 0, 1);
+      const mapped = uniq.map((v) => mapToT(v));
+      const mappedUniq = [];
+      for (const v of mapped) {
+        if (!Number.isFinite(v)) continue;
+        if (!mappedUniq.length || Math.abs(v - mappedUniq[mappedUniq.length - 1]) > 1e-6) mappedUniq.push(v);
+      }
+      if (mappedUniq.length < 2) return null;
+      if (mappedUniq[0] > 0) mappedUniq.unshift(0);
+      if (mappedUniq[mappedUniq.length - 1] < 1) mappedUniq.push(1);
+      return mappedUniq.length >= 2 ? mappedUniq : null;
     })();
 
     return renderHeatmapDataUrl(
       odiFieldPack,
-      hasUserRange ? effMin : 0,
-      hasUserRange ? effMax : 1,
+      colorMin,
+      colorMax,
       odiVizPalette,
       clip,
       odiVizSteps,
@@ -14760,8 +16523,17 @@ const App = () => {
     );
   }, [odiFieldPack, odiLevelFilter, odiLevelRanges, odiVizPalette, odiVizInvertPalette, odiVizSteps, odiVizRange, measuredZoningResult, activeTab]);
 
+  // 热力图 href 稳定版本：协同调控手动更新期间冻结，避免中间态图片闪现。
+  const [odiHeatmapHrefStable, setOdiHeatmapHrefStable] = useState(null);
+  useEffect(() => {
+    if (coOdiFieldUpdateBusy) return;
+    setOdiHeatmapHrefStable(odiHeatmapHref);
+  }, [odiHeatmapHref, coOdiFieldUpdateBusy]);
+  const odiHeatmapHrefShown = (coOdiFieldUpdateBusy && odiHeatmapHrefStable) ? odiHeatmapHrefStable : odiHeatmapHref;
+
   const handleComputeOdi = () => {
-    const pts = paramExtractionResult?.points ?? [];
+    // 统一口径（A）：优先用全参提取点集作为 ODI 计算点集
+    const pts = (paramExtractionFullResult?.points ?? paramExtractionResult?.points ?? []);
     const r = computeOdi(pts, scenarioWeights);
     setOdiResult(r);
 
@@ -16795,6 +18567,7 @@ const App = () => {
       ? { min: Number(opts.clampRange.min), max: Number(opts.clampRange.max) }
       : null;
     const kNearest = Number.isFinite(opts.kNearest) ? Math.max(4, Math.min(64, Math.round(opts.kNearest))) : 24;
+    const smoothPasses = Number.isFinite(opts.smoothPasses) ? Math.max(0, Math.min(6, Math.round(opts.smoothPasses))) : 0;
 
     if (!samples || samples.length < 3) {
       return { field: null, min: null, max: null, gridW: 0, gridH: 0, width, height, points: [], bounds: null };
@@ -16898,8 +18671,51 @@ const App = () => {
       }
     }
 
+    const smoothOnce = (src) => {
+      const dst = Array.from({ length: gridH }, () => Array.from({ length: gridW }, () => 0));
+      // 近似高斯核：[[1,2,1],[2,4,2],[1,2,1]] / 16
+      const w00 = 1, w01 = 2, w02 = 1;
+      const w10 = 2, w11 = 4, w12 = 2;
+      const w20 = 1, w21 = 2, w22 = 1;
+      const denom = 16;
+
+      for (let y = 0; y < gridH; y++) {
+        const y0 = Math.max(0, y - 1);
+        const y1 = y;
+        const y2 = Math.min(gridH - 1, y + 1);
+        for (let x = 0; x < gridW; x++) {
+          const x0 = Math.max(0, x - 1);
+          const x1 = x;
+          const x2 = Math.min(gridW - 1, x + 1);
+          const v00 = src[y0][x0];
+          const v01 = src[y0][x1];
+          const v02 = src[y0][x2];
+          const v10 = src[y1][x0];
+          const v11 = src[y1][x1];
+          const v12 = src[y1][x2];
+          const v20 = src[y2][x0];
+          const v21 = src[y2][x1];
+          const v22 = src[y2][x2];
+
+          let s = 0;
+          s += w00 * v00 + w01 * v01 + w02 * v02;
+          s += w10 * v10 + w11 * v11 + w12 * v12;
+          s += w20 * v20 + w21 * v21 + w22 * v22;
+          let out = s / denom;
+          if (clampRange) out = clamp(out, clampRange.min, clampRange.max);
+          dst[y][x] = out;
+        }
+      }
+      return dst;
+    };
+
+    let smoothedField = field;
+    for (let pass = 0; pass < smoothPasses; pass++) {
+      smoothedField = smoothOnce(smoothedField);
+    }
+
     return {
-      field,
+      field: smoothedField,
       min: Number.isFinite(minV) ? minV : null,
       max: Number.isFinite(maxV) ? maxV : null,
       gridW,
@@ -16966,7 +18782,9 @@ const App = () => {
   // 协同调控：批量回填“设计采高=厚度场均值”（解决：从智能规划跳转后多数工作面仍显示默认采高=4）
   // 约束：
   // - 只在协同调控视图触发
-  // - 若已存在提取/ODI/标尺结果，批量回填会自动清空这些缓存，避免“参数已变但结果还是旧的”
+  // - 若已存在全参提取/ODI结果：默认不再自动修改“已参与提取的旧工作面”的采高，
+  //   避免仅因切换视图就触发缓存作废（典型现象：切到协同调控后 ODI 插值场消失）。
+  //   新增工作面（编号 > 既有结果覆盖范围）仍允许自动回填。
   // - 仅当该工作面采高仍为默认/空值时才回填
   useEffect(() => {
     if (mainViewMode !== 'cocontrol') return;
@@ -16991,10 +18809,35 @@ const App = () => {
     const defMH = Number(coDefaultProduction?.miningHeightM);
     const toFillStr = (v) => String(Number(v).toFixed(2));
 
+    const maxFaceFromPoints = (pts) => {
+      if (!Array.isArray(pts) || pts.length === 0) return 0;
+      let maxFace = 0;
+      for (const p of pts) {
+        const fi = Number(p?.faceIndex);
+        if (!Number.isFinite(fi) || fi < 1) continue;
+        const f = Math.round(fi);
+        if (f > maxFace) maxFace = f;
+      }
+      return maxFace;
+    };
+
+    // 保护“旧结果覆盖范围”内的工作面：不自动改采高，避免无感清空 ODI/全参结果
+    const maxFaceExisting = Math.max(
+      maxFaceFromPoints(paramExtractionFullResult?.points),
+      maxFaceFromPoints(odiResult?.points),
+    );
+    const protectExistingFaces = maxFaceExisting >= 1
+      && ((paramExtractionFullResult?.points?.length ?? 0) > 0 || (odiResult?.points?.length ?? 0) > 0);
+
     const importUpdates = {};
     const plannedUpdates = {};
 
     for (const t of targets) {
+      const faceIndexForProtect = (t?.kind === 'import') ? Math.round(Number(t?.no)) : Math.round(Number(t?.faceIndex));
+      if (protectExistingFaces && Number.isFinite(faceIndexForProtect) && faceIndexForProtect >= 1 && faceIndexForProtect <= maxFaceExisting) {
+        continue;
+      }
+
       const mean = Number(coComputeMeanCoalThicknessForTarget(t, { stepBaseM: 25, maxSamples: 900 })?.meanCoalThkM);
       if (!(Number.isFinite(mean) && mean > 0)) continue;
 
@@ -17037,13 +18880,49 @@ const App = () => {
       setCoPlannedParamsByFaceIndex((prev) => ({ ...(prev ?? {}), ...plannedUpdates }));
     }
 
-    // 若批量回填确实改变了采高：清空缓存的提取/ODI/标尺结果，避免结果与参数不一致
+    // 若批量回填确实改变了采高：
+    // - 地质插值提取（paramExtractionGeoResult）不依赖采高，且会被“ODI分布统计（布局阶段）”复用，因此不应在此清空
+    // - 全参提取/ODI/统一标尺可能依赖采高（Mi=min(煤厚,采高)），但导入新工作面时往往只是新增末尾 No.k 的采高，不应导致旧结果被强制作废
+    // 口径：仅当“被修改的工作面编号”已存在于上一次全参提取结果中，才清空全参/ODI/标尺缓存
     const changedCount = Object.keys(importUpdates).length + Object.keys(plannedUpdates).length;
     if (changedCount > 0) {
-      if (paramExtractionGeoResult?.points?.length) setParamExtractionGeoResult(null);
-      if (paramExtractionFullResult?.points?.length) setParamExtractionFullResult(null);
-      if (odiResult?.points?.length) setOdiResult(null);
-      if (coScalePack) setCoScalePack(null);
+      const shouldInvalidateFull = (() => {
+        const fullPts = paramExtractionFullResult?.points ?? [];
+        if (!Array.isArray(fullPts) || fullPts.length === 0) return false;
+
+        let maxFace = 0;
+        for (const p of fullPts) {
+          const fi = Number(p?.faceIndex);
+          if (!Number.isFinite(fi) || fi < 1) continue;
+          const f = Math.round(fi);
+          if (f > maxFace) maxFace = f;
+        }
+        if (!(maxFace >= 1)) return false;
+
+        const changedFaces = [];
+        for (const k of Object.keys(importUpdates)) {
+          const m = String(k ?? '').match(/No\.(\d+)/);
+          if (!m) continue;
+          const no = Number(m[1]);
+          if (Number.isFinite(no) && no >= 1) changedFaces.push(Math.round(no));
+        }
+        for (const k of Object.keys(plannedUpdates)) {
+          const fi = Number(k);
+          if (Number.isFinite(fi) && fi >= 1) changedFaces.push(Math.round(fi));
+        }
+        if (!changedFaces.length) return false;
+
+        // 若改动触及旧工作面（<=maxFace），则认为全参提取/ODI/标尺可能已不一致
+        return changedFaces.some((fi) => fi >= 1 && fi <= maxFace);
+      })();
+
+      if (shouldInvalidateFull) {
+        if (paramExtractionFullResult?.points?.length) setParamExtractionFullResult(null);
+        if (odiResult?.points?.length) setOdiResult(null);
+        if (coScalePack) setCoScalePack(null);
+        if (coOdiUnionResult) setCoOdiUnionResult(null);
+        setCoScaleDirty(true);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -21355,7 +23234,6 @@ const App = () => {
                 { id: 'surface', label: '地表下沉场景', icon: <TrendingDown size={18} />, accent: 'bg-blue-600', active: 'bg-blue-600 border-blue-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
                 { id: 'aquifer', label: '含水层扰动场景', icon: <Droplets size={18} />, accent: 'bg-emerald-600', active: 'bg-emerald-600 border-emerald-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
                 { id: 'upward', label: '上行开采可行性', icon: <ArrowUpCircle size={18} />, accent: 'bg-amber-500', active: 'bg-amber-500 border-amber-500 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' },
-                { id: 'full', label: '全覆岩扰动评价', icon: <Layers size={18} />, accent: 'bg-purple-600', active: 'bg-purple-600 border-purple-600 text-white', inactive: 'bg-slate-50 border-slate-100 text-slate-600 hover:bg-slate-100' }
               ].map(item => (
                 <button
                   key={item.id}
@@ -21494,7 +23372,7 @@ const App = () => {
                 <div>
                   <div className="text-sm text-slate-500 mb-2 font-bold">含水层选择</div>
                   <select
-                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${aquiferTypeOptions.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
+                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${aquiferTypeOptions.length === 0 ? 'text-sm' : 'text-base'} text-slate-700`}
                     value={selectedAquiferType}
                     onChange={(e) => setSelectedAquiferType(e.target.value)}
                     disabled={aquiferTypeOptions.length === 0}
@@ -21541,7 +23419,7 @@ const App = () => {
 
                 {activeTab === 'upward' && (
                   <select
-                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-lg'} text-slate-700`}
+                    className={`w-full bg-white border border-slate-200 rounded px-3 py-2 ${coalSeams.length === 0 ? 'text-sm' : 'text-base'} text-slate-700`}
                     value={selectedUpperCoal}
                     onChange={(e) => setSelectedUpperCoal(e.target.value)}
                     disabled={coalSeams.length === 0}
@@ -21738,9 +23616,30 @@ const App = () => {
             </div>
 
             <button
+              className="p-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+              onClick={() => {
+                setDataTemplateActiveKey('boundary');
+                setShowDataTemplateHelpModal(true);
+              }}
+              title="模板下载与导入格式帮助"
+              type="button"
+            >
+              <Info size={16} />
+            </button>
+
+            <button
               className="px-3 py-2 rounded-lg bg-blue-600 border border-blue-600 text-white hover:bg-blue-700 text-xs font-bold"
-              onClick={() => {}}
-              title="导出分析报告（功能开发中）"
+              onClick={() => {
+                try {
+                  const draft = buildExportAnalysisReportDraft();
+                  setExportAnalysisReportDraft(draft);
+                  setExportAnalysisReportViewMode('json');
+                  setShowExportAnalysisReportModal(true);
+                } catch (e) {
+                  window.alert(`生成报告失败：${String(e?.message ?? e)}`);
+                }
+              }}
+              title="导出分析报告（按当前中部板块抽取关键数据）"
               type="button"
             >
               导出分析报告
@@ -22045,7 +23944,7 @@ const App = () => {
 
                      <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
 
-                     {(['aquifer', 'surface', 'upward', 'full'].includes(activeTab)) && (
+                     {(['aquifer', 'surface', 'upward'].includes(activeTab)) && (
                        <>
                          <SmoothnessSlider
                            value={activeTab === 'surface' ? surfaceOdiSmoothPasses : (activeTab === 'upward' ? upwardOdiSmoothPasses : aquiferOdiSmoothPasses)}
@@ -22056,9 +23955,9 @@ const App = () => {
                            }}
                            label="平滑度"
                            title={activeTab === 'surface'
-                             ? '地表下沉场景：平滑度（UI预留，后续可接入插值/后处理）'
+                             ? '地表下沉场景：ODI 插值结果平滑度（0=不平滑，越大越丝滑）'
                              : (activeTab === 'upward'
-                               ? '上行开采场景：平滑度（UI预留，后续可接入插值/后处理）'
+                               ? '上行开采场景：ODI 插值结果平滑度（0=不平滑，越大越丝滑）'
                                : '含水层场景：ODI 自然邻域插值平滑度（0=不平滑，越大越丝滑）')}
                          />
                          <div className="h-4 w-px bg-slate-200 hidden md:block"></div>
@@ -22546,7 +24445,7 @@ const App = () => {
                     </g>
                   )}
                   {/* ODI 背景（未计算 ODI 时的占位底图）：更自然的“等值圈”分布，避免默认形状过于像“马桶” */}
-                  {!odiHeatmapHref && !hasSpatialData && showLayerInterpolation && (
+                  {!odiHeatmapHrefShown && !hasSpatialData && showLayerInterpolation && (
                     <g pointerEvents="none">
                       <ellipse
                         cx="400"
@@ -22607,8 +24506,8 @@ const App = () => {
                   )}
 
                   {/* 计算得到的 ODI 归一化等值分布（热力） */}
-                  {odiHeatmapHref && showLayerInterpolation && (
-                    <image href={odiHeatmapHref} x={MAIN_MAP_RECT.left} y={MAIN_MAP_RECT.top} width={MAIN_MAP_RECT.width} height={MAIN_MAP_RECT.height} preserveAspectRatio="none" opacity="0.92" />
+                  {odiHeatmapHrefShown && showLayerInterpolation && (
+                    <image href={odiHeatmapHrefShown} x={MAIN_MAP_RECT.left} y={MAIN_MAP_RECT.top} width={MAIN_MAP_RECT.width} height={MAIN_MAP_RECT.height} preserveAspectRatio="none" opacity="0.92" />
                   )}
                   {hasSpatialData ? (
                     <g>
@@ -24865,93 +26764,126 @@ const App = () => {
                 <div className="flex items-center gap-3">
                   {!coAnalysisCollapsed && (
                     <div className="hidden lg:flex flex-wrap items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                        网格步长
-                        <input
-                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={coOdiAnalysisGridStepM}
-                          onChange={(e) => setCoOdiAnalysisGridStepM(Number(e.target.value))}
-                        />
-                        m
-                      </div>
-
-                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                        阈值
-                        <input
-                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={coOdiAnalysisThresholds.t1}
-                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t1: Number(e.target.value) }))}
-                        />
-                        <input
-                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={coOdiAnalysisThresholds.t2}
-                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t2: Number(e.target.value) }))}
-                        />
-                        <input
-                          className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
-                          type="number"
-                          min={0}
-                          max={1}
-                          step={0.01}
-                          value={coOdiAnalysisThresholds.t3}
-                          onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t3: Number(e.target.value) }))}
-                        />
-                      </div>
-
-                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
-                        排序
-                        <select
-                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
-                          value={coOdiAnalysisSortKey}
-                          onChange={(e) => setCoOdiAnalysisSortKey(e.target.value)}
-                        >
-                          <option value="p90">P90</option>
-                          <option value="p95">P95</option>
-                          <option value="mean">Mean</option>
-                          <option value="exceedT2">≥T2</option>
-                          <option value="exceedT3">≥T3</option>
-                        </select>
+                      <div className="inline-flex items-center rounded border border-slate-200 bg-white overflow-hidden">
                         <button
-                          className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-100"
                           type="button"
-                          onClick={() => setCoOdiAnalysisSortDesc((v) => !v)}
+                          className={`px-2 py-1 text-[10px] font-bold ${coOdiPanelViewMode === 'full' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                          onClick={() => setCoOdiPanelViewMode('full')}
+                          title="全部：工作面分析 + 快照对比"
                         >
-                          {coOdiAnalysisSortDesc ? '降序' : '升序'}
+                          全部
+                        </button>
+                        <button
+                          type="button"
+                          className={`px-2 py-1 text-[10px] font-bold border-l border-slate-200 ${coOdiPanelViewMode === 'analysisOnly' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                          onClick={() => setCoOdiPanelViewMode('analysisOnly')}
+                          title="只看：所有工作面方案（生产层分析）"
+                        >
+                          工作面
+                        </button>
+                        <button
+                          type="button"
+                          className={`px-2 py-1 text-[10px] font-bold border-l border-slate-200 ${coOdiPanelViewMode === 'layoutDistOnly' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                          onClick={() => setCoOdiPanelViewMode('layoutDistOnly')}
+                          title="只看：圈定范围分布对比（方案）"
+                        >
+                          方案
                         </button>
                       </div>
 
-                      <button
-                        className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border ${coOdiAnalysisBusy ? 'bg-slate-200 text-slate-500 border-slate-200' : 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700'}`}
-                        type="button"
-                        disabled={coOdiAnalysisBusy}
-                        onClick={() => handleCocontrolOdiAnalysis({ force: false })}
-                      >
-                        {coOdiAnalysisBusy ? '计算中…' : '刷新分析'}
-                      </button>
+                      {coOdiPanelViewMode !== 'layoutDistOnly' ? (
+                        <>
+                          <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                            网格步长
+                            <input
+                              className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={coOdiAnalysisGridStepM}
+                              onChange={(e) => setCoOdiAnalysisGridStepM(Number(e.target.value))}
+                            />
+                            m
+                          </div>
 
-                      <button
-                        className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
-                        type="button"
-                        onClick={() => { setCoOdiAnalysisDebugOpen(true); setCoOdiAnalysisDebugCopyStatus(''); }}
-                      >
-                        计算过程
-                      </button>
+                          <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                            阈值
+                            <input
+                              className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={coOdiAnalysisThresholds.t1}
+                              onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t1: Number(e.target.value) }))}
+                            />
+                            <input
+                              className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={coOdiAnalysisThresholds.t2}
+                              onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t2: Number(e.target.value) }))}
+                            />
+                            <input
+                              className="w-16 px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                              type="number"
+                              min={0}
+                              max={1}
+                              step={0.01}
+                              value={coOdiAnalysisThresholds.t3}
+                              onChange={(e) => setCoOdiAnalysisThresholds((v) => ({ ...v, t3: Number(e.target.value) }))}
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                            排序
+                            <select
+                              className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px]"
+                              value={coOdiAnalysisSortKey}
+                              onChange={(e) => setCoOdiAnalysisSortKey(e.target.value)}
+                            >
+                              <option value="p90">P90</option>
+                              <option value="p95">P95</option>
+                              <option value="mean">Mean</option>
+                              <option value="exceedT2">≥T2</option>
+                              <option value="exceedT3">≥T3</option>
+                            </select>
+                            <button
+                              className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] hover:bg-slate-100"
+                              type="button"
+                              onClick={() => setCoOdiAnalysisSortDesc((v) => !v)}
+                            >
+                              {coOdiAnalysisSortDesc ? '降序' : '升序'}
+                            </button>
+                          </div>
+
+                          <button
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold border ${coOdiAnalysisBusy ? 'bg-slate-200 text-slate-500 border-slate-200' : 'bg-indigo-600 text-white border-indigo-700 hover:bg-indigo-700'}`}
+                            type="button"
+                            disabled={coOdiAnalysisBusy}
+                            onClick={() => handleCocontrolOdiAnalysis({ force: false })}
+                          >
+                            {coOdiAnalysisBusy ? '计算中…' : '刷新分析'}
+                          </button>
+
+                          <button
+                            className="px-3 py-1.5 rounded-lg text-[11px] font-bold border border-slate-200 bg-white hover:bg-slate-100"
+                            type="button"
+                            onClick={() => { setCoOdiAnalysisDebugOpen(true); setCoOdiAnalysisDebugCopyStatus(''); }}
+                          >
+                            计算过程
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   )}
                   {!coAnalysisCollapsed && (
                     <div className="text-[10px] text-slate-400 font-mono" onClick={(e) => e.stopPropagation()}>
-                      {coOdiAnalysisResult?.ok ? '已生成' : '未生成'}
+                      {coOdiPanelViewMode === 'layoutDistOnly'
+                        ? `方案数：${Math.max(0, Math.floor(Number(coLayoutOdiDistHistory?.length) || 0))}`
+                        : (coOdiAnalysisResult?.ok ? '已生成' : '未生成')}
                     </div>
                   )}
                   <button
@@ -24969,6 +26901,10 @@ const App = () => {
 
               {!coAnalysisCollapsed && (
                 <div className="p-4">
+                  {coOdiPanelViewMode === 'layoutDistOnly' ? (
+                    renderCoLayoutDistComparePanel({ standalone: true })
+                  ) : (
+                    <>
                   <div className="lg:hidden mb-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="flex items-center gap-1 text-[10px] text-slate-500">
@@ -25313,6 +27249,10 @@ const App = () => {
                                         <div className="relative flex items-center justify-end gap-2">
                                           <div className="flex flex-wrap items-center justify-end gap-3 text-[10px] text-slate-500">
                                             <div className="flex items-center gap-1">
+                                              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: '#a7f3d0' }} />
+                                              <span>最大值变化速率</span>
+                                            </div>
+                                            <div className="flex items-center gap-1">
                                               <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#f59e0b' }} />
                                               <span>P90</span>
                                             </div>
@@ -25350,10 +27290,23 @@ const App = () => {
                                                   style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' },
                                                 }}
                                               />
+                                              <YAxis
+                                                yAxisId="rate"
+                                                orientation="right"
+                                                domain={[0, 'auto']}
+                                                tick={{ fontSize: 10 }}
+                                                label={{
+                                                  value: 'Δmax/Δpct',
+                                                  angle: -90,
+                                                  position: 'insideRight',
+                                                  style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' },
+                                                }}
+                                              />
                                               <Tooltip
                                                 formatter={(value, name) => {
                                                   if (name === 'p90') return [coAnalysisFmt01(value, 3), 'P90'];
                                                   if (name === 'max') return [coAnalysisFmt01(value, 3), '最大值'];
+                                                  if (name === 'maxRate') return [Number.isFinite(Number(value)) ? Number(value).toFixed(4) : '--', '最大值变化速率'];
                                                   if (name === 'mean') return [coAnalysisFmt01(value, 3), '平均值'];
                                                   if (name === 'exceedT2') return [coAnalysisFmtPct(value, 1), '≥T2'];
                                                   if (name === 'exceedT3') return [coAnalysisFmtPct(value, 1), '≥T3'];
@@ -25361,6 +27314,7 @@ const App = () => {
                                                   return [value, name];
                                                 }}
                                               />
+                                              <Bar yAxisId="rate" dataKey="maxRate" fill="#a7f3d0" name="maxRate" radius={[4, 4, 0, 0]} barSize={10} />
                                               <Line type="monotone" dataKey="p90" stroke="#f59e0b" strokeWidth={2} dot={{ r: 2 }} />
                                               <Line type="monotone" dataKey="max" stroke="#ef4444" strokeWidth={2} dot={{ r: 2 }} />
                                               <Line type="monotone" dataKey="mean" stroke="#3b82f6" strokeWidth={2} dot={{ r: 2 }} />
@@ -25370,6 +27324,276 @@ const App = () => {
                                         <div className="mt-1 text-[12px] text-slate-600 font-medium text-center">工作面推进ODI动态分布图</div>
                                       </div>
                                     </div>
+
+                                    {coOdiPanelViewMode === 'full' ? (
+                                    <div className="mt-6 bg-white p-4">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                          {(() => {
+                                            const snaps0 = Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [];
+                                            const metricLabelRaw = String(snaps0?.[0]?.metric ?? 'ODI');
+                                            const metricDisplayLabel = (metricLabelRaw === 'ODI*' || metricLabelRaw === 'ODI') ? 'ODI数值' : metricLabelRaw;
+                                            return (
+                                              <>
+                                                <div className="text-[11px] font-bold text-slate-700 truncate">工作面圈定范围 {metricDisplayLabel} 分布对比</div>
+                                              </>
+                                            );
+                                          })()}
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                          <button
+                                            type="button"
+                                            className={`px-2 py-1 rounded border text-[10px] font-bold ${coLayoutOdiDistBusy ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50'}`}
+                                            disabled={coLayoutOdiDistBusy}
+                                            onClick={handleCocontrolLayoutOdiDistSnapshot}
+                                            title="添加一次当前导入面圈定范围的 ODI 分布方案"
+                                          >
+                                            {coLayoutOdiDistBusy ? '统计中…' : '添加方案'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="px-2 py-1 rounded border border-slate-200 bg-white text-[10px] font-bold text-slate-600 hover:bg-slate-50"
+                                            onClick={() => { setCoLayoutOdiDistHistory([]); setCoLayoutOdiDistCheckedKeys([]); setCoLayoutOdiDistLastError(''); }}
+                                            title="清空对比方案"
+                                          >
+                                            清空
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {coLayoutOdiDistLastError ? (
+                                        <div className="mt-2 text-[10px] text-rose-600 leading-relaxed">{coLayoutOdiDistLastError}</div>
+                                      ) : null}
+
+                                      {coLayoutOdiDistHistory?.length ? (
+                                        (() => {
+                                          const snaps = Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [];
+                                          const checked = Array.isArray(coLayoutOdiDistCheckedKeys) ? coLayoutOdiDistCheckedKeys : [];
+                                          const lineColors = ['#2563eb', '#16a34a', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9', '#14b8a6', '#f97316'];
+                                          const binColors = ['#e0f2fe', '#bae6fd', '#7dd3fc', '#38bdf8', '#0ea5e9', '#0284c7', '#0369a1', '#075985', '#0c4a6e', '#082f49'];
+
+                                          const metricLabelRaw = String(snaps?.[0]?.metric ?? 'ODI');
+                                          const metricDisplayLabel = (metricLabelRaw === 'ODI*' || metricLabelRaw === 'ODI') ? 'ODI数值' : metricLabelRaw;
+                                          const statBarData = snaps.map((s, idx) => {
+                                            const label = String(s?.xLabel ?? s?.label ?? `#${idx + 1}`);
+                                            const mean = Number(s?.stats?.mean);
+                                            const p90 = Number(s?.stats?.p90);
+                                            const max = Number(s?.stats?.max);
+                                            const totalSum = Number(s?.totalSum);
+                                            return {
+                                              name: label,
+                                              mean: Number.isFinite(mean) ? mean : null,
+                                              p90: Number.isFinite(p90) ? p90 : null,
+                                              max: Number.isFinite(max) ? max : null,
+                                              totalSum: Number.isFinite(totalSum) ? totalSum : null,
+                                            };
+                                          });
+
+                                          const barData = snaps.map((s, idx) => {
+                                            const h = s?.hist10?.data ?? [];
+                                            const row = { name: String(s?.xLabel ?? s?.label ?? `#${idx + 1}`) };
+                                            for (let i = 0; i < 5; i++) {
+                                              const r = Number(h?.[i]?.ratio);
+                                              row[`b${i}`] = Number.isFinite(r) ? r : 0;
+                                            }
+                                            return row;
+                                          });
+
+                                          return (
+                                            <div className="mt-4">
+                                              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                                                <div className="w-full">
+                                                  <div className="h-64">
+                                                    <ResponsiveContainer width="100%" height="100%">
+                                                      <ComposedChart data={statBarData} margin={{ top: 10, right: 12, bottom: 8, left: 0 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" />
+                                                        <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
+                                                        <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} label={{ value: 'ODI数值', angle: -90, position: 'insideLeft', style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' } }} />
+                                                        <YAxis yAxisId="sum" orientation="right" domain={[0, 'auto']} tick={{ fontSize: 10 }} label={{ value: '区域ODI总计', angle: -90, position: 'insideRight', style: { fill: '#475569', fontSize: 10, fontWeight: 700, textAnchor: 'middle' } }} />
+                                                        <Tooltip
+                                                          formatter={(value, name) => {
+                                                            if (name === 'mean') return [coAnalysisFmt01(value, 3), '平均值'];
+                                                            if (name === 'p90') return [coAnalysisFmt01(value, 3), 'P90'];
+                                                            if (name === 'max') return [coAnalysisFmt01(value, 3), 'ODI极值'];
+                                                            if (name === 'totalSum') return [Number.isFinite(Number(value)) ? Number(value).toFixed(2) : '--', 'ODI总计'];
+                                                            return [value, name];
+                                                          }}
+                                                        />
+                                                        <Bar dataKey="mean" fill="#60a5fa" name="mean" barSize={10} radius={[4, 4, 0, 0]} />
+                                                        <Bar dataKey="p90" fill="#f59e0b" name="p90" barSize={10} radius={[4, 4, 0, 0]} />
+                                                        <Bar dataKey="max" fill="#ef4444" name="max" barSize={10} radius={[4, 4, 0, 0]} />
+                                                        <Bar yAxisId="sum" dataKey="totalSum" fill="#8b5cf6" name="totalSum" barSize={10} radius={[4, 4, 0, 0]} />
+                                                      </ComposedChart>
+                                                    </ResponsiveContainer>
+                                                  </div>
+                                                  <div className="mt-2 text-[11px] text-slate-600 font-bold text-center">统计对比（mean / P90 / max + 区域累计总值）</div>
+                                                </div>
+
+                                                <div className="w-full">
+                                                  <div className="h-64">
+                                                    <ResponsiveContainer width="100%" height="100%">
+                                                      <BarChart data={barData} margin={{ top: 10, right: 12, bottom: 8, left: 0 }}>
+                                                        <CartesianGrid strokeDasharray="3 3" />
+                                                        <XAxis dataKey="name" tick={{ fontSize: 10 }} interval={0} />
+                                                        <YAxis domain={[0, 1]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`} />
+                                                        <Tooltip
+                                                          formatter={(value, name) => {
+                                                            const idx = Number(String(name || '').replace(/^b/, ''));
+                                                            const lo = Number.isFinite(idx) ? (idx / 5) : null;
+                                                            const hi = Number.isFinite(idx) ? ((idx + 1) / 5) : null;
+                                                            const label = (Number.isFinite(lo) && Number.isFinite(hi)) ? `${lo.toFixed(1)}~${hi.toFixed(1)}` : String(name);
+                                                            return [coAnalysisFmtPct(value, 1), label];
+                                                          }}
+                                                        />
+                                                        {Array.from({ length: 5 }, (_, i) => (
+                                                          <Bar
+                                                            key={`b${i}`}
+                                                            dataKey={`b${i}`}
+                                                            stackId="a"
+                                                            fill={binColors[i % binColors.length]}
+                                                            name={`b${i}`}
+                                                          />
+                                                        ))}
+                                                      </BarChart>
+                                                    </ResponsiveContainer>
+                                                  </div>
+                                                  <div className="mt-2 text-[11px] text-slate-600 font-bold text-center">{metricDisplayLabel} 分箱占比（5档，100%堆叠）</div>
+                                                </div>
+                                              </div>
+
+                                              <div className="mt-4">
+                                                <div className="flex items-center justify-between gap-3">
+                                                  <div className="text-[11px] font-bold text-slate-700">数据表格（方案概览）</div>
+                                                  <div className="flex items-center gap-2">
+                                                    <button
+                                                      type="button"
+                                                      className={`px-2 py-1 rounded border text-[10px] font-bold ${(!coLayoutOdiDistUndoPack?.history?.length) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+                                                      disabled={!coLayoutOdiDistUndoPack?.history?.length}
+                                                      onClick={() => {
+                                                        const pack = coLayoutOdiDistUndoPack;
+                                                        if (!pack?.history?.length) return;
+                                                        setCoLayoutOdiDistHistory(pack.history);
+                                                        setCoLayoutOdiDistCheckedKeys(Array.isArray(pack.checkedKeys) ? pack.checkedKeys : []);
+                                                        setCoLayoutOdiDistUndoPack(null);
+                                                      }}
+                                                      title="撤回上一次删除"
+                                                    >
+                                                      撤回删除
+                                                    </button>
+
+                                                    <button
+                                                      type="button"
+                                                      className={`px-2 py-1 rounded border text-[10px] font-bold ${(!Array.isArray(coLayoutOdiDistCheckedKeys) || coLayoutOdiDistCheckedKeys.length === 0) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border-rose-200 text-rose-700 hover:border-rose-400 hover:bg-rose-50'}`}
+                                                      disabled={!Array.isArray(coLayoutOdiDistCheckedKeys) || coLayoutOdiDistCheckedKeys.length === 0}
+                                                      onClick={() => {
+                                                        const checked = Array.isArray(coLayoutOdiDistCheckedKeys) ? coLayoutOdiDistCheckedKeys : [];
+                                                        if (!checked.length) return;
+                                                        setCoLayoutOdiDistUndoPack({
+                                                          history: Array.isArray(coLayoutOdiDistHistory) ? coLayoutOdiDistHistory : [],
+                                                          checkedKeys: checked,
+                                                          at: Date.now(),
+                                                        });
+                                                        const set = new Set(checked.map((k) => String(k ?? '')));
+                                                        setCoLayoutOdiDistHistory((prev) => {
+                                                          const cur = Array.isArray(prev) ? prev : [];
+                                                          return cur.filter((s) => !set.has(String(s?.key ?? '')));
+                                                        });
+                                                        setCoLayoutOdiDistCheckedKeys([]);
+                                                        setCoLayoutOdiDistLastError('');
+                                                      }}
+                                                      title="删除已勾选的方案"
+                                                    >
+                                                      删除方案
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                                <div className="mt-2 overflow-x-auto rounded border border-slate-200">
+                                                  <table className="w-full text-[10px] table-auto">
+                                                    <thead className="bg-slate-50">
+                                                      <tr className="text-slate-600 text-center">
+                                                        <th className="px-2 py-1">序号</th>
+                                                        <th className="px-2 py-1">方案</th>
+                                                        <th className="px-2 py-1">记录时间</th>
+                                                        <th className="px-2 py-1">工作面宽度（m）</th>
+                                                        <th className="px-2 py-1">区段煤柱宽度（m）</th>
+                                                        <th className="px-2 py-1">工作面推进长度（m）</th>
+                                                        <th className="px-2 py-1">设计采高（m）</th>
+                                                        <th className="px-2 py-1">面积（m²）</th>
+                                                        <th className="px-2 py-1">储量（万吨）</th>
+                                                        <th className="px-2 py-1">ODI平均值</th>
+                                                        <th className="px-2 py-1">P90</th>
+                                                        <th className="px-2 py-1">P95</th>
+                                                        <th className="px-2 py-1">ODI极值</th>
+                                                        <th className="px-2 py-1">ODI总计</th>
+                                                      </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                      {snaps.map((s, i) => (
+                                                        <tr
+                                                          key={s?.key ?? `row-${i}`}
+                                                          className="border-t border-slate-200 hover:bg-slate-50 cursor-pointer"
+                                                          onClick={() => {
+                                                            const no = Number(s?.faceNo);
+                                                            if (Number.isFinite(no) && no >= 1) setCoSelectedTarget({ kind: 'import', no: Math.round(no) });
+                                                          }}
+                                                        >
+                                                          <td className="px-2 py-1 text-center text-slate-600">{i + 1}</td>
+                                                          <td className="px-2 py-1 text-center" onClick={(e) => e.stopPropagation()}>
+                                                            <input
+                                                              type="checkbox"
+                                                              checked={checked.includes(String(s?.key ?? ''))}
+                                                              onChange={(e) => {
+                                                                const k = String(s?.key ?? '');
+                                                                const nextChecked = e.target.checked;
+                                                                setCoLayoutOdiDistCheckedKeys((prev) => {
+                                                                  const cur = Array.isArray(prev) ? prev : [];
+                                                                  if (!k) return cur;
+                                                                  const has = cur.includes(k);
+                                                                  if (nextChecked && !has) return [...cur, k];
+                                                                  if (!nextChecked && has) return cur.filter((x) => x !== k);
+                                                                  return cur;
+                                                                });
+
+                                                                if (nextChecked) {
+                                                                  const no = Number(s?.faceNo);
+                                                                  if (Number.isFinite(no) && no >= 1) setCoSelectedTarget({ kind: 'import', no: Math.round(no) });
+                                                                }
+                                                              }}
+                                                            />
+                                                          </td>
+                                                          <td className="px-2 py-1 text-center">
+                                                            <div className="flex items-center justify-center gap-2">
+                                                              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: lineColors[i % lineColors.length] }} />
+                                                              <span className="text-slate-800 font-medium truncate">{String(s?.timeStr ?? s?.label ?? `#${i + 1}`)}</span>
+                                                            </div>
+                                                          </td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.workfaceWidthM)) ? Number(s.workfaceWidthM) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.sectionPillarWidthM)) ? Number(s.sectionPillarWidthM) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.advanceLengthM)) ? Number(s.advanceLengthM) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.scheme?.miningHeightM)) ? Number(s.scheme.miningHeightM).toFixed(2) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.areaM2)) ? Math.round(Number(s.areaM2)) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.reservesWanTon)) ? Number(s.reservesWanTon).toFixed(2) : '--'}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.mean, 3)}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.p90, 3)}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.p95, 3)}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{coAnalysisFmt01(s?.stats?.max, 3)}</td>
+                                                          <td className="px-2 py-1 text-center text-slate-700">{Number.isFinite(Number(s?.totalSum)) ? Number(s.totalSum).toFixed(2) : '--'}</td>
+                                                        </tr>
+                                                      ))}
+                                                    </tbody>
+                                                  </table>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          );
+                                        })()
+                                      ) : (
+                                        <div className="mt-3 text-[11px] text-slate-500">
+                                          暂无对比方案：点击右侧“ODI分布统计（当前导入面）”或本卡片右上角“添加方案”。
+                                        </div>
+                                      )}
+                                    </div>
+                                    ) : null}
 
                                     {coOdiAnalysisExportOpen ? (
                                       (() => {
@@ -25414,13 +27638,15 @@ const App = () => {
                                         const curveCsv = (() => {
                                           if (!opts.includeSelectedCurve) return '';
                                           const rows = [];
-                                          rows.push(['faceKey', 'faceLabel', 'pct', 'p90', 'p95', 'mean', 'exceedT2', 'exceedT3', 'n'].map(csvCell).join(','));
+                                          rows.push(['faceKey', 'faceLabel', 'pct', 'max', 'maxRate', 'p90', 'p95', 'mean', 'exceedT2', 'exceedT3', 'n'].map(csvCell).join(','));
                                           const data = selected?.curve ?? [];
                                           for (const d of data) {
                                             rows.push([
                                               faceKey,
                                               faceLabel,
                                               Number.isFinite(Number(d?.pct)) ? Number(d.pct) : '',
+                                              Number.isFinite(Number(d?.max)) ? Number(d.max) : 0,
+                                              Number.isFinite(Number(d?.maxRate)) ? Number(d.maxRate) : '',
                                               Number.isFinite(Number(d?.p90)) ? Number(d.p90) : 0,
                                               Number.isFinite(Number(d?.p95)) ? Number(d.p95) : 0,
                                               Number.isFinite(Number(d?.mean)) ? Number(d.mean) : 0,
@@ -25567,6 +27793,8 @@ const App = () => {
                         })()}
                       </>
                     )}
+                    </>
+                  )}
                 </div>
               )}
             </section>
@@ -26096,7 +28324,7 @@ const App = () => {
                           type="button"
                         >
                           {(measuredZoningResult?.scenario === activeTab && measuredZoningResult?.bins?.length === 5)
-                            ? '重新计算实测分区'
+                            ? '启动实测数据约束分区'
                             : '启动实测约束分区'}
                         </button>
 
@@ -26699,8 +28927,10 @@ const App = () => {
                             <Settings size={14} className="text-emerald-600" />
                             <span className="text-[13px] font-black text-slate-700 uppercase tracking-wider">原设计方案参数</span>
                           </div>
-                          <div className={`text-[10px] font-mono ${hasOdiInterpolation ? 'text-emerald-700' : 'text-amber-700'}`}>
-                            {hasOdiInterpolation ? 'ODI 插值已就绪' : '未检测到 ODI 插值'}
+                          <div className={`text-[10px] font-mono ${hasOdiInterpolation ? (coOdiInterpolationStale ? 'text-amber-700' : 'text-emerald-700') : 'text-amber-700'}`}>
+                            {hasOdiInterpolation
+                              ? (coOdiInterpolationStale ? 'ODI 插值已过期（需重算）' : 'ODI 插值已就绪')
+                              : '未检测到 ODI 插值'}
                           </div>
                         </div>
 
@@ -26801,17 +29031,59 @@ const App = () => {
                             </button>
                           </div>
 
+                          {layoutConfirmed ? (
+                            <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-600">
+                              布局已确认：下方为“布局口径统计”（不叠加生产参数）。生产参数方案对比请使用生产层“ODI全局计算 / ODI分析”。
+                            </div>
+                          ) : null}
+
                           <button
-                            className="mt-2 w-full py-2 rounded-xl font-bold text-[11px] border bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
-                            onClick={handleCocontrolComputeOdiAll}
+                            className={`mt-2 w-full py-2 rounded-xl font-bold text-[11px] border transition-colors ${layoutConfirmed ? 'bg-white border-slate-200 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50' : 'bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50'}`}
+                            onClick={() => {
+                              // 入口：仅展示“圈定范围 ODI 分布对比（5档）+ 方案概览表”
+                              if (layoutConfirmed) {
+                                const ok = window.confirm('布局已确认：继续执行“布局口径 ODI 分布统计”可能会切换方案口径（必要时清空当前生产层方案记录）。是否继续？');
+                                if (!ok) return;
+                              }
+                              setCoOdiPanelViewMode('layoutDistOnly');
+                              openCoAnalysisPanel();
+                              handleCocontrolLayoutOdiDistSnapshot();
+                            }}
                             type="button"
-                            title="执行：全参提取（含钻孔点+评价点）→ ODI 计算 → ODI 插值场自动更新（固定默认权重）"
+                            title={layoutConfirmed
+                              ? '布局口径统计（布局已确认仍可用）：圈定范围网格采样（不生成评价点/不叠加开采参数）→ ODI_raw → 统一标尺映射 → 输出分布方案（记录）'
+                              : '布局阶段统计：圈定范围网格采样（不生成评价点/不叠加开采参数）→ ODI_raw → 统一标尺映射 → 输出分布方案（记录）'}
                           >
-                            ODI计算（全参提取 + 插值）
+                            {coLayoutOdiDistBusy ? '统计中…' : 'ODI分布统计（当前导入面）'}
+                          </button>
+
+                          <button
+                            className={`mt-2 w-full py-2 rounded-xl font-bold text-[11px] border transition-colors ${layoutConfirmed ? 'bg-white border-slate-200 text-slate-700 hover:border-indigo-300 hover:bg-indigo-50' : 'bg-white border-indigo-200 text-indigo-700 hover:border-indigo-400 hover:bg-indigo-50'}`}
+                            onClick={() => {
+                              // 批量统计：基于当前 ODI 插值场，对所有导入面圈定范围做分布统计（用于布局对比）
+                              if (layoutConfirmed) {
+                                const ok = window.confirm('布局已确认：继续执行“布局口径批量统计”可能会切换方案口径（必要时清空当前生产层方案记录）。是否继续？');
+                                if (!ok) return;
+                              }
+                              setCoOdiPanelViewMode('layoutDistOnly');
+                              openCoAnalysisPanel();
+                              handleCocontrolLayoutOdiFieldDistAll();
+                            }}
+                            type="button"
+                            title={layoutConfirmed
+                              ? '布局口径批量统计（布局已确认仍可用）：基于当前 ODI 插值场，对所有导入面圈定范围做分布统计（用于布局对比）'
+                              : '布局阶段批量统计：基于当前 ODI 插值场，对所有导入面圈定范围做分布统计（用于布局对比）'}
+                          >
+                            {coLayoutOdiDistBusy ? '统计中…' : 'ODI批量统计（布局层）'}
                           </button>
                           <div className="mt-2 text-[10px] text-slate-500">
-                            导入面数量：{workfaceCount}；评价点：{generatedPoints?.totalPoints ?? 0}
+                            导入面数量：{workfaceCount}；对比方案数：{coLayoutOdiDistHistory.length}
                           </div>
+                          {coLayoutOdiDistLastError ? (
+                            <div className="mt-2 text-[10px] text-rose-600 leading-relaxed">
+                              {coLayoutOdiDistLastError}
+                            </div>
+                          ) : null}
                         </div>
 
                         {layoutNeedsReconfirm && (
@@ -26945,17 +29217,36 @@ const App = () => {
                           </div>
                         </div>
 
-                        <button
-                          className="w-full py-3 rounded-2xl font-bold text-sm transition-all active:scale-[0.99] border bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
-                          onClick={() => {
-                            if (!hasSelected) return;
-                            coConfirmLayoutForSelected();
-                          }}
-                          type="button"
-                          disabled={!hasSelected}
-                        >
-                          布局确认
-                        </button>
+                        <div className="grid grid-cols-2 gap-3">
+                          <button
+                            type="button"
+                            disabled={coBatchOdiComputeBusy || !canGeneratePoints}
+                            onClick={() => {
+                              if (coBatchOdiComputeBusy) return;
+                              if (!canGeneratePoints) return;
+                              handleCocontrolBatchOdiCompute();
+                            }}
+                            className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(coBatchOdiComputeBusy || !canGeneratePoints) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
+                            title={!canGeneratePoints
+                              ? '请先导入钻孔坐标；并确保已有导入工作面坐标或规划面坐标'
+                              : 'ODI计算：自动重生成评价点（包含所有工作面）并执行全参提取 + ODI 计算，随后刷新分析结果'}
+                          >
+                            {coBatchOdiComputeBusy ? '计算中…' : 'ODI计算'}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={!hasSelected}
+                            onClick={() => {
+                              if (!hasSelected) return;
+                              coConfirmLayoutForSelected();
+                            }}
+                            className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!hasSelected) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'}`}
+                            title={!hasSelected ? '请先点选一个工作面' : '布局确认：锁定布局层参数并触发自动计算'}
+                          >
+                            布局确认
+                          </button>
+                        </div>
                       </div>
 
                       {/* 3) 协同调控参数 - 生产层 */}
@@ -27159,16 +29450,16 @@ const App = () => {
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-2 gap-2">
+                              <div className="grid grid-cols-2 gap-3">
                                 <button
                                   type="button"
                                   disabled={!dynEnabled}
                                   onClick={() => {
                                     if (!dynEnabled) return;
-                                    handleCocontrolOdiGlobalCompute();
+                                    handleCocontrolOdiGlobalUpdateField({ silent: false, recordSnapshot: true });
                                   }}
                                   className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'}`}
-                                  title="ODI全局计算：生成全局统一标尺 ODI*（缺少提取结果会提示并可跳转）"
+                                  title="ODI全局计算（更新场）：按当前生产参数重算 ODI 并更新插值显示"
                                 >
                                   ODI全局计算
                                 </button>
@@ -27178,10 +29469,10 @@ const App = () => {
                                   disabled={!dynEnabled}
                                   onClick={() => {
                                     if (!dynEnabled) return;
-                                    handleCocontrolOdiAnalysis();
+                                    handleCocontrolOdiSchemeAnalyze();
                                   }}
-                                  className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white border-indigo-600'}`}
-                                  title="生成 ODI 分析（ODI* 网格采样：排行 + 分布 + 推进曲线）"
+                                  className={`w-full py-2 rounded-xl font-bold text-[12px] transition-all active:scale-[0.99] border ${(!dynEnabled) ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'}`}
+                                  title="ODI分析（方案对比）：自动保存当前方案快照并进入对比"
                                 >
                                   ODI分析
                                 </button>
@@ -27722,6 +30013,137 @@ const App = () => {
         </div>
       </aside>
 
+      {/* 导出分析报告：按当前中部板块抽取关键数据 */}
+      {showExportAnalysisReportModal && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            onClick={closeExportAnalysisReportModal}
+          ></div>
+          <div className="relative w-full max-w-4xl mx-4 bg-white/85 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/60 flex flex-col max-h-[88vh]">
+            <div className="p-6 pb-0">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-lg font-black text-slate-800 truncate">导出分析报告（{exportAnalysisReportDraft?.board?.name || '未知板块'}）</div>
+                  <div className="text-[12px] text-slate-500 mt-1">
+                    生成时间：{exportAnalysisReportDraft?.meta?.generatedAtLocal || '--'}；板块标识：{exportAnalysisReportDraft?.board?.key || '--'}
+                  </div>
+                </div>
+                <button
+                  onClick={closeExportAnalysisReportModal}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  type="button"
+                  title="关闭（Esc）"
+                >
+                  关闭
+                </button>
+              </div>
+
+              {Array.isArray(exportAnalysisReportDraft?.warnings) && exportAnalysisReportDraft.warnings.length > 0 && (
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+                  <div className="text-[12px] font-black text-amber-800">提示（可能影响报告完整性）</div>
+                  <div className="mt-2 space-y-1">
+                    {exportAnalysisReportDraft.warnings.map((t, idx) => (
+                      <div key={idx} className="text-[12px] text-amber-700">• {String(t || '')}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 pt-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className={`px-3 py-2 rounded-xl text-xs font-black border transition-colors ${exportAnalysisReportViewMode === 'json' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                  onClick={() => setExportAnalysisReportViewMode('json')}
+                >
+                  JSON
+                </button>
+                <button
+                  type="button"
+                  className={`px-3 py-2 rounded-xl text-xs font-black border transition-colors ${exportAnalysisReportViewMode === 'md' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                  onClick={() => setExportAnalysisReportViewMode('md')}
+                >
+                  Markdown
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                  onClick={async () => {
+                    const payload = exportAnalysisReportDraft ?? { error: 'empty report' };
+                    const jsonText = JSON.stringify(payload, null, 2);
+                    const ok = await copyTextToClipboard(jsonText);
+                    if (!ok) window.alert('复制失败：浏览器未授予剪贴板权限。');
+                  }}
+                  title="复制 JSON 到剪贴板"
+                >
+                  复制 JSON
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const payload = exportAnalysisReportDraft ?? { error: 'empty report' };
+                    const stamp = formatNowStamp?.() ?? new Date().toISOString().replace(/[:.]/g, '-');
+                    const board = String(exportAnalysisReportDraft?.board?.key || 'board');
+                    downloadTextFile(`分析报告_${board}_${stamp}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+                  }}
+                  title="下载 JSON 文件"
+                >
+                  下载 JSON
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                  onClick={async () => {
+                    const payload = exportAnalysisReportDraft ?? { error: 'empty report' };
+                    const md = buildExportReportMarkdownSummary(payload);
+                    const ok = await copyTextToClipboard(md);
+                    if (!ok) window.alert('复制失败：浏览器未授予剪贴板权限。');
+                  }}
+                  title="复制 Markdown 摘要到剪贴板"
+                >
+                  复制 MD
+                </button>
+                <button
+                  type="button"
+                  className="px-3 py-2 rounded-xl text-xs font-black bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                  onClick={() => {
+                    const payload = exportAnalysisReportDraft ?? { error: 'empty report' };
+                    const md = buildExportReportMarkdownSummary(payload);
+                    const stamp = formatNowStamp?.() ?? new Date().toISOString().replace(/[:.]/g, '-');
+                    const board = String(exportAnalysisReportDraft?.board?.key || 'board');
+                    downloadTextFile(`分析报告_${board}_${stamp}.md`, md, 'text/markdown;charset=utf-8');
+                  }}
+                  title="下载 Markdown 摘要文件"
+                >
+                  下载 MD
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 pb-6 pt-4 overflow-y-auto custom-scrollbar">
+              <pre className="w-full whitespace-pre-wrap break-words rounded-2xl bg-slate-900 text-slate-100 text-[11px] p-4 border border-slate-800">
+{exportAnalysisReportViewMode === 'md'
+  ? buildExportReportMarkdownSummary(exportAnalysisReportDraft ?? { error: 'empty report' })
+  : JSON.stringify(buildExportReportPreviewDraft(exportAnalysisReportDraft ?? { error: 'empty report' }), null, 2)}
+              </pre>
+
+              <div className="mt-4 text-[11px] text-slate-400 leading-relaxed">
+                <div>说明：</div>
+                <div>1) 报告按“当前中部板块”抽取，不跨板块汇总。</div>
+                <div>2) JSON 下载为全量；弹窗预览会裁剪大数组，避免卡顿。</div>
+                <div>3) 插值场（ODI/煤厚）默认不导出原始网格数组（field），仅导出网格元信息与分析/点位结果。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 工程快照：保存弹窗 */}
       {showProjectSaveModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center">
@@ -27954,6 +30376,114 @@ const App = () => {
                 取消
               </button>
               <div className="text-xs text-slate-400">支持导入 .json（仅限本系统导出的工程快照）</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 数据模板帮助：下载导入/导出模板 */}
+      {showDataTemplateHelpModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center">
+          <div
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            onClick={closeDataTemplateHelpModal}
+          ></div>
+
+          <div className="relative w-full max-w-3xl mx-4 bg-white/85 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/60 flex flex-col max-h-[85vh]">
+            <div className="p-8 pb-0">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-800">数据模板与导入格式帮助</h2>
+                  <p className="text-sm text-slate-500">下载 CSV 模板后按格式填充；导入支持逗号/空格/制表符分隔，支持首行表头。</p>
+                </div>
+                <button
+                  onClick={closeDataTemplateHelpModal}
+                  className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+                  type="button"
+                  title="关闭"
+                >
+                  <span className="sr-only">关闭</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="px-8 pb-8 overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4">
+                {/* 左侧：功能列表 */}
+                <div className="bg-white/60 border border-slate-100 rounded-2xl p-3">
+                  <div className="text-xs font-bold text-slate-600 px-2 py-2">模板列表</div>
+                  <div className="space-y-1">
+                    {dataTemplateItems.map((it) => (
+                      <button
+                        key={it.key}
+                        type="button"
+                        onClick={() => setDataTemplateActiveKey(it.key)}
+                        className={`w-full text-left px-3 py-2 rounded-xl border transition-all ${it.key === activeTemplate?.key ? 'bg-blue-50/70 border-blue-200' : 'bg-white/60 border-slate-100 hover:border-slate-200 hover:bg-white'}`}
+                        title={it.desc}
+                      >
+                        <div className={`text-sm font-bold ${it.key === activeTemplate?.key ? 'text-blue-700' : 'text-slate-700'}`}>{it.title}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 leading-snug">{it.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 右侧：说明与下载 */}
+                <div className="bg-white/60 border border-slate-100 rounded-2xl p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-slate-800 truncate">{activeTemplate?.title}</div>
+                      <div className="text-[11px] text-slate-500 mt-1">{activeTemplate?.desc}</div>
+                    </div>
+                    <a
+                      className="shrink-0 px-4 py-2 rounded-xl bg-blue-600 text-white text-xs font-bold hover:bg-blue-700"
+                      href={activeTemplate?.href}
+                      download={activeTemplate?.filename}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={activeTemplate?.filename}
+                    >
+                      下载模板
+                    </a>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="text-[11px] font-bold text-slate-500">字段示例</div>
+                    <pre className="mt-2 p-3 rounded-xl bg-slate-900 text-slate-100 text-[11px] overflow-x-auto">
+{Array.isArray(activeTemplate?.format) ? activeTemplate.format.join('\n') : ''}
+                    </pre>
+                  </div>
+
+                  {Array.isArray(activeTemplate?.notes) && activeTemplate.notes.length > 0 && (
+                    <div className="mt-4">
+                      <div className="text-[11px] font-bold text-slate-500">注意事项</div>
+                      <div className="mt-2 space-y-1">
+                        {activeTemplate.notes.map((t, idx) => (
+                          <div key={idx} className="text-[11px] text-slate-600">• {t}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="mt-5 text-[11px] text-slate-400 leading-relaxed">
+                    <div>小提示：</div>
+                    <div>1) 坐标单位与主图一致（世界坐标）；建议统一为 m。</div>
+                    <div>2) 如果导入后无显示，请检查是否包含必需列、是否有非数字字符（如全角逗号已支持）。</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-100 bg-slate-50/50 rounded-b-3xl flex items-center justify-between gap-3">
+              <button
+                className="px-5 py-2.5 bg-white border border-slate-200 rounded-xl text-sm font-bold text-slate-700 hover:bg-slate-50"
+                onClick={closeDataTemplateHelpModal}
+                type="button"
+              >
+                关闭
+              </button>
+              <div className="text-xs text-slate-400">模板文件位于前端 /public/templates，可按需替换版本</div>
             </div>
           </div>
         </div>

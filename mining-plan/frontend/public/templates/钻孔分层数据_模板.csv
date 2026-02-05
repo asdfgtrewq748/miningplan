@@ -1,0 +1,6 @@
+seq,name,thickness,aquiferTag,keyLayerTag
+1,粉砂岩,8.2,,
+2,泥岩,6.0,,
+3,16-3煤,3.1,,SK1
+4,砂岩,10.5,AQ1,
+5,灰岩,7.8,,SK2

@@ -223,6 +223,64 @@ class SmartWeightedDisturbanceParams(BaseModel):
     outerBufferM: Optional[float] = 30
 
 
+def _sanitize_weighted_disturbance_params(params: Optional[SmartWeightedDisturbanceParams]) -> SmartWeightedDisturbanceParams:
+    """Sanitize and normalize disturbance parameters for determinism.
+
+    Notes:
+    - Preserve user-intended zeros (do not use `or default`).
+    - Clamp numeric ranges to prevent pathological values.
+    - Normalize (wMean, wP90, wExceed) to sum to 1 when possible.
+    """
+
+    p = params or SmartWeightedDisturbanceParams()
+
+    def _nn(x: Optional[float], default: float) -> float:
+        try:
+            v = float(x) if x is not None else float(default)
+        except Exception:
+            v = float(default)
+        if not math.isfinite(v):
+            v = float(default)
+        return v
+
+    def _nn_int(x: Optional[int], default: int) -> int:
+        try:
+            v = int(x) if x is not None else int(default)
+        except Exception:
+            v = int(default)
+        return v
+
+    step = max(1.0, _nn(p.sampleStepM, 25.0))
+    max_samples = max(100, _nn_int(p.maxSamples, 4500))
+    thr = _clamp01(_nn(p.exceedThreshold, 0.7))
+
+    w_mean = max(0.0, _nn(p.wMean, 0.50))
+    w_p90 = max(0.0, _nn(p.wP90, 0.35))
+    w_exc = max(0.0, _nn(p.wExceed, 0.15))
+    s = w_mean + w_p90 + w_exc
+    if s <= 1e-12:
+        w_mean, w_p90, w_exc = 0.50, 0.35, 0.15
+        s = w_mean + w_p90 + w_exc
+    w_mean /= s
+    w_p90 /= s
+    w_exc /= s
+
+    outer = _nn(p.outerBufferM, 30.0)
+    if not math.isfinite(outer):
+        outer = 30.0
+    outer = max(0.0, outer)
+
+    return SmartWeightedDisturbanceParams(
+        sampleStepM=step,
+        maxSamples=max_samples,
+        exceedThreshold=thr,
+        wMean=w_mean,
+        wP90=w_p90,
+        wExceed=w_exc,
+        outerBufferM=outer,
+    )
+
+
 class SmartWeightedComputeRequest(BaseModel):
     model_config = ConfigDict(extra='allow')
 
@@ -430,12 +488,24 @@ def _compute_disturbance_for_candidates(
     if not odi_pack or not odi_pack.field or not odi_pack.gridW or not odi_pack.gridH:
         return out
 
-    step = max(1.0, float(params.sampleStepM or 25.0))
-    max_samples = max(100, int(params.maxSamples or 4500))
-    thr = float(params.exceedThreshold or 0.7)
-    w_mean = float(params.wMean or 0.50)
-    w_p90 = float(params.wP90 or 0.35)
-    w_exc = float(params.wExceed or 0.15)
+    # IMPORTANT: Do not treat 0 as "unset" (avoid `or default`).
+    step = max(1.0, float(params.sampleStepM) if params.sampleStepM is not None else 25.0)
+    max_samples = max(100, int(params.maxSamples) if params.maxSamples is not None else 4500)
+    thr = _clamp01(float(params.exceedThreshold) if params.exceedThreshold is not None else 0.7)
+    w_mean = max(0.0, float(params.wMean) if params.wMean is not None else 0.50)
+    w_p90 = max(0.0, float(params.wP90) if params.wP90 is not None else 0.35)
+    w_exc = max(0.0, float(params.wExceed) if params.wExceed is not None else 0.15)
+    w_sum = w_mean + w_p90 + w_exc
+    if w_sum <= 1e-12:
+        w_mean, w_p90, w_exc = 0.50, 0.35, 0.15
+        w_sum = w_mean + w_p90 + w_exc
+    w_mean /= w_sum
+    w_p90 /= w_sum
+    w_exc /= w_sum
+    outer_buf = float(params.outerBufferM) if params.outerBufferM is not None else 30.0
+    if not math.isfinite(outer_buf):
+        outer_buf = 30.0
+    outer_buf = max(0.0, outer_buf)
 
     raw_scores: List[float] = []
     tmp_raw: Dict[str, float] = {}
@@ -449,6 +519,16 @@ def _compute_disturbance_for_candidates(
         geom = _loops_to_polygon_union(loops)
         if geom is None or geom.is_empty:
             continue
+
+        # Apply outer buffer (meters) if requested. This is part of the tuning UI
+        # and should affect the disturbance sampling domain.
+        if outer_buf > 1e-9:
+            try:
+                g2 = geom.buffer(outer_buf)
+                if g2 and (not g2.is_empty) and getattr(g2, 'area', 0.0) > 0:
+                    geom = g2
+            except Exception:
+                pass
         try:
             minx, miny, maxx, maxy = geom.bounds
         except Exception:
@@ -1603,6 +1683,8 @@ def smart_weighted_compute(req: SmartWeightedComputeRequest) -> Dict[str, Any]:
         dist_params = SmartWeightedDisturbanceParams.model_validate(dist_params_raw)
     except Exception:
         dist_params = SmartWeightedDisturbanceParams()
+    # sanitize/clamp/normalize (and reflect in derived.distParams)
+    dist_params = _sanitize_weighted_disturbance_params(dist_params)
     dist_by_sig: Dict[str, Dict[str, Any]] = {}
     dist_ms = 0.0
     if has_odi:

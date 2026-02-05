@@ -3,6 +3,20 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import './index.css'
 
+const isReactRemoveChildNotFoundError = (err) => {
+  try {
+    const msg = String(err?.message || err || '');
+    const name = String(err?.name || '');
+    const stack = String(err?.stack || '');
+    return (name === 'NotFoundError' || msg.includes('NotFoundError'))
+      && msg.includes('removeChild')
+      && msg.includes('not a child')
+      && (stack.includes('commitDeletionEffects') || stack.includes('removeChildFromContainer'));
+  } catch {
+    return false;
+  }
+};
+
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -10,10 +24,14 @@ class ErrorBoundary extends React.Component {
   }
 
   static getDerivedStateFromError(error) {
+    // 过滤：React 18 + HMR/StrictMode 场景下偶发的 DOM 删除竞态。
+    // 若在 ErrorBoundary 中降级，会导致开发态页面“看似崩溃”。
+    if (isReactRemoveChildNotFoundError(error)) return null;
     return { error };
   }
 
   componentDidCatch(error, info) {
+    if (isReactRemoveChildNotFoundError(error)) return;
     this.setState({ info });
   }
 
@@ -52,22 +70,8 @@ function GlobalErrorCatcher({ children }) {
       const err = event?.error || event?.message || event;
 
       // 过滤：React 18 + HMR/StrictMode 场景下偶发的 DOM 删除竞态。
-      // 该错误通常来自 ReactDOM 的 commitDeletionEffects，显示为：
-      // NotFoundError: Failed to execute 'removeChild' on 'Node': The node to be removed is not a child of this node.
-      // 这类错误会被我们全局捕获器误判为“致命”，从而直接把页面切到 fatal UI。
-      // 这里选择忽略它，让应用继续运行（控制台仍可看到错误）。
-      try {
-        const msg = String(err?.message || err || '');
-        const name = String(err?.name || '');
-        const stack = String(err?.stack || '');
-        const isReactRemoveChild = (name === 'NotFoundError' || msg.includes('NotFoundError'))
-          && msg.includes("removeChild")
-          && msg.includes('not a child')
-          && (stack.includes('commitDeletionEffects') || stack.includes('removeChildFromContainer'));
-        if (isReactRemoveChild) return;
-      } catch {
-        // ignore
-      }
+      // 忽略它，让应用继续运行（控制台仍可看到错误）。
+      if (isReactRemoveChildNotFoundError(err)) return;
 
       setFatal({ kind: 'error', err });
     };

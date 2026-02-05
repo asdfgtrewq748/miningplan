@@ -101,50 +101,21 @@ const GeoModelPreview = ({ data }) => {
     if (!containerRef.current || !canvasHostRef.current || !layerData || !layerData.boreholes) return;
     if (layerData.boreholes.length === 0) return;
 
-    const cleanupRenderer = () => {
-      try {
-        cancelAnimationFrame(frameIdRef.current);
-      } catch {
-        // ignore
+    const hostEl = canvasHostRef.current;
+    let disposed = false;
+
+    // 容错：若 HMR/异常导致上一次 renderer 未能清理，这里做一次“安全且最小化”的清理。
+    try {
+      const prev = rendererRef.current;
+      const prevEl = prev?.domElement;
+      if (prevEl && prevEl.parentNode === hostEl) {
+        hostEl.removeChild(prevEl);
       }
-
-      try {
-        const prevRenderer = rendererRef.current;
-        if (prevRenderer?.domElement) {
-          // 只移除 Three.js 注入的 canvas，避免破坏 React 渲染的 HUD/控件节点
-          try {
-            prevRenderer.domElement.remove();
-          } catch {
-            try {
-              const parent = prevRenderer.domElement.parentNode;
-              if (parent) parent.removeChild(prevRenderer.domElement);
-            } catch {
-              // ignore
-            }
-          }
-        }
-
-        if (canvasHostRef.current) {
-          // 确保 host 里不残留旧 canvas（host 内不包含 React 节点）
-          try {
-            while (canvasHostRef.current.firstChild) {
-              canvasHostRef.current.removeChild(canvasHostRef.current.firstChild);
-            }
-          } catch {
-            // ignore
-          }
-        }
-
-        prevRenderer?.dispose?.();
-      } catch {
-        // ignore
-      }
-
-      rendererRef.current = null;
-    };
-
-    // Cleanup previous scene
-    if (rendererRef.current) cleanupRenderer();
+      prev?.dispose?.();
+    } catch {
+      // ignore
+    }
+    rendererRef.current = null;
 
     // Scene Setup
     const scene = new THREE.Scene();
@@ -160,7 +131,8 @@ const GeoModelPreview = ({ data }) => {
     renderer.setSize(width, height);
     renderer.setPixelRatio(window.devicePixelRatio);
     renderer.shadowMap.enabled = true;
-    canvasHostRef.current.appendChild(renderer.domElement);
+    const canvasEl = renderer.domElement;
+    hostEl.appendChild(canvasEl);
     rendererRef.current = renderer;
 
     // Lights
@@ -345,7 +317,31 @@ const GeoModelPreview = ({ data }) => {
     animate();
 
     return () => {
-      cleanupRenderer();
+      if (disposed) return;
+      disposed = true;
+
+      try {
+        if (frameIdRef.current) cancelAnimationFrame(frameIdRef.current);
+      } catch {
+        // ignore
+      }
+
+      // 只移除本 effect 创建/挂载的 canvas，避免影响 React 管理的节点树。
+      try {
+        if (canvasEl && canvasEl.parentNode === hostEl) {
+          hostEl.removeChild(canvasEl);
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        renderer?.dispose?.();
+      } catch {
+        // ignore
+      }
+
+      if (rendererRef.current === renderer) rendererRef.current = null;
     };
   }, [layerData]);
 
