@@ -49,3 +49,6 @@ npm-debug.log*
 
 # Local debug artifacts
 /_debug_*.json
+
+# Local snapshots
+snapshots/*.zip
