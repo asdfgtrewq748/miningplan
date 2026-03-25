@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#35586b"/>
+    </marker>
+    <style>
+      .title { font: 700 30px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #173447; }
+      .box-title { font: 700 22px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #173447; }
+      .box-text { font: 500 16px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #355165; }
+      .small { font: 600 15px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #587385; }
+    </style>
+  </defs>
+  <rect x="0" y="0" width="1400" height="780" fill="#edf5f7"/>
+  <text x="700" y="54" text-anchor="middle" class="title">新旧规划系统版本边界示意图</text>
+
+  <rect x="90" y="120" width="560" height="520" rx="34" fill="#ffffff" stroke="#5f90a6" stroke-width="3"/>
+  <text x="370" y="170" text-anchor="middle" class="box-title">新版主系统：GeoMind NEXUS</text>
+  <text x="120" y="220" class="box-text">• 主代码：frontend + backend_python</text>
+  <text x="120" y="258" class="box-text">• 线上标题：GeoMind NEXUS 智能采掘设计系统</text>
+  <text x="120" y="296" class="box-text">• 主视图：ODI / 地质 / 规划 / 协同调控 / 接续 / 经济分析</text>
+  <text x="120" y="334" class="box-text">• 三场景：surface / aquifer / upward</text>
+  <text x="120" y="372" class="box-text">• 智能规划：效率 / 回收 / 扰动 / 加权综合</text>
+  <text x="120" y="410" class="box-text">• 接续分析：阶段1 / 阶段2 / 阶段3</text>
+  <text x="120" y="448" class="box-text">• 工程经济：现金流、NPV、回收期、单位成本</text>
+  <text x="120" y="486" class="box-text">• 导出：CAD / 图件 / 项目快照</text>
+  <rect x="130" y="530" width="480" height="80" rx="18" fill="#f2f8fb" stroke="#a9c5d1" stroke-width="2"/>
+  <text x="370" y="564" text-anchor="middle" class="small">论文主叙事、总流程图、系统架构图均应以此为准</text>
+  <text x="370" y="592" text-anchor="middle" class="small">这是本轮论文重写采用的唯一主线</text>
+
+  <rect x="750" y="180" width="560" height="400" rx="34" fill="#ffffff" stroke="#c9a97b" stroke-width="3"/>
+  <text x="1030" y="230" text-anchor="middle" class="box-title">旧版原型系统：Node 目录遗留</text>
+  <text x="780" y="280" class="box-text">• 目录：backend / server</text>
+  <text x="780" y="318" class="box-text">• 结构：Node / Express</text>
+  <text x="780" y="356" class="box-text">• 主要路由：boundary / boreholes / score / design</text>
+  <text x="780" y="394" class="box-text">• 局部版本含 upload / geology</text>
+  <text x="780" y="432" class="box-text">• 不代表当前新版平台的完整功能边界</text>
+  <text x="780" y="470" class="box-text">• 仅适合作为系统演进背景或历史实现说明</text>
+  <rect x="790" y="506" width="480" height="50" rx="16" fill="#fff7ec" stroke="#e1c49f" stroke-width="2"/>
+  <text x="1030" y="538" text-anchor="middle" class="small">不能把旧版原型直接写成新版系统论文主流程</text>
+
+  <path d="M650 380 L750 380" fill="none" stroke="#35586b" stroke-width="4" marker-end="url(#arrow)"/>
+  <text x="700" y="352" text-anchor="middle" class="small">版本演进</text>
+
+  <rect x="270" y="670" width="860" height="62" rx="20" fill="#ffffff" stroke="#c7d8de" stroke-width="2"/>
+  <text x="700" y="709" text-anchor="middle" class="small">写作规则：正文主系统写新版；旧版只在“系统演进与版本边界”中交代，不承担方法和验证主叙事。</text>
+</svg>

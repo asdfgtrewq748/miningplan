@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "message": "GNN模型训练完成",
+  "model_info": {
+    "num_boreholes": 15,
+    "num_features": 3,
+    "bounds": {
+      "x_min": 150.0,
+      "x_max": 650.0,
+      "y_min": 130.0,
+      "y_max": 480.0
+    }
+  },
+  "metrics": {
+    "thickness_mae": 0.5141,
+    "thickness_rmse": 0.6157,
+    "thickness_r2": -0.0436,
+    "floor_mae": 0.0,
+    "floor_rmse": 0.0,
+    "floor_r2": 1.0,
+    "roof_mae": 0.5141,
+    "roof_rmse": 0.6157,
+    "roof_r2": -0.0436
+  }
+}
