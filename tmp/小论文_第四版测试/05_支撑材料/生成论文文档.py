@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from docx import Document
+from docx.enum.section import WD_SECTION
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Inches, Pt
+
+
+TITLE = "测试论文标题"
+SKIP_FILES = {
+    "投稿格式对照表.md",
+    "作者与基金信息.md",
+    "参考文献候选池.md",
+    "引文映射表.md",
+    "格式模版.md",
+}
+
+
+def set_east_asia_font(run, font_name: str) -> None:
+    run.font.name = font_name
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), font_name)
+
+
+def set_columns(section, count: int) -> None:
+    sect_pr = section._sectPr
+    cols = sect_pr.xpath("./w:cols")
+    col = cols[0] if cols else OxmlElement("w:cols")
+    if not cols:
+        sect_pr.append(col)
+    col.set(qn("w:num"), str(count))
+    col.set(qn("w:space"), "425")
+
+
+def add_bookmark(paragraph, bookmark_name: str, bookmark_id: int) -> None:
+    start = OxmlElement("w:bookmarkStart")
+    start.set(qn("w:id"), str(bookmark_id))
+    start.set(qn("w:name"), bookmark_name)
+    end = OxmlElement("w:bookmarkEnd")
+    end.set(qn("w:id"), str(bookmark_id))
+    paragraph._p.append(start)
+    paragraph._p.append(end)
+
+
+def add_internal_hyperlink(paragraph, text: str, anchor: str) -> None:
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("w:anchor"), anchor)
+    run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "000000")
+    r_pr.append(color)
+    vert = OxmlElement("w:vertAlign")
+    vert.set(qn("w:val"), "superscript")
+    r_pr.append(vert)
+    run.append(r_pr)
+    t = OxmlElement("w:t")
+    t.text = text
+    run.append(t)
+    hyperlink.append(run)
+    paragraph._p.append(hyperlink)
+
+
+def strip_markdown(text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    return text.strip()
+
+
+def iter_citation_segments(text: str) -> list[tuple[str, str]]:
+    segments: list[tuple[str, str]] = []
+    pattern = re.compile(r"(\[(?:\d+(?:\s*[-,，]\s*\d+)*)\])")
+    cursor = 0
+    for match in pattern.finditer(text):
+        if match.start() > cursor:
+            segments.append(("text", strip_markdown(text[cursor:match.start()])))
+        segments.append(("cite", match.group(1)))
+        cursor = match.end()
+    if cursor < len(text):
+        segments.append(("text", strip_markdown(text[cursor:])))
+    return [(kind, value) for kind, value in segments if value]
+
+
+def find_main_markdown(manuscript_dir: Path) -> Path:
+    direct = manuscript_dir / f"{TITLE}.md"
+    if direct.exists():
+        return direct
+    for path in sorted(manuscript_dir.glob("*.md")):
+        if path.name not in SKIP_FILES:
+            return path
+    raise FileNotFoundError("未找到主论文 Markdown 文件")
+
+
+def configure_document(doc: Document) -> None:
+    section = doc.sections[0]
+    section.top_margin = Cm(2.2)
+    section.bottom_margin = Cm(2.2)
+    section.left_margin = Cm(1.9)
+    section.right_margin = Cm(1.9)
+    set_columns(section, 1)
+    normal = doc.styles["Normal"]
+    normal.font.name = "Times New Roman"
+    normal.font.size = Pt(10.5)
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+
+def add_title(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(text)
+    run.bold = True
+    run.font.size = Pt(18)
+    set_east_asia_font(run, "黑体")
+
+
+def add_meta_line(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(text)
+    run.font.size = Pt(11)
+    set_east_asia_font(run, "宋体")
+
+
+def add_label_paragraph(doc: Document, label: str, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(3)
+    label_run = p.add_run(label)
+    label_run.bold = True
+    label_run.font.size = Pt(10.5)
+    set_east_asia_font(label_run, "黑体")
+    body_run = p.add_run(text)
+    body_run.font.size = Pt(10.5)
+    set_east_asia_font(body_run, "宋体")
+
+
+def add_body_paragraph(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.first_line_indent = Cm(0.74)
+    p.paragraph_format.space_after = Pt(2)
+    for kind, value in iter_citation_segments(text):
+        if kind == "text":
+            run = p.add_run(value)
+            run.font.size = Pt(10.5)
+            set_east_asia_font(run, "宋体")
+        else:
+            add_internal_hyperlink(p, value, f"ref-{value.strip('[]')}")
+
+
+def add_heading(doc: Document, level: int, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(3)
+    run = p.add_run(text)
+    run.bold = True
+    run.font.size = Pt(13 if level == 2 else 11)
+    set_east_asia_font(run, "黑体" if level == 2 else "宋体")
+
+
+def add_list_item(doc: Document, text: str, numbered: bool) -> None:
+    style = "List Number" if numbered else "List Bullet"
+    p = doc.add_paragraph(style=style)
+    run = p.add_run(strip_markdown(text))
+    run.font.size = Pt(10.5)
+    set_east_asia_font(run, "宋体")
+
+
+def add_image(doc: Document, md_path: Path, alt: str, rel_path: str) -> None:
+    image_path = (md_path.parent / rel_path).resolve()
+    if not image_path.exists() or image_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}:
+        return
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run().add_picture(str(image_path), width=Inches(5.6))
+    if alt:
+        caption = doc.add_paragraph()
+        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = caption.add_run(alt)
+        run.italic = True
+        run.font.size = Pt(10)
+        set_east_asia_font(run, "宋体")
+
+
+def add_reference_paragraph(doc: Document, text: str, bookmark_id: int) -> None:
+    match = re.match(r"^\[(\d+)\]\s*(.*)$", text)
+    p = doc.add_paragraph()
+    p.paragraph_format.left_indent = Cm(0.74)
+    p.paragraph_format.first_line_indent = Cm(-0.74)
+    p.paragraph_format.space_after = Pt(2)
+    if not match:
+        run = p.add_run(strip_markdown(text))
+        run.font.size = Pt(9)
+        set_east_asia_font(run, "宋体")
+        return
+    ref_id, body = match.groups()
+    add_bookmark(p, f"ref-[{ref_id}]".replace("[", "").replace("]", ""), bookmark_id)
+    run = p.add_run(f"[{ref_id}] {strip_markdown(body)}")
+    run.font.size = Pt(9)
+    set_east_asia_font(run, "宋体")
+
+
+def convert(md_path: Path, docx_path: Path) -> None:
+    doc = Document()
+    configure_document(doc)
+
+    lines = md_path.read_text(encoding="utf-8").splitlines()
+    body_started = False
+    in_references = False
+    bookmark_id = 1
+
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        if line.startswith("# "):
+            add_title(doc, strip_markdown(line[2:]))
+            continue
+
+        if not body_started and line.startswith("作者："):
+            add_meta_line(doc, strip_markdown(line))
+            continue
+        if not body_started and line.startswith("单位："):
+            add_meta_line(doc, strip_markdown(line))
+            continue
+        if not body_started and line.startswith("基金项目："):
+            add_meta_line(doc, strip_markdown(line))
+            continue
+        if not body_started and line.startswith("中图分类号："):
+            add_meta_line(doc, strip_markdown(line))
+            continue
+        if not body_started and line.startswith("文献标志码："):
+            add_meta_line(doc, strip_markdown(line))
+            continue
+
+        if line.startswith("摘要："):
+            add_label_paragraph(doc, "摘要：", strip_markdown(line[3:]))
+            continue
+        if line.startswith("关键词："):
+            add_label_paragraph(doc, "关键词：", strip_markdown(line[4:]))
+            body_section = doc.add_section(WD_SECTION.CONTINUOUS)
+            body_section.top_margin = doc.sections[0].top_margin
+            body_section.bottom_margin = doc.sections[0].bottom_margin
+            body_section.left_margin = doc.sections[0].left_margin
+            body_section.right_margin = doc.sections[0].right_margin
+            set_columns(body_section, 2)
+            body_started = True
+            continue
+
+        if line.startswith("## "):
+            heading_text = strip_markdown(line[3:])
+            in_references = heading_text == "参考文献"
+            add_heading(doc, 2, heading_text)
+            body_started = True
+            continue
+
+        if line.startswith("### "):
+            add_heading(doc, 3, strip_markdown(line[4:]))
+            continue
+
+        if line.startswith("![") and "](" in line and line.endswith(")"):
+            alt = line[2: line.index("](")]
+            rel = line[line.index("](") + 2 : -1]
+            add_image(doc, md_path, strip_markdown(alt), rel)
+            continue
+
+        if line.startswith("- "):
+            add_list_item(doc, line[2:], numbered=False)
+            continue
+
+        if re.match(r"^\d+\.\s+", line) and not in_references:
+            add_list_item(doc, re.sub(r"^\d+\.\s+", "", line), numbered=True)
+            continue
+
+        if in_references:
+            add_reference_paragraph(doc, line, bookmark_id)
+            bookmark_id += 1
+        else:
+            add_body_paragraph(doc, line)
+
+    doc.save(docx_path)
+
+
+if __name__ == "__main__":
+    base = Path(__file__).resolve().parents[1]
+    manuscript_dir = base / "04_论文稿件"
+    md_path = find_main_markdown(manuscript_dir)
+    docx_path = manuscript_dir / f"{md_path.stem}.docx"
+    convert(md_path, docx_path)
+    print(f"已生成：{docx_path}")
