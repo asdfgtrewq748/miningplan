@@ -1,7 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Skill(scientific-writing)",
+      "Skill(scientific-writing:*)",
+      "Bash(grep -c '`' \"d:/xiangmu/miningplan/论文/正文/修改稿_完整版.md\")",
+      "Bash(pandoc --version)",
+      "Bash(node -e \"require\\('docx'\\)\")",
+      "Bash(npm install:*)",
+      "Bash(npm list:*)",
+      "Bash(node -e \"const {Document} = require\\('docx'\\); console.log\\('docx v9 OK'\\)\")",
+      "Bash(npm root:*)",
+      "Bash(NODE_PATH=\"C:/Users/Liu HaoTian/AppData/Roaming/npm/node_modules\" node -e \"const {Document} = require\\('docx'\\); console.log\\('docx OK'\\)\")",
+      "Bash(npm init:*)",
+      "Bash(node -e \"const {Document} = require\\('D:/xiangmu/miningplan/论文/node_modules/docx'\\); console.log\\('OK'\\)\")"
     ]
   }
 }
