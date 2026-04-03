@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <defs>
+    <style>
+      .title { font: 700 30px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #0f172a; }
+      .stage { font: 700 20px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #0f172a; }
+      .text { font: 15px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #334155; }
+      .box { rx: 20; ry: 20; stroke-width: 2.2; }
+      .line { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect width="1280" height="760" fill="#f8fafc"/>
+  <text x="640" y="54" text-anchor="middle" class="title">示意图3 规划算法协同关系</text>
+
+  <rect x="100" y="130" width="240" height="130" class="box" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="220" y="172" text-anchor="middle" class="stage">smart-efficiency</text>
+  <text x="220" y="206" text-anchor="middle" class="text">偏重效率与可施工性</text>
+  <text x="220" y="232" text-anchor="middle" class="text">搜索候选布局</text>
+
+  <rect x="520" y="130" width="240" height="130" class="box" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="640" y="172" text-anchor="middle" class="stage">smart-resource</text>
+  <text x="640" y="206" text-anchor="middle" class="text">偏重资源回收与覆盖</text>
+  <text x="640" y="232" text-anchor="middle" class="text">残煤修补与吨位评估</text>
+
+  <rect x="940" y="130" width="240" height="130" class="box" fill="#fee2e2" stroke="#dc2626"/>
+  <text x="1060" y="172" text-anchor="middle" class="stage">smart-weighted</text>
+  <text x="1060" y="206" text-anchor="middle" class="text">融合效率、回收与扰动</text>
+  <text x="1060" y="232" text-anchor="middle" class="text">NSGA-II / TopK 排序</text>
+
+  <path d="M340 195 H520" class="line"/>
+  <path d="M760 195 H940" class="line"/>
+
+  <rect x="250" y="390" width="780" height="180" class="box" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="640" y="435" text-anchor="middle" class="stage">协同逻辑</text>
+  <text x="320" y="482" class="text">1. efficiency 与 resource 分别生成候选池，代表不同工程偏好下的规划解。</text>
+  <text x="320" y="516" class="text">2. weighted 端将两类候选与 ODI 扰动场结合，形成统一多目标评价空间。</text>
+  <text x="320" y="550" class="text">3. 最终输出最佳候选、TopK 结果表以及可供前端联动展示的几何结果。</text>
+</svg>

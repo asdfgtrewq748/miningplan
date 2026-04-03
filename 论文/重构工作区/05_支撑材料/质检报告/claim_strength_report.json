@@ -1,0 +1,303 @@
+{
+  "summary": {
+    "input": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\05_支撑材料\\质检报告\\manuscript_body_only.md",
+    "generated_at_utc": "2026-04-03T07:21:35.590923+00:00",
+    "counts": {
+      "strong": 4,
+      "moderate": 26,
+      "exploratory": 8
+    },
+    "risky_strong_claim_count": 0,
+    "unlabeled_claim_candidate_count": 1
+  },
+  "report": {
+    "counts": {
+      "strong": 4,
+      "moderate": 26,
+      "exploratory": 8
+    },
+    "explicit_label_counts": {
+      "strong": 2,
+      "moderate": 22,
+      "exploratory": 8
+    },
+    "flags": [
+      {
+        "sentence": "﻿# 采区智能规划设计一体化方法与系统 作者：[待填写]   单位：[待填写]   基金项目：[待填写]   中图分类号：[待填写]   文献标志码：A    摘要：针对传统采区规划设计中地质资料处理、风险评价、方案布局、采掘接续与工程经济分析相互割裂，导致约束后置、迭代成本高和结果难以追溯的问题，本文提出一种采区智能规划设计一体化方法，并构建相应的平台化实现框架。该方法以多源数据标准化和项目快照机制为统一数据底座，将采区规划组织为参数场构建、多场景 ODI 风险表征、四模式候选规划、三阶段采掘接续以及经济闭环评价五个连续耦合环节。方法上，离散钻孔样点经插值转换为规划可调用的煤层连续参数场，地",
+        "level": "strong",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "## 0 引言  中等结论：采区规划设计位于煤矿技术决策链前端，其结果直接影响工作面布置、巷道工程量、资源回收率、生产接续组织和投资收益水平。随着煤矿智能化建设从单点应用走向平台化集成，采区规划已不再是单纯的平面布局问题，而逐步演化为涉及地质建模、风险评价、方案比选、接续组织与经济分析的复合型决策问题[1-3]。然而在现有工程实践中，钻孔与边界资料、参数场构建、风险分析、方案布局和经济评价常常分散在不同软件和表格环境中，导致数据重复录入、方案迭代周期长以及结果难以在后续分析中继续消费。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "围绕覆岩扰动、地表沉陷和含水层受损等问题，国内外学者已从采动应力重分布、裂隙演化规律、导水裂隙带发育以及沉陷预测等角度开展了大量研究[4-10]。这些研究为采区规划中的风险识别提供了重要理论支撑，但多数工作仍集中于单一场景或单一指标，尚缺乏可同时支撑地表下沉、含水层扰动和上行开采等多场景决策的统一风险表征框架。与此同时，地下采场布局优化、多目标规划和生产调度方面的研究已证明候选方案生成与多目标排序在矿山决策中具有明显优势[11-15]，但规划结果与后续接续、经济评价之间仍然存在断裂。",
+        "level": "strong",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "基于此，本文围绕采区规划设计流程割裂问题，提出一种采区智能规划设计一体化方法，并以仓库内已实现的平台系统为载体开展样例级验证。本文试图回答三个彼此关联的问题：其一，离散地质信息如何以连续参数场形式进入采区规划约束；其二，多场景覆岩扰动风险如何在同一尺度下组织并参与方案比选；其三，空间布局结果如何继续传递到接续与经济评价环节。中等结论：据此，本文的主要贡献可概括为：1.",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：构建了覆盖参数场、风险表征、方案规划、接续组织和经济评价的一体化方法链。2.",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：建立了面向地表下沉、含水层扰动和上行开采的多场景 ODI 风险组织框架，使空间风险场能够以前置约束的形式参与规划与接续评价。3.",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：基于现有样例数据完成端到端贯通验证，并明确给出样例证据边界，为后续真实矿井案例扩展和基线对照实验提供统一方法底座。",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "## 1 系统边界与总体架构  ### 1.1 研究对象与输入输出边界  中等结论：本文研究对象不是单一的布局算法，而是面向采区规划设计的一体化方法及其平台化实现。其输入对象包括采区边界、钻孔坐标、钻孔属性和相关设计参数，输出对象包括连续参数场、候选规划方案、工作面与巷道几何结果、接续组织结果、经济评价指标以及图件和结构化导出文件。探索性结论：结合现有系统能力和证据边界，本文仅对样例级链路贯通能力进行论证，不将当前结果外推为真实矿井条件下的普适最优结论。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "**表1 研究对象的输入输出与适用边界**   **Table 1 Input, output and applicability boundary of the research object**  | 类别 | 内容 | 当前证据状态 | 论文口径 | |---|---|---|---| | 输入 | 采区边界、15 个钻孔样点、分层与设计参数 | 已有样例数据 | 可作为样例级验证输入 | | 中间对象 | 煤层厚度参数场、ODI 风险场、候选规划方案集 | 已有代码与图件支撑 | 可作为方法链中间证据 | | 输出 | 3 个工作面、11 条巷道、接续与经济结果、图件与结构化文件 | ",
+        "level": "strong",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图2 采区智能规划设计一体化方法总流程](../01_可视化图汇总/主文图/图2_采区智能规划设计一体化方法总流程.png)  图2表明，一体化方法的核心并不在于增加某一个功能模块，而在于把原本分散的输入、建模、决策和评价链路统一到同一工作流中。该流程为后续的参数场构建、ODI 约束组织、多模式规划与闭环评价提供了统一框架。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 1.3 数据-模型-决策分层架构  中等结论：从实现结构上看，现有平台可以抽象为数据与项目管理层、模型与分析层、规划与决策层以及输出与交付层。数据层负责边界、钻孔、参数和项目状态的统一组织；模型层负责参数场构建、风险场计算与扩展建模；规划层负责候选方案生成、接续组织和经济评价；输出层负责图件、结构化结果和 CAD 导出。这样的分层方式强调的是工程对象在不同环节中的传递关系，而不是具体技术栈的堆叠。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图3 数据-模型-决策分层架构图](../01_可视化图汇总/主文图/图3_数据模型决策分层架构图.png)  中等结论：图3所示分层架构说明，平台价值主要体现在跨层数据复用与结果传递，而不是某个孤立模块的存在。这一结构也为本文后续按“参数场 - 风险场 - 候选方案 - 接续 - 经济”的方法逻辑组织正文提供了依据。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图4 煤层厚度插值热力图](../01_可视化图汇总/系统生成图/图2_煤层厚度插值热力图.png)  图4所示煤层厚度插值热力图表明，系统已经能够将离散钻孔厚度信息组织为连续参数场。样例数据中煤层厚度最小值为 2.8 m，最大值为 4.8 m，平均值为 3.7933 m，该参数场为后续工作面布置与风险评价提供了统一底图。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 2.2 多场景 ODI 风险表征方法  中等结论：采区规划中的风险约束不止来源于单一指标，而往往体现为地表下沉、含水层扰动和上行开采等场景下的覆岩扰动综合影响。本文采用 ODI 作为中介变量，将不同场景下的风险信息归一到可比较的统一尺度。其基本形式可表示为  $$ ODI = w_d I_d + w_o I_o + w_f I_f \\qquad （2） $$  $$ w_d + w_o + w_f = 1 \\qquad （3） $$  式中，$I_d$、$I_o$、$I_f$ 分别表示不同风险因子维度上的归一化指标，$w_d$、$w_o$、$w_f$ 为相应权重。该表达的重点不在于给出",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 2.4 三阶段采掘接续与经济闭环评价  中等结论：在一体化方法中，规划结果并不在工作面与巷道布局层停止，而是进一步进入接续组织与工程经济分析。阶段 1 完成几何对象向生产组织对象的转换；阶段 2 将 ODI 风险场翻译为时间序列风险输入；阶段 3 围绕产量、风险和工期开展候选接续方案评价。其综合接续评分可表示为  $$ S_{succ}=\\alpha P+\\beta (1-R)+\\gamma C \\qquad （5） $$  式中，$P$ 表示产量相关指标，$R$ 表示风险强度或风险峰值，$C$ 表示工期与组织可控性，$\\alpha$、$\\beta$、$\\gamma$ 为权重。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：进一步地，经济分析将接续结果映射为月度现金流与净现值：  $$ NCF_t=Rev_t-Cost_t-RiskCost_t \\qquad （6） $$  $$ NPV=\\sum_{t=1}^{T}\\frac{NCF_t}{(1+r_m)^t}-I_0 \\qquad （7） $$  式中，$NCF_t$ 为第 $t$ 月净现金流，$Rev_t$ 为收入，$Cost_t$ 为成本，$RiskCost_t$ 为风险联动成本，$I_0$ 为初始投入，$r_m$ 为月折现率。上述表达体现的不是具体会计规则，而是规划、接续与风险因素进入经济评价的基本闭环关系[19-21]。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图7 规划-接续-经济闭环评价图](../01_可视化图汇总/主文图/图7_规划接续经济闭环评价图.png)  图7表明，本文方法强调“布局结果可继续被接续与经济模块消费”，从而将原本后置的评价环节转化为与规划过程耦合的闭环链路。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 2.5 证据映射与复现约束  中等结论：本文主文证据来自固定样例输入、版本化代码快照和脚本可再生图件，而非脱离运行结果的事后文字归纳。样例输入主要包括采区边界数据、钻孔数据和设计参数；中间与输出证据包括地质建模结果、采区设计结果、GNN 训练结果及网格预测结果。本文文字整理与图件重构基于代码快照 `b0d24be` 完成，主文机制图由脚本重新生成，主文结果图则直接对应接口输出。探索性结论：当前工作区虽然已具备“同版本代码 + 同批样例数据 + 同套脚本”下的复现条件，但尚未形成面向外部发布的标准化数据包、参数锁定文件和跨环境复现说明。因此，本文关于方法有效性的表述仅限于工作区内的样例级",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "探索性结论：与常见的算法优劣比较研究不同，本文并未设计真实矿井基线方案对照，也未形成训练/测试切分下的统计显著性检验、置信区间或 effect size 报告。相应地，正文中的“验证”一词仅表示接口链路与工程对象传递关系已被样例数据贯通，不表示方法已经完成可推广的性能统计论证。",
+        "level": "exploratory",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "**表3 样例贯通验证关键结果**   **Table 3 Key results of sample end-to-end verification**  | 验证项 | 样例结果 | 解释口径 | |---|---|---| | 钻孔样点数量 | 15 个 | 支撑样例级参数场构建 | | 煤层厚度范围 | 2.8 m 至 4.8 m | 支撑厚度场插值 | | 工作面数量 | 3 个 | 说明规划可输出结构化对象 | | 巷道数量 | 11 条 | 说明几何布局链路已贯通 | | GNN 指标 | MAE=0.5141，RMSE=0.6157，R²=-0.0436 | 仅证明扩展接口可运",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图6 采区工作面与巷道布局图](../01_可视化图汇总/系统生成图/图3_采区工作面与巷道布局图.png)  图6所示结果说明，规划输出并不是抽象的评分结果，而是可继续传递到接续与经济评价环节的几何设计对象。样例中工作面编号分别为 WF-01、WF-02 和 WF-03，满足“由参数场到结构化规划对象”的链路要求。需要进一步说明的是，3 个工作面虽然均成功生成，但接口结果同时给出了“推进长度小于最小值 800.0 m”的校验提示。这意味着当前样例布局更适合被理解为可计算、可导出、可继续传递的候选设计对象，而非已经通过工程约束终校的最终生产方案。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 3.3 端到端链路贯通结果  中等结论：从整体链路看，现有系统已经能够完成“采区边界与钻孔导入 - 参数场构建 - 风险组织 - 方案规划 - 接续与经济分析 - 成果导出”的闭环流程。与只展示局部算法输出不同，这一结果更能说明一体化方法在工程组织上的价值，即每个中间结果都能够被后续模块继续消费，而不是在单个图件或单个指标处终止。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：从验证证据看，当前平台已稳定产出边界与钻孔分布图、煤层厚度插值热力图、工作面与巷道布局图，并保存相应结构化 JSON 结果。这说明本文提出的方法链已在现有样例数据条件下具备连续运行能力。需要强调的是，这一结论对应的是“方法链可运行、对象链可传递”，而不是“方案质量已优于传统方法”或“样例布局已满足全部工程约束”。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 3.4 扩展建模能力与边界说明  探索性结论：除主链路外，系统还提供基于 GNN 的扩展建模接口，用于探索小样本条件下的结构化地质预测。样例运行结果如图8所示。",
+        "level": "exploratory",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "![图8 GNN煤层厚度预测网格图](../01_可视化图汇总/系统生成图/图4_GNN煤层厚度预测网格图.png)  探索性结论：图8说明扩展建模链路已经具备输入、训练与网格输出能力，但当前训练样本仅为 15 个钻孔，所得 `MAE=0.5141`、`RMSE=0.6157`、`R²=-0.0436` 仅能证明接口可运行，不足以支撑泛化精度、工程可用性或相对优越性的强结论。因此，本研究仅将该模块作为平台扩展能力展示，而不将其纳入核心贡献和主结论。",
+        "level": "strong",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "## 4 讨论  ### 4.1 一体化方法相对于传统割裂流程的价值  中等结论：本文方法的主要价值并不在于单独提出某一种全新的插值算法或排序算法，而在于构建了一条从参数场、风险场到方案规划、接续组织和经济评价的连续方法链。与传统“先布局、后校核、再补经济”的割裂流程相比，一体化方法至少带来三方面改进：1.",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：规划输入与中间结果在统一项目上下文中组织，降低了信息重复整理成本。2.",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：ODI 风险场前置进入候选方案筛选，使风险不再只是布局完成后的附加说明。3.",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：工作面布局结果能够直接进入接续与经济分析，从而增强方案比选的完整性。上述改进目前主要体现在流程闭环和对象传递层面，其工程收益幅度仍有赖于后续实矿对照研究进一步量化。",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 4.2 当前局限性与投稿边界  探索性结论：需要指出的是，当前稿件仍然存在明确边界。首先，验证证据主要来自样例数据和现有代码运行结果，尚不具备真实矿井条件下的多案例对照基础。其次，ODI 在不同地质条件下的参数标定尚未系统展开，因此目前更适合将其描述为统一风险组织框架，而非成熟行业标准。再次，采区设计结果虽已生成 3 个工作面和 11 条巷道，但工作面推进长度仍出现“小于最小值 800.0 m”的校验提示，说明样例方案尚未达到工程终判层面的充分约束满足。最后，GNN 扩展建模链虽然可运行，但样本量过小，不能据此给出可靠精度结论；作者、基金、首页脚注等投稿元信息也仍未补齐。因此，当前工作",
+        "level": "exploratory",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "### 4.3 后续深化方向  探索性结论：为了进一步达到正式投稿要求，后续工作建议从三个方面推进：1.",
+        "level": "exploratory",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "探索性结论：引入真实矿井案例和基线方案，形成“传统流程 - 一体化方法”的对照证据，并报告可比较的工程指标。2.",
+        "level": "exploratory",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "探索性结论：对 ODI 多场景参数开展标定与敏感性分析，补充置信区间、显著性与实际效应量层面的统计报告，增强方法的可复现性与解释性。3.",
+        "level": "exploratory",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "探索性结论：完善作者信息、基金项、期刊模板细节和图表终校，使文稿达到完整投稿状态。",
+        "level": "exploratory",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：针对采区规划设计中数据处理、风险评价、方案布局、采掘接续与经济分析相互割裂的问题，本文构建了覆盖参数场、风险场、候选规划、接续组织和经济评价的一体化方法链，实现了“数据 - 模型 - 规划 - 接续 - 经济 - 导出”的连续组织。",
+        "level": "moderate",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：该方法通过多场景 ODI 中介变量将地表下沉、含水层扰动和上行开采等风险信息纳入统一框架，使风险约束能够前置进入方案生成和接续评价过程，为风险场参与采区规划提供了统一组织方式。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "中等结论：基于现有样例数据的贯通验证表明，系统能够以 15 个钻孔样点为输入，输出 3 个工作面、11 条巷道以及多类关键图件和结构化结果，说明一体化方法已具备样例级链路可行性；但该结果仍应理解为方法贯通证据，而非工程终判证据。",
+        "level": "moderate",
+        "has_evidence_marker": true,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      },
+      {
+        "sentence": "探索性结论：当前验证仍主要停留在样例层面，且工作面推进长度校验、ODI 参数标定、真实矿井案例和基线对照尚待补充，因此本文结论应理解为“方法链和平台链路已经建立”，而非“实矿条件下的最终最优结论”。",
+        "level": "exploratory",
+        "has_evidence_marker": false,
+        "has_explicit_label": true,
+        "is_claim_candidate": true
+      }
+    ],
+    "risky_strong_claims": [],
+    "unlabeled_claim_candidates": [
+      {
+        "sentence": "**表2 多场景 ODI 风险组织关系**   **Table 2 Multi-scenario ODI organization relationship**  | 场景 | 主要关注对象 | 输入依据 | ODI 在规划中的作用 | |---|---|---|---| | 地表下沉 | 地表移动与沉陷风险 | 沉陷预测与空间约束[8,24,25] | 约束工作面布置范围与强度 | | 含水层扰动 | 导水裂隙带与含水层受损 | 裂隙演化与导水带高度[5,22,23] | 参与风险场筛选与方案排序 | | 上行开采 | 上覆岩层扰动与安全边界 | 采动应力与覆岩破坏特征[4,7,10] | ",
+        "level": "none",
+        "has_evidence_marker": true,
+        "has_explicit_label": false,
+        "is_claim_candidate": true
+      }
+    ]
+  }
+}

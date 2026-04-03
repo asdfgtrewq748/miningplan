@@ -1,0 +1,37 @@
+{
+  "summary": {
+    "input": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\04_论文稿件\\采区智能规划设计一体化方法与系统.md",
+    "generated_at_utc": "2026-04-03T07:20:32.544801+00:00",
+    "missing_categories": [],
+    "missing_count": 0
+  },
+  "report": {
+    "categories": {
+      "metrics": {
+        "found": true,
+        "example": "链路已贯通 | | GNN 指标 | MAE=0.5141，RMSE=0.6157，R²=-0.0436 | 仅证明扩展接口可运行 | | 导出能力"
+      },
+      "uncertainty": {
+        "found": true,
+        "example": "矿井基线方案对照，也未形成训练/测试切分下的统计显著性检验、置信区间或 effect size 报告。相应地，正文中的“验证”一词仅表示接口链路与工"
+      },
+      "significance": {
+        "found": true,
+        "example": "并未设计真实矿井基线方案对照，也未形成训练/测试切分下的统计显著性检验、置信区间或 effect size 报告。相应地，正文中的“验证”一词仅表"
+      },
+      "effect_size": {
+        "found": true,
+        "example": "对照，也未形成训练/测试切分下的统计显著性检验、置信区间或 effect size 报告。相应地，正文中的“验证”一词仅表示接口链路与工程对象传递关系已被样例数据"
+      },
+      "sample_size": {
+        "found": true,
+        "example": "**   **Table 3 Key results of sample end-to-end verification**  | 验证项 | 样例结果"
+      },
+      "split_leakage": {
+        "found": true,
+        "example": " overburden considering rock strain-softening[J]. Scientific Reports, 2026,"
+      }
+    },
+    "missing": []
+  }
+}

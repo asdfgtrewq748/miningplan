@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1220" viewBox="0 0 1800 1220">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#315c73"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #173447; }
+      .subtitle { font: 500 18px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #537085; }
+      .box-title { font: 700 22px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #163447; }
+      .box-text { font: 500 16px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #314b5d; }
+      .note { font: 600 16px 'Microsoft YaHei', 'PingFang SC', sans-serif; fill: #2b5b6e; }
+      .group { fill: #f7fbfc; stroke: #bfd4db; stroke-width: 2.2; rx: 28; }
+      .line { stroke: #315c73; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #6c8c9b; stroke-width: 3; stroke-dasharray: 10 8; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1800" height="1220" fill="#eef5f7"/>
+  <text x="900" y="56" text-anchor="middle" class="title">GeoMind NEXUS 新版智能采掘设计系统总流程图</text>
+  <text x="900" y="88" text-anchor="middle" class="subtitle">以 frontend + backend_python 为主线，覆盖三场景分析、协同调控、智能规划、接续与经济分析</text>
+
+  <rect x="60" y="130" width="260" height="160" rx="26" fill="#ffffff" stroke="#7ba4b5" stroke-width="3"/>
+  <text x="190" y="172" text-anchor="middle" class="box-title">1 多源数据输入</text>
+  <text x="90" y="208" class="box-text">• 采区边界</text>
+  <text x="90" y="236" class="box-text">• 钻孔坐标与钻孔属性</text>
+  <text x="90" y="264" class="box-text">• 分层数据与样例文件</text>
+
+  <rect x="380" y="130" width="280" height="160" rx="26" fill="#ffffff" stroke="#7ba4b5" stroke-width="3"/>
+  <text x="520" y="172" text-anchor="middle" class="box-title">2 数据标准化与项目管理</text>
+  <text x="410" y="208" class="box-text">• 字段映射与坐标整理</text>
+  <text x="410" y="236" class="box-text">• 项目快照保存 / 恢复</text>
+  <text x="410" y="264" class="box-text">• 输入状态统一持久化</text>
+
+  <path class="line" d="M320 210 L380 210"/>
+
+  <rect x="740" y="120" width="460" height="190" class="group"/>
+  <text x="970" y="158" text-anchor="middle" class="box-title">3 三场景分析与地质认知层</text>
+  <rect x="770" y="182" width="120" height="84" rx="20" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="830" y="214" text-anchor="middle" class="box-title" style="font-size:18px">surface</text>
+  <text x="830" y="240" text-anchor="middle" class="box-text" style="font-size:14px">地表沉陷场景</text>
+  <rect x="910" y="182" width="120" height="84" rx="20" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="970" y="214" text-anchor="middle" class="box-title" style="font-size:18px">aquifer</text>
+  <text x="970" y="240" text-anchor="middle" class="box-text" style="font-size:14px">含水层场景</text>
+  <rect x="1050" y="182" width="120" height="84" rx="20" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="1110" y="214" text-anchor="middle" class="box-title" style="font-size:18px">upward</text>
+  <text x="1110" y="240" text-anchor="middle" class="box-text" style="font-size:14px">上行开采场景</text>
+  <text x="780" y="288" class="box-text">• 地质预览、参数提取、场景权重管理</text>
+  <text x="780" y="314" class="box-text">• 支撑 ODI、协同调控与风险链路</text>
+
+  <path class="line" d="M660 210 L740 210"/>
+
+  <rect x="1260" y="120" width="470" height="190" class="group"/>
+  <text x="1495" y="158" text-anchor="middle" class="box-title">4 ODI 与协同调控</text>
+  <text x="1290" y="198" class="box-text">• ODI 插值与分级响应</text>
+  <text x="1290" y="226" class="box-text">• ODI 方案排行与对比</text>
+  <text x="1290" y="254" class="box-text">• 圈定范围 ODI 分布统计</text>
+  <text x="1290" y="282" class="box-text">• 批量 ODI 计算与 ODI* 统一标尺</text>
+  <text x="1290" y="310" class="box-text">• 协同调控结果回馈规划与接续</text>
+
+  <path class="line" d="M1200 210 L1260 210"/>
+
+  <rect x="180" y="410" width="620" height="260" class="group"/>
+  <text x="490" y="452" text-anchor="middle" class="box-title">5 智能采区规划四模式</text>
+  <rect x="220" y="486" width="120" height="88" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="280" y="522" text-anchor="middle" class="box-title" style="font-size:18px">效率最优</text>
+  <text x="280" y="550" text-anchor="middle" class="box-text" style="font-size:14px">工程效率</text>
+  <rect x="360" y="486" width="120" height="88" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="420" y="522" text-anchor="middle" class="box-title" style="font-size:18px">回收最优</text>
+  <text x="420" y="550" text-anchor="middle" class="box-text" style="font-size:14px">资源回收</text>
+  <rect x="500" y="486" width="120" height="88" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="560" y="522" text-anchor="middle" class="box-title" style="font-size:18px">扰动最优</text>
+  <text x="560" y="550" text-anchor="middle" class="box-text" style="font-size:14px">覆岩扰动</text>
+  <rect x="640" y="486" width="120" height="88" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="700" y="522" text-anchor="middle" class="box-title" style="font-size:18px">综合加权</text>
+  <text x="700" y="550" text-anchor="middle" class="box-text" style="font-size:14px">weighted</text>
+  <text x="220" y="612" class="box-text">• 候选布局、覆盖率、吨位、扰动评分、NSGA-II 选择</text>
+  <text x="220" y="640" class="box-text">• 输出工作面、巷道、可视化图层与候选排序表</text>
+
+  <rect x="900" y="410" width="380" height="260" class="group"/>
+  <text x="1090" y="452" text-anchor="middle" class="box-title">6 接续分析</text>
+  <text x="930" y="500" class="box-text">• 阶段 1：工序排程与甘特图</text>
+  <text x="930" y="534" class="box-text">• 阶段 2：风险序列与 ODI / ODI*</text>
+  <text x="930" y="568" class="box-text">• 阶段 3：候选方案评分与推荐</text>
+  <text x="930" y="602" class="box-text">• 工业广场方位、回采顺序、月产量曲线</text>
+
+  <rect x="1380" y="410" width="300" height="260" class="group"/>
+  <text x="1530" y="452" text-anchor="middle" class="box-title">7 工程经济分析</text>
+  <text x="1410" y="500" class="box-text">• 按月现金流</text>
+  <text x="1410" y="534" class="box-text">• 净现值 NPV</text>
+  <text x="1410" y="568" class="box-text">• 回收期与单位成本</text>
+  <text x="1410" y="602" class="box-text">• 风险联动经济评价</text>
+
+  <path class="line" d="M970 310 L970 410"/>
+  <path class="line" d="M1495 310 L1495 410"/>
+  <path class="dash" d="M1260 250 L800 520"/>
+  <text x="1010" y="372" class="note">ODI / ODI* 反馈扰动优化与风险链</text>
+
+  <path class="line" d="M800 540 L900 540"/>
+  <path class="line" d="M1280 540 L1380 540"/>
+
+  <rect x="330" y="760" width="1140" height="250" class="group"/>
+  <text x="900" y="804" text-anchor="middle" class="box-title">8 输出与归档</text>
+  <rect x="390" y="850" width="220" height="92" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="500" y="888" text-anchor="middle" class="box-title" style="font-size:19px">设计图件输出</text>
+  <text x="500" y="916" text-anchor="middle" class="box-text" style="font-size:14px">边界、热力图、布局图</text>
+  <rect x="670" y="850" width="220" height="92" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="780" y="888" text-anchor="middle" class="box-title" style="font-size:19px">CAD / DXF 导出</text>
+  <text x="780" y="916" text-anchor="middle" class="box-text" style="font-size:14px">工程设计交付</text>
+  <rect x="950" y="850" width="220" height="92" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="1060" y="888" text-anchor="middle" class="box-title" style="font-size:19px">论文支撑材料</text>
+  <text x="1060" y="916" text-anchor="middle" class="box-text" style="font-size:14px">图件、JSON、说明文档</text>
+  <rect x="1230" y="850" width="180" height="92" rx="22" fill="#ffffff" stroke="#7ba4b5" stroke-width="2.4"/>
+  <text x="1320" y="888" text-anchor="middle" class="box-title" style="font-size:19px">项目归档</text>
+  <text x="1320" y="916" text-anchor="middle" class="box-text" style="font-size:14px">快照与复现</text>
+
+  <path class="line" d="M1090 670 L1090 760"/>
+  <path class="dash" d="M1530 670 L1240 760"/>
+  <text x="1320" y="728" class="note">接续与经济结果共同汇入最终交付</text>
+
+  <rect x="90" y="1040" width="1620" height="120" rx="26" fill="#ffffff" stroke="#c5d7dd" stroke-width="2.2"/>
+  <text x="130" y="1084" class="box-title" style="font-size:20px">论文写作采用的系统边界：</text>
+  <text x="130" y="1118" class="box-text">新版主线为 `frontend + backend_python` 的 GeoMind NEXUS 平台；旧版 `backend` / `server` 仅作为演进背景，不再作为论文主流程。</text>
+</svg>

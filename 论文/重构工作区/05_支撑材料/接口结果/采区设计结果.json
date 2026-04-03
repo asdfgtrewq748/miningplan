@@ -1,0 +1,523 @@
+{
+  "success": true,
+  "panels": [
+    {
+      "id": "WF-01",
+      "x": 717.3203578176684,
+      "y": 399.6331580281011,
+      "center_x": 466.57784434801795,
+      "center_y": 452.0832128588355,
+      "rotated_center_x": 416.6676857667447,
+      "rotated_center_y": 166.34430718705804,
+      "width": 515.1405109372782,
+      "length": 120.0,
+      "area": 52181.159921419465,
+      "points": [
+        {
+          "x": 717.3203578176684,
+          "y": 399.6331580281011
+        },
+        {
+          "x": 202.1798468803902,
+          "y": 399.6331580281011
+        },
+        {
+          "x": 202.1798468803902,
+          "y": 519.6331580281011
+        },
+        {
+          "x": 717.3203578176684,
+          "y": 519.6331580281011
+        }
+      ],
+      "avgScore": 67.5,
+      "isValid": true,
+      "validationMsg": "推进长度 515.1m 小于最小值 800.0m",
+      "faceLength": 120.0,
+      "advanceLength": 515.1
+    },
+    {
+      "id": "WF-02",
+      "x": 168.84651354705682,
+      "y": 379.6331580281011,
+      "center_x": 440.6745570964036,
+      "center_y": 319.35586442372795,
+      "rotated_center_x": 442.57097301835915,
+      "rotated_center_y": 299.0716556221656,
+      "width": 536.6122633859696,
+      "length": 120.0,
+      "area": 61822.043034887785,
+      "points": [
+        {
+          "x": 168.84651354705682,
+          "y": 379.6331580281011
+        },
+        {
+          "x": 705.4587769330265,
+          "y": 379.6331580281011
+        },
+        {
+          "x": 705.4587769330265,
+          "y": 259.6331580281011
+        },
+        {
+          "x": 168.84651354705682,
+          "y": 259.6331580281011
+        }
+      ],
+      "avgScore": 67.5,
+      "isValid": true,
+      "validationMsg": "推进长度 536.6m 小于最小值 800.0m",
+      "faceLength": 120.0,
+      "advanceLength": 536.6
+    },
+    {
+      "id": "WF-03",
+      "x": 688.7921102663597,
+      "y": 119.6331580281011,
+      "center_x": 419.44973869476524,
+      "center_y": 180.5058353427755,
+      "rotated_center_x": 463.7957914199974,
+      "rotated_center_y": 437.921684703118,
+      "width": 551.1057651697115,
+      "length": 120.0,
+      "area": 62562.51345113339,
+      "points": [
+        {
+          "x": 688.7921102663597,
+          "y": 119.6331580281011
+        },
+        {
+          "x": 137.68634509664832,
+          "y": 119.6331580281011
+        },
+        {
+          "x": 137.68634509664832,
+          "y": 239.6331580281011
+        },
+        {
+          "x": 688.7921102663597,
+          "y": 239.6331580281011
+        }
+      ],
+      "avgScore": 71.5,
+      "isValid": true,
+      "validationMsg": "推进长度 551.1m 小于最小值 800.0m",
+      "faceLength": 120.0,
+      "advanceLength": 551.1
+    }
+  ],
+  "roadways": [
+    {
+      "id": "Main-Transport",
+      "name": "运输大巷",
+      "type": "main",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 562.0832128588355
+        },
+        {
+          "x": 754.1480998166571,
+          "y": 70.50583534277553
+        }
+      ],
+      "length": 491.57737751606
+    },
+    {
+      "id": "Main-Ventilation",
+      "name": "回风大巷",
+      "type": "ventilation",
+      "path": [
+        {
+          "x": 769.1480998166571,
+          "y": 562.0832128588355
+        },
+        {
+          "x": 769.1480998166571,
+          "y": 70.50583534277553
+        }
+      ],
+      "length": 491.57737751606
+    },
+    {
+      "id": "Transport-Lane-1",
+      "name": "WF-01运输顺槽",
+      "type": "transport",
+      "workface": "WF-01",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 392.0832128588355
+        },
+        {
+          "x": 209.0075888793789,
+          "y": 392.0832128588355
+        }
+      ],
+      "length": 545.1405109372782
+    },
+    {
+      "id": "Return-Lane-1",
+      "name": "WF-01回风顺槽",
+      "type": "return",
+      "workface": "WF-01",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 512.0832128588355
+        },
+        {
+          "x": 209.0075888793789,
+          "y": 512.0832128588355
+        }
+      ],
+      "length": 545.1405109372782
+    },
+    {
+      "id": "Cut-1",
+      "name": "WF-01开切眼",
+      "type": "cut",
+      "workface": "WF-01",
+      "path": [
+        {
+          "x": 209.0075888793789,
+          "y": 512.0832128588355
+        },
+        {
+          "x": 209.0075888793789,
+          "y": 392.0832128588355
+        }
+      ],
+      "length": 120.0
+    },
+    {
+      "id": "Transport-Lane-2",
+      "name": "WF-02运输顺槽",
+      "type": "transport",
+      "workface": "WF-02",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 259.3558644237279
+        },
+        {
+          "x": 172.36842540341877,
+          "y": 259.3558644237279
+        }
+      ],
+      "length": 581.7796744132384
+    },
+    {
+      "id": "Return-Lane-2",
+      "name": "WF-02回风顺槽",
+      "type": "return",
+      "workface": "WF-02",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 379.3558644237279
+        },
+        {
+          "x": 172.36842540341877,
+          "y": 379.3558644237279
+        }
+      ],
+      "length": 581.7796744132384
+    },
+    {
+      "id": "Cut-2",
+      "name": "WF-02开切眼",
+      "type": "cut",
+      "workface": "WF-02",
+      "path": [
+        {
+          "x": 172.36842540341877,
+          "y": 379.3558644237279
+        },
+        {
+          "x": 172.36842540341877,
+          "y": 259.3558644237279
+        }
+      ],
+      "length": 120.0
+    },
+    {
+      "id": "Transport-Lane-3",
+      "name": "WF-03运输顺槽",
+      "type": "transport",
+      "workface": "WF-03",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 120.50583534277553
+        },
+        {
+          "x": 143.89685610990955,
+          "y": 120.50583534277553
+        }
+      ],
+      "length": 610.2512437067476
+    },
+    {
+      "id": "Return-Lane-3",
+      "name": "WF-03回风顺槽",
+      "type": "return",
+      "workface": "WF-03",
+      "path": [
+        {
+          "x": 754.1480998166571,
+          "y": 240.50583534277553
+        },
+        {
+          "x": 143.89685610990955,
+          "y": 240.50583534277553
+        }
+      ],
+      "length": 610.2512437067476
+    },
+    {
+      "id": "Cut-3",
+      "name": "WF-03开切眼",
+      "type": "cut",
+      "workface": "WF-03",
+      "path": [
+        {
+          "x": 143.89685610990955,
+          "y": 240.50583534277553
+        },
+        {
+          "x": 143.89685610990955,
+          "y": 120.50583534277553
+        }
+      ],
+      "length": 120.0
+    }
+  ],
+  "boundary": [
+    {
+      "x": 100.0,
+      "y": 100.0
+    },
+    {
+      "x": 700.0,
+      "y": 80.0
+    },
+    {
+      "x": 750.0,
+      "y": 500.0
+    },
+    {
+      "x": 600.0,
+      "y": 550.0
+    },
+    {
+      "x": 200.0,
+      "y": 520.0
+    },
+    {
+      "x": 100.0,
+      "y": 100.0
+    }
+  ],
+  "boreholes": [
+    {
+      "id": "ZK-101",
+      "x": 150.0,
+      "y": 130.0,
+      "rockHardness": 6.5,
+      "gasContent": 4.2,
+      "coalThickness": 3.8,
+      "groundWater": 25.0
+    },
+    {
+      "id": "ZK-102",
+      "x": 280.0,
+      "y": 210.0,
+      "rockHardness": 7.2,
+      "gasContent": 5.8,
+      "coalThickness": 4.1,
+      "groundWater": 32.0
+    },
+    {
+      "id": "ZK-103",
+      "x": 420.0,
+      "y": 180.0,
+      "rockHardness": 5.8,
+      "gasContent": 3.5,
+      "coalThickness": 3.2,
+      "groundWater": 18.0
+    },
+    {
+      "id": "ZK-104",
+      "x": 550.0,
+      "y": 250.0,
+      "rockHardness": 8.1,
+      "gasContent": 7.2,
+      "coalThickness": 4.5,
+      "groundWater": 45.0
+    },
+    {
+      "id": "ZK-105",
+      "x": 650.0,
+      "y": 320.0,
+      "rockHardness": 6.0,
+      "gasContent": 4.8,
+      "coalThickness": 3.5,
+      "groundWater": 28.0
+    },
+    {
+      "id": "ZK-106",
+      "x": 180.0,
+      "y": 280.0,
+      "rockHardness": 7.5,
+      "gasContent": 6.1,
+      "coalThickness": 4.8,
+      "groundWater": 38.0
+    },
+    {
+      "id": "ZK-107",
+      "x": 320.0,
+      "y": 350.0,
+      "rockHardness": 5.5,
+      "gasContent": 3.2,
+      "coalThickness": 2.8,
+      "groundWater": 15.0
+    },
+    {
+      "id": "ZK-108",
+      "x": 480.0,
+      "y": 400.0,
+      "rockHardness": 6.8,
+      "gasContent": 5.5,
+      "coalThickness": 4.0,
+      "groundWater": 35.0
+    },
+    {
+      "id": "ZK-109",
+      "x": 600.0,
+      "y": 450.0,
+      "rockHardness": 7.8,
+      "gasContent": 6.8,
+      "coalThickness": 4.3,
+      "groundWater": 42.0
+    },
+    {
+      "id": "ZK-110",
+      "x": 250.0,
+      "y": 450.0,
+      "rockHardness": 5.2,
+      "gasContent": 2.8,
+      "coalThickness": 3.0,
+      "groundWater": 12.0
+    },
+    {
+      "id": "ZK-111",
+      "x": 400.0,
+      "y": 480.0,
+      "rockHardness": 6.2,
+      "gasContent": 4.5,
+      "coalThickness": 3.6,
+      "groundWater": 22.0
+    },
+    {
+      "id": "ZK-112",
+      "x": 530.0,
+      "y": 380.0,
+      "rockHardness": 7.0,
+      "gasContent": 5.2,
+      "coalThickness": 4.2,
+      "groundWater": 30.0
+    },
+    {
+      "id": "ZK-113",
+      "x": 200.0,
+      "y": 180.0,
+      "rockHardness": 6.5,
+      "gasContent": 4.0,
+      "coalThickness": 3.4,
+      "groundWater": 20.0
+    },
+    {
+      "id": "ZK-114",
+      "x": 350.0,
+      "y": 150.0,
+      "rockHardness": 5.8,
+      "gasContent": 3.8,
+      "coalThickness": 3.1,
+      "groundWater": 16.0
+    },
+    {
+      "id": "ZK-115",
+      "x": 500.0,
+      "y": 200.0,
+      "rockHardness": 7.3,
+      "gasContent": 6.0,
+      "coalThickness": 4.6,
+      "groundWater": 40.0
+    }
+  ],
+  "stats": {
+    "totalArea": 176565.71640744063,
+    "count": 3,
+    "validCount": 3,
+    "invalidCount": 0,
+    "layoutDirection": "走向长壁布置，走向: 180.0°",
+    "avgFaceLength": 120.0,
+    "avgAdvanceLength": 534.3,
+    "avgScore": 68.8,
+    "miningMethod": "走向长壁后退式开采"
+  },
+  "designParams": {
+    "workfaceWidth": 120.0,
+    "pillarWidth": 20.0,
+    "boundaryMargin": 30.0
+  },
+  "miningRules": {
+    "faceLength": {
+      "min": 120.0,
+      "max": 260.0,
+      "preferred": 200.0
+    },
+    "advanceLength": {
+      "min": 800.0,
+      "max": 2500.0,
+      "preferred": 1500.0
+    },
+    "sectionPillar": {
+      "min": 15.0,
+      "max": 30.0,
+      "preferred": 20.0
+    },
+    "boundaryPillar": {
+      "min": 20.0,
+      "max": 50.0,
+      "preferred": 30.0
+    },
+    "dipAngle": {
+      "gentleMax": 8.0,
+      "inclinedMax": 25.0,
+      "steepMax": 45.0,
+      "pseudoInclineThreshold": 15.0
+    },
+    "coalThickness": {
+      "minMinable": 0.8,
+      "thinMax": 1.3,
+      "mediumMax": 3.5
+    },
+    "scoreWeights": {
+      "coal_thickness": 0.35,
+      "roof_stability": 0.25,
+      "gas_content": 0.2,
+      "water_inflow": 0.15,
+      "geological_structure": 0.05
+    },
+    "scoreThresholds": {
+      "excellent": 85.0,
+      "good": 70.0,
+      "acceptable": 60.0
+    },
+    "layoutDirection": "strike",
+    "miningMethod": "retreat"
+  }
+}

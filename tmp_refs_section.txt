@@ -1,0 +1,25 @@
+﻿[1] WANG Guofa, ZHAO Guosheng, REN Huaiwei, et al. Difficulties and pathways for high-quality development of intelligent coal mine construction[J]. Coal Science and Technology, 2024, 52(1): 1-16.
+[2] WANG Guofa, REN Huaiwei, ZHANG Deyin, et al. Research and practice of intelligent coal mine technology systems in China[J]. International Journal of Coal Science & Technology, 2022, 9(1): 1-18.
+[3] HUA Xinzhu, DUAN Yaohui, WANG Guoqiang, et al. Connotation and application paradigm of digital intelligence enabling technology for intelligent mining[J]. Industry and Mine Automation, 2024, 50(1): 1-10.
+[4] LIN Nanying, ZHANG Xiangzhen, YAN Shengming, et al. On strata damage and stress disturbance induced by coal mining[J]. Scientific Reports, 2023, 13: 12284.
+[5] ZHANG Lei, WANG Xu, QIAN Minggao, et al. Evolution characteristics of mining-induced fractures in overburden and their engineering significance[J]. Engineering Geology, 2024, 340: 107582.
+[6] LI Ming, WANG Jinzhou, CHEN Xuehua, et al. Spatiotemporal evolution patterns of mining-induced overburden fractures[J]. Theoretical and Applied Fracture Mechanics, 2025, 145: 104257.
+[7] WANG Jinzhou, ZHANG Dongsheng, FAN Gangwei, et al. Study on overburden failure characteristics and ground pressure behavior in shallow coal seam[J]. Frontiers in Earth Science, 2024, 12: 1375979.
+[8] YANG Ke, JIAN Chenggang, XIE Guangxiang, et al. Subsidence prediction of overburden strata and ground surface[J]. Scientific Reports, 2021, 11: 16252.
+[9] SINGH Rajesh, KUMAR Anupam, ROY P N S, et al. Unearthing underground mining-induced strata disturbance by electrical resistivity[J]. Environmental & Engineering Geoscience, 2023, 28(4): 361-376.
+[10] QIAO Zhifei, WANG Ping, YANG Tianhong, et al. Characteristics of overburden failure and fracture evolution in coal mining[J]. Sustainability, 2021, 13(24): 13775.
+[11] BEGHIN Lien, MOHAMMADI Sadegh, MIROYANNIS Theodoros, et al. The integrated optimization of underground stope layout designing and production scheduling[J]. International Journal of Rock Mechanics and Mining Sciences, 2021, 148: 104945.
+[12] ZHANG Wei, CAO Xinyu, LI Yang, et al. Multi-objective optimisation based on NSGA-II of mine cut-off grade[J]. International Journal of Mining Science and Technology, 2025, 35(2): 1-12.
+[13] LI Hao, WANG Sheng, CHEN Jun, et al. A multi-objective optimization model using improved NSGA-II for optimizing metal mines production process[J]. IEEE Access, 2024, 12: 898527.
+[14] CHEN Yuheng, MOHANAM KUMAR Rahul, MAHMOUD KAMEL, et al. Underground mine scheduling under uncertainty[J]. European Journal of Operational Research, 2021, 291(2): 535-551.
+[15] ZHANG Qiang, LIU Guangwei, WANG Jianguo, et al. Multi-objective optimization-based open-pit mine scheduling method[J]. Coal Science and Technology, 2022, 50(7): 76-84.
+[16] LIU Shanjun, LI Ming, ZHANG Hu, et al. Construction of digital twin system for intelligent mining in coal mines[J]. Journal of China Coal Society, 2022, 47(9): 3185-3197.
+[17] HU Qinting, WANG Wei, ZHAO Jianjun, et al. Digital twin technology of geological information in mining and geological exploration[J]. Coal Geology & Exploration, 2022, 50(11): 161-172.
+[18] WU Qun, PENG Jianzhong, YANG Chengfang, et al. 3D scene and geological modeling using integrated multi-source data[J]. Tunnelling and Underground Space Technology, 2021, 112: 103900.
+[19] PEYRAUD Florent, BLONDEL Emeline, RICHARD Axel, et al. Continuous cash flow modelling for economic evaluation and risk analysis in mine planning using Monte Carlo simulation[J]. Resources Policy, 2024, 89: 104650.
+[20] SUN Xiaoming, WANG Lei, CHEN Gang, et al. Investigation into mining economic evaluation approaches[J]. Applied Sciences, 2023, 13(15): 9011.
+[21] DIMITRAKOPOULOS Roussos, JOSEFSSON Stefan. Evaluation of mining projects subjected to economic uncertainties[J]. Resources Policy, 2022, 75: 102553.
+[22] ZHAO Bing, WANG Enliang, ZHANG Chen, et al. Evolution of overburden fractures and the water-conducting fracture zone in closely spaced coal mine seams under highly confined conditions[J]. ACS Omega, 2025, 10(15): 9744.
+[23] CHEN Wei, ZHAO Yangwen, LIAO Hongjian, et al. Analysis of water-permeable fractured zone in weakly cemented overburden[J]. Scientific Reports, 2026, 16: 45413.
+[24] WANG Jinzhou, ZHANG Dongsheng, FAN Gangwei. Dynamic movement laws and prediction of surface subsidence under thick alluvium[J]. Journal of Mining Science and Technology, 2021, 6(1): 7-14.
+[25] WANG Jiachen, ZHANG Dongsheng, FAN Gangwei. Mining strata breaking mechanics and internal-external hyperbola overall movement model[J]. Bulletin of National Natural Science Foundation of China, 2022, 36(1): 128-136.

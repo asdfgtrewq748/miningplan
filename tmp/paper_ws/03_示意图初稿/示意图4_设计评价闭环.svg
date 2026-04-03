@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <defs>
+    <style>
+      .title { font: 700 30px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #0f172a; }
+      .stage { font: 700 20px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #0f172a; }
+      .text { font: 15px 'Microsoft YaHei', 'SimHei', sans-serif; fill: #334155; }
+      .box { rx: 20; ry: 20; stroke-width: 2.2; }
+      .line { stroke: #475569; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect width="1280" height="760" fill="#f8fafc"/>
+  <text x="640" y="54" text-anchor="middle" class="title">示意图4 设计评价闭环</text>
+
+  <rect x="150" y="160" width="240" height="130" class="box" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="270" y="202" text-anchor="middle" class="stage">采区设计结果</text>
+  <text x="270" y="236" text-anchor="middle" class="text">工作面、巷道、边界约束</text>
+
+  <rect x="520" y="160" width="240" height="130" class="box" fill="#ede9fe" stroke="#7c3aed"/>
+  <text x="640" y="202" text-anchor="middle" class="stage">指标评价</text>
+  <text x="640" y="236" text-anchor="middle" class="text">扰动、回采率、几何一致性</text>
+
+  <rect x="890" y="160" width="240" height="130" class="box" fill="#ecfccb" stroke="#65a30d"/>
+  <text x="1010" y="202" text-anchor="middle" class="stage">接续与经济分析</text>
+  <text x="1010" y="236" text-anchor="middle" class="text">排产、现金流、风险修正</text>
+
+  <path d="M390 225 H520" class="line"/>
+  <path d="M760 225 H890" class="line"/>
+  <path d="M1010 290 V360 H270 V290" class="line"/>
+
+  <rect x="250" y="420" width="780" height="170" class="box" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="640" y="465" text-anchor="middle" class="stage">闭环含义</text>
+  <text x="320" y="510" class="text">评价结果不是终点，而是反向修正设计参数、规划偏好和接续方案的依据。</text>
+  <text x="320" y="544" class="text">因此论文可以把系统描述为“可迭代优化的采区规划设计平台”，而不是单次静态求解器。</text>
+</svg>

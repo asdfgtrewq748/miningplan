@@ -1,0 +1,139 @@
+{
+  "boreholes": [
+    {
+      "id": "ZK-101",
+      "x": 150.0,
+      "y": 130.0,
+      "rockHardness": 6.5,
+      "gasContent": 4.2,
+      "coalThickness": 3.8,
+      "groundWater": 25.0
+    },
+    {
+      "id": "ZK-102",
+      "x": 280.0,
+      "y": 210.0,
+      "rockHardness": 7.2,
+      "gasContent": 5.8,
+      "coalThickness": 4.1,
+      "groundWater": 32.0
+    },
+    {
+      "id": "ZK-103",
+      "x": 420.0,
+      "y": 180.0,
+      "rockHardness": 5.8,
+      "gasContent": 3.5,
+      "coalThickness": 3.2,
+      "groundWater": 18.0
+    },
+    {
+      "id": "ZK-104",
+      "x": 550.0,
+      "y": 250.0,
+      "rockHardness": 8.1,
+      "gasContent": 7.2,
+      "coalThickness": 4.5,
+      "groundWater": 45.0
+    },
+    {
+      "id": "ZK-105",
+      "x": 650.0,
+      "y": 320.0,
+      "rockHardness": 6.0,
+      "gasContent": 4.8,
+      "coalThickness": 3.5,
+      "groundWater": 28.0
+    },
+    {
+      "id": "ZK-106",
+      "x": 180.0,
+      "y": 280.0,
+      "rockHardness": 7.5,
+      "gasContent": 6.1,
+      "coalThickness": 4.8,
+      "groundWater": 38.0
+    },
+    {
+      "id": "ZK-107",
+      "x": 320.0,
+      "y": 350.0,
+      "rockHardness": 5.5,
+      "gasContent": 3.2,
+      "coalThickness": 2.8,
+      "groundWater": 15.0
+    },
+    {
+      "id": "ZK-108",
+      "x": 480.0,
+      "y": 400.0,
+      "rockHardness": 6.8,
+      "gasContent": 5.5,
+      "coalThickness": 4.0,
+      "groundWater": 35.0
+    },
+    {
+      "id": "ZK-109",
+      "x": 600.0,
+      "y": 450.0,
+      "rockHardness": 7.8,
+      "gasContent": 6.8,
+      "coalThickness": 4.3,
+      "groundWater": 42.0
+    },
+    {
+      "id": "ZK-110",
+      "x": 250.0,
+      "y": 450.0,
+      "rockHardness": 5.2,
+      "gasContent": 2.8,
+      "coalThickness": 3.0,
+      "groundWater": 12.0
+    },
+    {
+      "id": "ZK-111",
+      "x": 400.0,
+      "y": 480.0,
+      "rockHardness": 6.2,
+      "gasContent": 4.5,
+      "coalThickness": 3.6,
+      "groundWater": 22.0
+    },
+    {
+      "id": "ZK-112",
+      "x": 530.0,
+      "y": 380.0,
+      "rockHardness": 7.0,
+      "gasContent": 5.2,
+      "coalThickness": 4.2,
+      "groundWater": 30.0
+    },
+    {
+      "id": "ZK-113",
+      "x": 200.0,
+      "y": 180.0,
+      "rockHardness": 6.5,
+      "gasContent": 4.0,
+      "coalThickness": 3.4,
+      "groundWater": 20.0
+    },
+    {
+      "id": "ZK-114",
+      "x": 350.0,
+      "y": 150.0,
+      "rockHardness": 5.8,
+      "gasContent": 3.8,
+      "coalThickness": 3.1,
+      "groundWater": 16.0
+    },
+    {
+      "id": "ZK-115",
+      "x": 500.0,
+      "y": 200.0,
+      "rockHardness": 7.3,
+      "gasContent": 6.0,
+      "coalThickness": 4.6,
+      "groundWater": 40.0
+    }
+  ]
+}

@@ -1,0 +1,262 @@
+{
+  "summary": {
+    "input": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\04_论文稿件\\采区智能规划设计一体化方法与系统.md",
+    "generated_at_utc": "2026-04-03T07:20:07.177571+00:00",
+    "total": 25,
+    "verified": 25,
+    "unresolved": 0,
+    "strict": true
+  },
+  "results": [
+    {
+      "idx": 1,
+      "raw": "[1] WU Xuefei, LI Hongxia, WANG Baoli, et al. Review on improvements to the safety level of coal mines by applying intelligent coal mining[J]. Sustainability, 2022, 14(24): 16400. DOI: 10.3390/su142416400.",
+      "identifier_type": "doi",
+      "identifier": "10.3390/su142416400",
+      "status": "verified",
+      "resolved_title": "Review on Improvements to the Safety Level of Coal Mines by Applying Intelligent Coal Mining",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 2,
+      "raw": "[2] WANG Guofa, REN Huaiwei, ZHAO Guorui, et al. Research and practice of intelligent coal mine technology systems in China[J]. International Journal of Coal Science & Technology, 2022, 9(1). DOI: 10.1007/s40789-022-00491-3.",
+      "identifier_type": "doi",
+      "identifier": "10.1007/s40789-022-00491-3",
+      "status": "verified",
+      "resolved_title": "Research and practice of intelligent coal mine technology systems in China",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 3,
+      "raw": "[3] ZHANG Kexue, KANG Lei, CHEN Xuexi, et al. A review of intelligent unmanned mining current situation and development trend[J]. Energies, 2022, 15(2): 513. DOI: 10.3390/en15020513.",
+      "identifier_type": "doi",
+      "identifier": "10.3390/en15020513",
+      "status": "verified",
+      "resolved_title": "A Review of Intelligent Unmanned Mining Current Situation and Development Trend",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 4,
+      "raw": "[4] YANG Yi, LI Yingchun, WANG Lujun, et al. On strata damage and stress disturbance induced by coal mining based on physical similarity simulation experiments[J]. Scientific Reports, 2023, 13(1). DOI: 10.1038/s41598-023-42148-4.",
+      "identifier_type": "doi",
+      "identifier": "10.1038/s41598-023-42148-4",
+      "status": "verified",
+      "resolved_title": "On strata damage and stress disturbance induced by coal mining based on physical similarity simulation experiments",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 5,
+      "raw": "[5] REN Yiwei, YUAN Qiang, CHEN Jie, et al. Evolution characteristics of mining-induced fractures in overburden strata under close-multi coal seams mining based on optical fiber monitoring[J]. Engineering Geology, 2024, 343: 107802. DOI: 10.1016/j.enggeo.2024.107802.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.enggeo.2024.107802",
+      "status": "verified",
+      "resolved_title": "Evolution characteristics of mining-induced fractures in overburden strata under close-multi coal seams mining based on optical fiber monitoring",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 6,
+      "raw": "[6] YANG Xiao, SHI Longqing, QIU Mei, et al. Spatiotemporal evolution patterns of mining-induced overburden damage based on microseismic event response analysis[J]. Journal of Applied Geophysics, 2025, 242: 105876. DOI: 10.1016/j.jappgeo.2025.105876.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.jappgeo.2025.105876",
+      "status": "verified",
+      "resolved_title": "Spatiotemporal evolution patterns of mining-induced overburden damage based on microseismic event response analysis",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 7,
+      "raw": "[7] ZHANG Jie, WANG Li, YANG Tao, et al. Study on overburden failure characteristics and ground pressure behavior in shallow coal seam mining underneath the gully[J]. Frontiers in Earth Science, 2024, 12. DOI: 10.3389/feart.2024.1375979.",
+      "identifier_type": "doi",
+      "identifier": "10.3389/feart.2024.1375979",
+      "status": "verified",
+      "resolved_title": "Study on overburden failure characteristics and ground pressure behavior in shallow coal seam mining underneath the gully",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 8,
+      "raw": "[8] CAO Jian, HUANG Qingxiang, GUO Lingfei. Subsidence prediction of overburden strata and ground surface in shallow coal seam mining[J]. Scientific Reports, 2021, 11(1). DOI: 10.1038/s41598-021-98520-9.",
+      "identifier_type": "doi",
+      "identifier": "10.1038/s41598-021-98520-9",
+      "status": "verified",
+      "resolved_title": "Subsidence prediction of overburden strata and ground surface in shallow coal seam mining",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 9,
+      "raw": "[9] PRAKASH Amar, BHARTI Abhay Kumar, VERMA Aniket. Unearthing underground mining-induced strata disturbance by electrical resistivity tomography interpretation[J]. Environmental & Engineering Geoscience, 2022, 28(4): 361-369. DOI: 10.2113/eeg-d-21-00073.",
+      "identifier_type": "doi",
+      "identifier": "10.2113/eeg-d-21-00073",
+      "status": "verified",
+      "resolved_title": "Unearthing Underground Mining–Induced Strata Disturbance by Electrical Resistivity Tomography Interpretation",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 10,
+      "raw": "[10] SHI Xiuchang, ZHANG Jixing. Characteristics of overburden failure and fracture evolution in shallow buried working face with large mining height[J]. Sustainability, 2021, 13(24): 13775. DOI: 10.3390/su132413775.",
+      "identifier_type": "doi",
+      "identifier": "10.3390/su132413775",
+      "status": "verified",
+      "resolved_title": "Characteristics of Overburden Failure and Fracture Evolution in Shallow Buried Working Face with Large Mining Height",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 11,
+      "raw": "[11] FOROUGHI Sorayya, HAMIDI Jafar Khademi, MONJEZI Masoud, et al. The integrated optimization of underground stope layout designing and production scheduling incorporating a non-dominated sorting genetic algorithm (NSGA-II)[J]. Resources Policy, 2019, 63: 101408. DOI: 10.1016/j.resourpol.2019.101408.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.resourpol.2019.101408",
+      "status": "verified",
+      "resolved_title": "The integrated optimization of underground stope layout designing and production scheduling incorporating a non-dominated sorting genetic algorithm (NSGA-II)",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 12,
+      "raw": "[12] SHAN Yang, KE Li, XIANG Jun, et al. Multi-objective optimisation based on NSGA-II of mine cut-off grade from the perspective of resource security[J]. International Journal of Mining, Reclamation and Environment, 2025: 1-20. DOI: 10.1080/17480930.2025.2532460.",
+      "identifier_type": "doi",
+      "identifier": "10.1080/17480930.2025.2532460",
+      "status": "verified",
+      "resolved_title": "Multi-objective optimisation based on NSGA-II of mine cut-off grade from the perspective of resource security",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 13,
+      "raw": "[13] GU Xiaowei, WANG Xunhong, LIU Zaobao, et al. A multi-objective optimization model using improved NSGA-II for optimizing metal mines production process[J]. IEEE Access, 2020, 8: 28847-28858. DOI: 10.1109/access.2020.2972018.",
+      "identifier_type": "doi",
+      "identifier": "10.1109/access.2020.2972018",
+      "status": "verified",
+      "resolved_title": "A Multi-Objective Optimization Model Using Improved NSGA-II for Optimizing Metal Mines Production Process",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 14,
+      "raw": "[14] NESBITT Peter, BLAKE Lewis R., LAMAS Patricio, et al. Underground mine scheduling under uncertainty[J]. European Journal of Operational Research, 2021, 294(1): 340-352. DOI: 10.1016/j.ejor.2021.01.011.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.ejor.2021.01.011",
+      "status": "verified",
+      "resolved_title": "Underground mine scheduling under uncertainty",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 15,
+      "raw": "[15] PATHIRANAGE Ishara Hewa, NEUMANN Aneta. Multi-objective evolutionary optimization for large-scale open pit mine scheduling[C]//2024 IEEE Congress on Evolutionary Computation (CEC). 2024: 1-8. DOI: 10.1109/CEC60901.2024.10612008.",
+      "identifier_type": "doi",
+      "identifier": "10.1109/CEC60901.2024.10612008",
+      "status": "verified",
+      "resolved_title": "Multi-Objective Evolutionary Optimization for Large-Scale Open Pit Mine Scheduling",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 16,
+      "raw": "[16] ZHANG Xuhui, LV Xinyuan, WANG Yan, et al. Production process management for intelligent coal mining based on digital twin[M]//Digital Twin Driven Service. 2022: 251-277. DOI: 10.1016/B978-0-323-91300-3.00008-5.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/B978-0-323-91300-3.00008-5",
+      "status": "verified",
+      "resolved_title": "Production process management for intelligent coal mining based on digital twin",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 17,
+      "raw": "[17] QU Juncong, KIZIL Mehmet S., YAHYAEI Mohsen, et al. Digital twins in the minerals industry: a comprehensive review[J]. Mining Technology, 2023, 132(4): 267-289. DOI: 10.1080/25726668.2023.2257479.",
+      "identifier_type": "doi",
+      "identifier": "10.1080/25726668.2023.2257479",
+      "status": "verified",
+      "resolved_title": "Digital twins in the minerals industry – a comprehensive review",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 18,
+      "raw": "[18] PAN Dongdong, XU Zhenhao, LU Xinming, et al. 3D scene and geological modeling using integrated multi-source spatial data: methodology, challenges, and suggestions[J]. Tunnelling and Underground Space Technology, 2020, 100: 103393. DOI: 10.1016/j.tust.2020.103393.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.tust.2020.103393",
+      "status": "verified",
+      "resolved_title": "3D scene and geological modeling using integrated multi-source spatial data: Methodology, challenges, and suggestions",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 19,
+      "raw": "[19] AHMED Haitham M., ADEWUYI Sefiu, AHMED Hussin M. A. Continuous cash flow modeling for economic evaluation and risk analysis in mine planning using Monte Carlo simulation[J]. Journal of King Abdulaziz University: Engineering Sciences, 2024, 34(2). DOI: 10.4197/eng.34-2.6.",
+      "identifier_type": "doi",
+      "identifier": "10.4197/eng.34-2.6",
+      "status": "verified",
+      "resolved_title": "Continuous Cash Flow Modeling for Economic Evaluation and Risk Analysis in Mine Planning Using Monte Carlo Simulation",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 20,
+      "raw": "[20] LI Jiaoqun, WU Tong, LU Zengxiang, et al. Investigation into mining economic evaluation approaches based on the Rosenblueth point estimate method[J]. Applied Sciences, 2023, 13(15): 9011. DOI: 10.3390/app13159011.",
+      "identifier_type": "doi",
+      "identifier": "10.3390/app13159011",
+      "status": "verified",
+      "resolved_title": "Investigation into Mining Economic Evaluation Approaches Based on the Rosenblueth Point Estimate Method",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 21,
+      "raw": "[21] DEHGHANI Hesam, ATAEE-POUR Majid, ESFAHANIPOUR Akbar. Evaluation of the mining projects under economic uncertainties using multidimensional binomial tree[J]. Resources Policy, 2014, 39: 124-133. DOI: 10.1016/j.resourpol.2014.01.003.",
+      "identifier_type": "doi",
+      "identifier": "10.1016/j.resourpol.2014.01.003",
+      "status": "verified",
+      "resolved_title": "Evaluation of the mining projects under economic uncertainties using multidimensional binomial tree",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 22,
+      "raw": "[22] LIU Xiong, ZHENG Lulin, LIU Hao, et al. Evolution of overburden fractures and the water-conducting fracture zone in closely spaced coal mine seams under highly water-rich aquifers[J]. ACS Omega, 2025. DOI: 10.1021/acsomega.5c09774.",
+      "identifier_type": "doi",
+      "identifier": "10.1021/acsomega.5c09774",
+      "status": "verified",
+      "resolved_title": "Evolution of Overburden Fractures and the Water-Conducting Fracture Zone in Closely Spaced Coal Mine Seams under Highly Water-Rich Aquifers",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 23,
+      "raw": "[23] XUE Sen, WANG Qiqing, SONG Zhen. Analysis of water-permeable fractured zone in weakly cemented overburden considering rock strain-softening[J]. Scientific Reports, 2026, 16(1). DOI: 10.1038/s41598-026-45413-4.",
+      "identifier_type": "doi",
+      "identifier": "10.1038/s41598-026-45413-4",
+      "status": "verified",
+      "resolved_title": "Analysis of water-permeable fractured zone in weakly cemented overburden considering rock strain-softening",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 24,
+      "raw": "[24] ZHU Xiaojun, ZHA Feng, GUO Guangli, et al. Mechanical prediction method of strata movement and surface subsidence in backfill-strip mining[J]. Scientific Reports, 2024, 14(1). DOI: 10.1038/s41598-024-82761-5.",
+      "identifier_type": "doi",
+      "identifier": "10.1038/s41598-024-82761-5",
+      "status": "verified",
+      "resolved_title": "Mechanical prediction method of strata movement and surface subsidence in backfill-strip mining",
+      "resolved_source": "crossref",
+      "detail": ""
+    },
+    {
+      "idx": 25,
+      "raw": "[25] KRATZSCH Helmut. Strata movement at the mining horizon[M]//Mining Subsidence Engineering. Berlin, Heidelberg: Springer, 1983: 7-40. DOI: 10.1007/978-3-642-81923-0_2.",
+      "identifier_type": "doi",
+      "identifier": "10.1007/978-3-642-81923-0_2",
+      "status": "verified",
+      "resolved_title": "Strata Movement at the Mining Horizon",
+      "resolved_source": "crossref",
+      "detail": ""
+    }
+  ]
+}
