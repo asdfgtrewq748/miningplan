@@ -1,0 +1,64 @@
+{
+  "target_seam": "16-3煤",
+  "odi_scenario": "surface",
+  "risk_source": "mindong-layout-odi",
+  "thickness_range_m": [
+    15.501,
+    43.892
+  ],
+  "panel_count": 3,
+  "roadway_count": 11,
+  "workface_labels": [
+    {
+      "label": "工作面1",
+      "advance_length_m": 515.1,
+      "face_length_m": 120.0,
+      "avg_score": 67.5
+    },
+    {
+      "label": "工作面2",
+      "advance_length_m": 536.6,
+      "face_length_m": 120.0,
+      "avg_score": 67.5
+    },
+    {
+      "label": "工作面3",
+      "advance_length_m": 551.1,
+      "face_length_m": 120.0,
+      "avg_score": 71.5
+    }
+  ],
+  "odi_stats": {
+    "scenario": "surface",
+    "selected_coal": "16-3煤",
+    "weights": {
+      "wd": 0.45,
+      "wo": 0.3,
+      "wf": 0.25
+    },
+    "smooth_passes": 2,
+    "drillholes_total": 28,
+    "coal_thickness_samples": 27,
+    "ti_samples": 28,
+    "ei_samples": 28,
+    "hi_samples": 27,
+    "di_samples": 28,
+    "eval_point_count": 47,
+    "kept_factor_keys": [
+      "Di",
+      "Ei",
+      "Hi",
+      "Mi",
+      "Ti"
+    ],
+    "odi_min": 236.1151821007673,
+    "odi_max": 391.5727306238731
+  },
+  "outputs": {
+    "png": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\01_可视化图汇总\\主文图\\候选图_采区综合空间信息与规划结果可视化界面.png",
+    "svg": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\01_可视化图汇总\\主文图\\候选图_采区综合空间信息与规划结果可视化界面.svg",
+    "odi_pack": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\05_支撑材料\\接口结果\\000_mindong_layout_odi_field.json",
+    "ascii_preview_png": "E:\\xiangmu\\miningplan\\tmp\\paper_figure_candidate_latest.png",
+    "ascii_preview_svg": "E:\\xiangmu\\miningplan\\tmp\\paper_figure_candidate_latest.svg"
+  }
+}

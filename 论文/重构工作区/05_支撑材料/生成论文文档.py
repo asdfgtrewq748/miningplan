@@ -187,6 +187,38 @@ def add_label_paragraph(doc: Document, label: str, text: str) -> None:
     set_east_asia_font(body_run, "宋体")
 
 
+def add_english_title(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_before = Pt(2)
+    p.paragraph_format.space_after = Pt(2)
+    run = p.add_run(text)
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(13)
+
+
+def add_english_meta_line(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(2)
+    run = p.add_run(text)
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(10.5)
+
+
+def add_english_label_paragraph(doc: Document, label: str, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(3)
+    label_run = p.add_run(label)
+    label_run.bold = True
+    label_run.font.name = "Times New Roman"
+    label_run.font.size = Pt(10.5)
+    body_run = p.add_run(text)
+    body_run.font.name = "Times New Roman"
+    body_run.font.size = Pt(10.5)
+
+
 def add_heading(doc: Document, level: int, text: str) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(6)
@@ -238,12 +270,12 @@ def add_image(doc: Document, md_path: Path, alt: str, rel_path: str) -> None:
         with Image.open(image_path) as img:
             img_w, img_h = img.size
         if img_w > 0 and img_h > 0:
-            max_width_inches = min(width_inches, 6.2)
-            max_height_inches = 3.9
+            max_width_inches = min(width_inches, 6.85)
+            max_height_inches = 4.85
             ratio = min(max_width_inches / img_w, max_height_inches / img_h)
             width_inches = min(max_width_inches, img_w * ratio)
     except Exception:
-        width_inches = min(width_inches, 6.0)
+        width_inches = min(width_inches, 6.7)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_after = Pt(2)
@@ -440,6 +472,10 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
     math_lines: list[str] = []
 
     pending_table_captions: list[str] = []
+    has_english_front = any(
+        line.strip().startswith(("英文题目：", "英文作者：", "英文单位：", "Abstract:", "Keywords:"))
+        for line in lines
+    )
     i = 0
     while i < len(lines):
         raw = lines[i]
@@ -497,6 +533,18 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
             add_meta_line(doc, strip_markdown(stripped))
             i += 1
             continue
+        if not body_started and stripped.startswith("英文题目："):
+            add_english_title(doc, strip_markdown(stripped[5:]))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("英文作者："):
+            add_english_meta_line(doc, strip_markdown(stripped[5:]))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("英文单位："):
+            add_english_meta_line(doc, strip_markdown(stripped[5:]))
+            i += 1
+            continue
 
         if stripped.startswith("摘要："):
             add_label_paragraph(doc, "摘要：", strip_markdown(stripped[3:]))
@@ -504,6 +552,22 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
             continue
         if stripped.startswith("关键词："):
             add_label_paragraph(doc, "关键词：", strip_markdown(stripped[4:]))
+            if not has_english_front:
+                section = doc.add_section(WD_SECTION.CONTINUOUS)
+                section.top_margin = doc.sections[0].top_margin
+                section.bottom_margin = doc.sections[0].bottom_margin
+                section.left_margin = doc.sections[0].left_margin
+                section.right_margin = doc.sections[0].right_margin
+                set_columns(section, 2)
+                body_started = True
+            i += 1
+            continue
+        if stripped.startswith("Abstract:"):
+            add_english_label_paragraph(doc, "Abstract: ", strip_markdown(stripped[len("Abstract:"):].strip()))
+            i += 1
+            continue
+        if stripped.startswith("Keywords:"):
+            add_english_label_paragraph(doc, "Keywords: ", strip_markdown(stripped[len("Keywords:"):].strip()))
             section = doc.add_section(WD_SECTION.CONTINUOUS)
             section.top_margin = doc.sections[0].top_margin
             section.bottom_margin = doc.sections[0].bottom_margin
