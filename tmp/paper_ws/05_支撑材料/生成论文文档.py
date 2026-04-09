@@ -33,7 +33,9 @@ SKIP_FILES = {
     "格式模版.md",
     "投稿待补信息清单.md",
     "敏东矿案例补强提纲.md",
+    "首页脚注待补模板.md",
 }
+PREFERRED_MAIN = "采区智能规划设计一体化方法与系统.md"
 XSL_CANDIDATES = [
     Path(r"C:\Program Files\Microsoft Office\root\Office16\MML2OMML.XSL"),
     Path(r"C:\Program Files (x86)\Microsoft Office\root\Office16\MML2OMML.XSL"),
@@ -94,6 +96,9 @@ def strip_markdown(text: str) -> str:
 
 
 def find_main_markdown(manuscript_dir: Path) -> Path:
+    preferred = manuscript_dir / PREFERRED_MAIN
+    if preferred.exists():
+        return preferred
     for path in sorted(manuscript_dir.glob("*.md")):
         if path.name not in SKIP_FILES:
             return path
@@ -282,9 +287,9 @@ def add_image(doc: Document, md_path: Path, alt: str, rel_path: str) -> None:
     p.add_run().add_picture(str(image_path), width=Inches(width_inches))
     if alt:
         add_center_caption(doc, alt, size=10.0)
-    if base._sectPr.xpath("./w:cols/@w:num") != ["1"]:
-        dual = doc.add_section(WD_SECTION.CONTINUOUS)
-        copy_section_layout(base, dual, 2)
+    # Main body should return to double-column layout after full-width figures.
+    dual = doc.add_section(WD_SECTION.CONTINUOUS)
+    copy_section_layout(base, dual, 2)
 
 
 def add_superscript_text(paragraph, text: str) -> None:
@@ -375,9 +380,9 @@ def add_markdown_table(doc: Document, table_lines: list[str], captions: list[str
 
     format_three_line_table(table)
 
-    if base._sectPr.xpath("./w:cols/@w:num") != ["1"]:
-        dual = doc.add_section(WD_SECTION.CONTINUOUS)
-        copy_section_layout(base, dual, 2)
+    # Main body should return to double-column layout after full-width tables.
+    dual = doc.add_section(WD_SECTION.CONTINUOUS)
+    copy_section_layout(base, dual, 2)
 
 
 def iter_line_segments(text: str) -> list[tuple[str, str]]:
@@ -531,6 +536,22 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
             continue
         if not body_started and stripped.startswith("文献标志码："):
             add_meta_line(doc, strip_markdown(stripped))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("收稿日期："):
+            add_label_paragraph(doc, "收稿日期：", strip_markdown(stripped[5:]))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("修回日期："):
+            add_label_paragraph(doc, "修回日期：", strip_markdown(stripped[5:]))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("作者简介："):
+            add_label_paragraph(doc, "作者简介：", strip_markdown(stripped[5:]))
+            i += 1
+            continue
+        if not body_started and stripped.startswith("通信作者："):
+            add_label_paragraph(doc, "通信作者：", strip_markdown(stripped[5:]))
             i += 1
             continue
         if not body_started and stripped.startswith("英文题目："):

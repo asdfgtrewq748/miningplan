@@ -13,7 +13,15 @@
       "Bash(npm root:*)",
       "Bash(NODE_PATH=\"C:/Users/Liu HaoTian/AppData/Roaming/npm/node_modules\" node -e \"const {Document} = require\\('docx'\\); console.log\\('docx OK'\\)\")",
       "Bash(npm init:*)",
-      "Bash(node -e \"const {Document} = require\\('D:/xiangmu/miningplan/论文/node_modules/docx'\\); console.log\\('OK'\\)\")"
+      "Bash(node -e \"const {Document} = require\\('D:/xiangmu/miningplan/论文/node_modules/docx'\\); console.log\\('OK'\\)\")",
+      "Bash(conda --version)",
+      "Bash(where anaconda:*)",
+      "Bash(where conda:*)",
+      "Bash(curl -L -o /c/Users/Administrator/anaconda_installer.exe https://repo.anaconda.com/archive/Anaconda3-2024.10-1-Windows-x86_64.exe)",
+      "Bash(curl -L -o /c/Users/Administrator/miniconda_installer.exe https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe)",
+      "Bash(curl -k -L -o /c/Users/Administrator/miniconda_installer.exe https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe)",
+      "Bash(powershell -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe' -OutFile 'C:\\\\Users\\\\Administrator\\\\miniconda_installer.exe'\")",
+      "Bash(powershell -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Windows-x86_64.exe' -OutFile 'C:\\\\Users\\\\Administrator\\\\miniconda_installer.exe'\")"
     ]
   }
 }
