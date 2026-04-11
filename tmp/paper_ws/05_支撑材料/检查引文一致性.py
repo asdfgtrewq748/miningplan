@@ -4,7 +4,17 @@ import re
 from pathlib import Path
 
 
-SKIP_FILES = {"投稿格式对照表.md", "作者与基金信息.md", "参考文献候选池.md", "引文映射表.md", "格式模版.md"}
+SKIP_FILES = {
+    "投稿格式对照表.md",
+    "作者与基金信息.md",
+    "参考文献候选池.md",
+    "引文映射表.md",
+    "格式模版.md",
+    "投稿待补信息清单.md",
+    "敏东矿案例补强提纲.md",
+    "首页脚注待补模板.md",
+}
+PREFERRED_MAIN = "采区智能规划设计一体化方法与系统.md"
 
 
 def expand_group(group: str) -> list[int]:
@@ -39,7 +49,9 @@ if __name__ == "__main__":
     if not md_files:
         raise SystemExit("未找到主论文 Markdown 文件")
 
-    target = md_files[0]
+    target = manuscript_dir / PREFERRED_MAIN
+    if not target.exists():
+        target = md_files[0]
     text = target.read_text(encoding="utf-8")
     body_text, _, ref_text = text.partition("## 参考文献")
     cited = sorted(set(collect_citations(body_text)))
