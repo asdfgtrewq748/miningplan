@@ -28,7 +28,8 @@ import {
   ClipboardCheck,
   Zap,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  BookOpen
 } from 'lucide-react';
 import SystemLogo from './components/SystemLogo.jsx';
 import {
@@ -17416,6 +17417,162 @@ const App = () => {
     }
   };
 
+  // ========== 内置案例数据 ==========
+  const DEMO_PROJECTS = [
+    { label: '0 - 地表下沉', file: '/demo/0-地表下沉.miningplan.json' },
+    { label: '1 - 含水层扰动预评价', file: '/demo/1-含水层扰动预评价.miningplan.json' },
+    { label: '2 - 含水层扰动评价', file: '/demo/2-含水层扰动评价.miningplan.json' },
+    { label: '3 - 采区规划案例', file: '/demo/3-采区规划案例.miningplan.json' },
+    { label: '4 - 协同调控-突水点', file: '/demo/4-协同调控-突水点.miningplan.json' },
+    { label: '5 - 采掘接续', file: '/demo/5-采掘接续.miningplan.json' },
+    { label: '6 - 全覆岩扰动', file: '/demo/6-全覆岩扰动.miningplan.json' },
+  ];
+  const [demoDropdownOpen, setDemoDropdownOpen] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
+
+  const handleLoadDemoProject = async (demoFile) => {
+    setDemoDropdownOpen(false);
+    setDemoLoading(true);
+    try {
+      const resp = await fetch(demoFile);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const blob = await resp.blob();
+      const fileName = demoFile.split('/').pop();
+      const file = new File([blob], fileName, { type: 'application/json' });
+      setProjectImportFile(file);
+      setProjectImportScope('all');
+      // Use setTimeout to ensure state is set before confirm runs
+      setTimeout(() => {
+        (async () => {
+          try {
+            const text = await file.text();
+            const parsed = JSON.parse(text);
+            if (!parsed || typeof parsed !== 'object') { window.alert('案例数据无效'); return; }
+            if (String(parsed.kind) !== 'mining-plan-project-input-snapshot') { window.alert('案例文件格式不正确'); return; }
+            const ver = Number(parsed.schemaVersion);
+            if (!Number.isFinite(ver) || ver > PROJECT_SNAPSHOT_SCHEMA) { window.alert('案例文件版本不兼容'); return; }
+
+            const baselineScenarioParams = cloneJson(scenarioParamsById ?? {});
+            baselineScenarioParams[activeTab] = cloneJson(snapshotCurrentScenarioParams());
+            const nextScenarioParamsById = cloneJson(baselineScenarioParams);
+            const importedAll = (parsed?.scenarioParamsById && typeof parsed.scenarioParamsById === 'object') ? parsed.scenarioParamsById : {};
+            for (const [k, v] of Object.entries(importedAll)) nextScenarioParamsById[String(k)] = cloneJson(v);
+
+            const nextPlanningParams = normalizePlanningParams(parsed?.planningParams ? cloneJson(parsed.planningParams) : cloneJson(planningParams));
+            const nextPlanningDisturbanceParams = parsed?.planningDisturbanceParams
+              ? { ...DEFAULT_DISTURBANCE_PARAMS, ...(cloneJson(parsed.planningDisturbanceParams) ?? {}) }
+              : cloneJson(planningDisturbanceParams);
+            const nextAdvanceAxis = String(parsed?.planningAdvanceAxis ?? planningAdvanceAxis) === 'y' ? 'y' : 'x';
+
+            const importedPlan = (parsed?.workfacePlan && typeof parsed.workfacePlan === 'object') ? parsed.workfacePlan : null;
+            const importedLoops = importedPlan?.plannedWorkfaceLoopsWorld;
+            const importedUnionLoops = importedPlan?.plannedWorkfaceUnionLoopsWorld;
+            const hasPlan = Boolean(Array.isArray(importedLoops) && importedLoops.length);
+            const nextPlannedLoops = hasPlan ? cloneJson(importedLoops) : [];
+            const nextPlannedUnionLoops = (Array.isArray(importedUnionLoops) && importedUnionLoops.length) ? cloneJson(importedUnionLoops) : [];
+            const nextShowPlanningOverlay = Boolean(importedPlan?.showPlanningBoundaryOverlay ?? hasPlan);
+            const nextHasInitFaceWidthRange = Boolean(importedPlan?.hasInitializedFaceWidthRange ?? false);
+            const importedPlanningResults = (parsed?.planningResults && typeof parsed.planningResults === 'object') ? parsed.planningResults : null;
+            const importedCocontrol = (parsed?.cocontrol && typeof parsed.cocontrol === 'object') ? parsed.cocontrol : null;
+            const importedSuccession = (parsed?.succession && typeof parsed.succession === 'object') ? parsed.succession : null;
+            const importedSuccStage1 = importedSuccession?.stage1Params ?? parsed?.successionStage1Params ?? null;
+            const importedSuccStage2 = importedSuccession?.stage2Params ?? parsed?.successionStage2Params ?? null;
+            const importedSuccStage3 = importedSuccession?.stage3Params ?? parsed?.successionStage3Params ?? null;
+            const importedEconomicsParams = (parsed?.economicsParams && typeof parsed.economicsParams === 'object') ? parsed.economicsParams : null;
+
+            const current = getAppSnapshot();
+            const nextSnap = {
+              ...current,
+              activeTab: String(parsed?.activeTab ?? current.activeTab ?? activeTab ?? 'surface'),
+              planningParams: nextPlanningParams,
+              planningDisturbanceParams: nextPlanningDisturbanceParams,
+              planningAdvanceAxis: nextAdvanceAxis,
+              scenarioParamsById: cloneJson(nextScenarioParamsById),
+              coControlEnabled: (importedCocontrol && Object.prototype.hasOwnProperty.call(importedCocontrol, 'enabled'))
+                ? Boolean(importedCocontrol.enabled)
+                : Boolean(current.coControlEnabled),
+              coWorkfaceGhosts: importedCocontrol?.workfaceGhosts ? cloneJson(importedCocontrol.workfaceGhosts) : cloneJson(current.coWorkfaceGhosts ?? {}),
+              coScaleConfig: importedCocontrol?.scaleConfig ? cloneJson(importedCocontrol.scaleConfig) : cloneJson(current.coScaleConfig ?? { qLo: 0.05, qHi: 0.95, includeGeoOnly: true }),
+              coStageN: Number.isFinite(Number(importedCocontrol?.stageN)) ? Number(importedCocontrol.stageN) : (typeof current.coStageN === 'number' ? current.coStageN : 5),
+              coStageK: Number.isFinite(Number(importedCocontrol?.stageK)) ? Number(importedCocontrol.stageK) : (typeof current.coStageK === 'number' ? current.coStageK : 1),
+              coPanelScalePct: Number.isFinite(Number(importedCocontrol?.panelScalePct)) ? Number(importedCocontrol.panelScalePct) : (typeof current.coPanelScalePct === 'number' ? current.coPanelScalePct : 100),
+              coImportParamsByNo: importedCocontrol?.importParamsByNo ? cloneJson(importedCocontrol.importParamsByNo) : cloneJson(current.coImportParamsByNo ?? {}),
+              coPlannedParamsByFaceIndex: importedCocontrol?.plannedParamsByFaceIndex ? cloneJson(importedCocontrol.plannedParamsByFaceIndex) : cloneJson(current.coPlannedParamsByFaceIndex ?? {}),
+              coSelectedTarget: (importedCocontrol && Object.prototype.hasOwnProperty.call(importedCocontrol, 'selectedTarget'))
+                ? cloneJson(importedCocontrol.selectedTarget)
+                : cloneJson(current.coSelectedTarget ?? null),
+              coScalePack: importedCocontrol?.results?.scalePack ? cloneJson(importedCocontrol.results.scalePack) : null,
+              coOdiUnionResult: importedCocontrol?.results?.odiUnionResult ? cloneJson(importedCocontrol.results.odiUnionResult) : null,
+              coProductionSummary: importedCocontrol?.results?.productionSummary ? cloneJson(importedCocontrol.results.productionSummary) : null,
+              coCoalThkHash: String(importedCocontrol?.results?.coalThkHash ?? ''),
+              coScaleDirty: true,
+              coAnalysisCollapsed: Boolean(importedCocontrol?.analysis?.collapsed ?? current.coAnalysisCollapsed ?? false),
+              coOdiAnalysisSelectedKey: String(importedCocontrol?.analysis?.selectedKey ?? current.coOdiAnalysisSelectedKey ?? ''),
+              coOdiAnalysisCheckedKeys: Array.isArray(importedCocontrol?.analysis?.checkedKeys)
+                ? importedCocontrol.analysis.checkedKeys
+                : (Array.isArray(current.coOdiAnalysisCheckedKeys) ? current.coOdiAnalysisCheckedKeys : []),
+              coOdiAnalysisGridStepM: Number.isFinite(Number(importedCocontrol?.analysis?.gridStepM))
+                ? Number(importedCocontrol.analysis.gridStepM)
+                : (typeof current.coOdiAnalysisGridStepM === 'number' ? current.coOdiAnalysisGridStepM : 25),
+              coOdiAnalysisThresholds: importedCocontrol?.analysis?.thresholds
+                ? cloneJson(importedCocontrol.analysis.thresholds)
+                : cloneJson(current.coOdiAnalysisThresholds ?? { t1: 0.65, t2: 0.85, t3: 0.90 }),
+              coOdiAnalysisPercents: Array.isArray(importedCocontrol?.analysis?.percents)
+                ? importedCocontrol.analysis.percents
+                : (Array.isArray(current.coOdiAnalysisPercents) ? current.coOdiAnalysisPercents : [0, 25, 50, 75, 100]),
+              coOdiAnalysisSortKey: String(importedCocontrol?.analysis?.sortKey ?? current.coOdiAnalysisSortKey ?? 'p90'),
+              coOdiAnalysisSortDesc: Boolean(importedCocontrol?.analysis?.sortDesc ?? current.coOdiAnalysisSortDesc ?? true),
+              successionStage1Params: (importedSuccStage1 && typeof importedSuccStage1 === 'object')
+                ? { ...DEFAULT_SUCCESSION_STAGE1_PARAMS, ...(cloneJson(importedSuccStage1) ?? {}) }
+                : cloneJson(current.successionStage1Params ?? { ...DEFAULT_SUCCESSION_STAGE1_PARAMS }),
+              successionStage2Params: (importedSuccStage2 && typeof importedSuccStage2 === 'object')
+                ? { ...DEFAULT_SUCCESSION_STAGE2_PARAMS, ...(cloneJson(importedSuccStage2) ?? {}) }
+                : cloneJson(current.successionStage2Params ?? { ...DEFAULT_SUCCESSION_STAGE2_PARAMS }),
+              successionStage3Params: (importedSuccStage3 && typeof importedSuccStage3 === 'object')
+                ? { ...DEFAULT_SUCCESSION_STAGE3_PARAMS, ...(cloneJson(importedSuccStage3) ?? {}) }
+                : cloneJson(current.successionStage3Params ?? { ...DEFAULT_SUCCESSION_STAGE3_PARAMS }),
+              successionPanelOrderMode: String(importedSuccession?.panelOrderMode ?? current.successionPanelOrderMode ?? 'yardConfirmed'),
+              successionYardDir: String(importedSuccession?.yardDir ?? current.successionYardDir ?? 'NE'),
+              successionYardOffsetM: Number.isFinite(Number(importedSuccession?.yardOffsetM))
+                ? Number(importedSuccession.yardOffsetM)
+                : Number(current.successionYardOffsetM ?? 120),
+              successionYardConfirmed: (importedSuccession?.yardConfirmed && typeof importedSuccession.yardConfirmed === 'object')
+                ? cloneJson(importedSuccession.yardConfirmed)
+                : cloneJson(current.successionYardConfirmed ?? { dir: 'NE', offsetM: 120, confirmedAt: Date.now() }),
+              successionSelectedFaceIndex: (importedSuccession && Object.prototype.hasOwnProperty.call(importedSuccession, 'selectedFaceIndex'))
+                ? (importedSuccession.selectedFaceIndex == null ? null : Number(importedSuccession.selectedFaceIndex))
+                : (current.successionSelectedFaceIndex ?? null),
+              successionStage3Result: null,
+              economicsParams: importedEconomicsParams
+                ? { ...DEFAULT_ECONOMICS_PARAMS, ...(cloneJson(importedEconomicsParams) ?? {}) }
+                : cloneJson(current.economicsParams ?? { ...DEFAULT_ECONOMICS_PARAMS }),
+              planningReverseSolutions: [],
+              plannedWorkfaceLoopsWorld: nextPlannedLoops,
+              plannedWorkfaceUnionLoopsWorld: nextPlannedUnionLoops,
+              showPlanningBoundaryOverlay: nextShowPlanningOverlay,
+              hasInitializedFaceWidthRange: nextHasInitFaceWidthRange,
+              planningPreStartSnapshot: null,
+              __preservePlanningResults: Boolean(importedPlanningResults),
+            };
+            pushHistoryFromCurrentTo(nextSnap);
+            applyAppSnapshot(nextSnap);
+            setMeasureEnabled(false);
+            setMeasurePoints([]);
+          } catch (e) {
+            console.error('Demo load failed', e);
+            window.alert(`案例加载失败：${String(e?.message ?? e)}`);
+          } finally {
+            setDemoLoading(false);
+          }
+        })();
+      }, 50);
+    } catch (e) {
+      console.error('Demo fetch failed', e);
+      window.alert(`案例下载失败：${String(e?.message ?? e)}`);
+      setDemoLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!showMainMapLabelsMenu) return;
     const onDocDown = (e) => {
@@ -23555,6 +23712,32 @@ const App = () => {
             >
               <FolderOpen size={16} />
             </button>
+            <div className="relative">
+              <button
+                className={`p-2 rounded-lg border transition-colors ${demoLoading ? 'bg-blue-100 border-blue-300 text-blue-600' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+                onClick={() => setDemoDropdownOpen((v) => !v)}
+                title="加载内置案例数据"
+                type="button"
+                disabled={demoLoading}
+              >
+                <BookOpen size={16} />
+              </button>
+              {demoDropdownOpen && (
+                <div className="absolute top-full left-0 mt-1 w-56 bg-white rounded-xl shadow-lg border border-slate-200 py-1 z-50">
+                  <div className="px-3 py-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">内置案例数据</div>
+                  {DEMO_PROJECTS.map((d) => (
+                    <button
+                      key={d.file}
+                      className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+                      onClick={() => handleLoadDemoProject(d.file)}
+                      type="button"
+                    >
+                      {d.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               className={`p-2 rounded-lg border transition-colors ${canUndo ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50' : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'}`}
               onClick={handleUndo}

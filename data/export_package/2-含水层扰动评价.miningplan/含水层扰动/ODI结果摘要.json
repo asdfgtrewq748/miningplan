@@ -1,0 +1,18 @@
+{
+  "keptFactorKeys": [
+    "Di",
+    "Ei",
+    "Hi",
+    "lpi",
+    "Mi",
+    "Ti"
+  ],
+  "minOdi": 98.73152363267471,
+  "maxOdi": 312.8495953319501,
+  "pointCount": 376,
+  "weights": {
+    "wd": 0.15,
+    "wo": 0.25,
+    "wf": 0.6
+  }
+}

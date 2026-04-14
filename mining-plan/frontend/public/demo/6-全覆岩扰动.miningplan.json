@@ -1,0 +1,4853 @@
+{
+  "kind": "mining-plan-project-input-snapshot",
+  "schemaVersion": 5,
+  "exportedAt": "2026-03-07T07:11:26.149Z",
+  "activeTab": "full",
+  "planningParams": {
+    "mineCapacity": "500",
+    "seamThickness": "20.96",
+    "coalDensity": "1.4",
+    "recoveryRateMin": "0.85",
+    "recoveryRateMax": "0.95",
+    "roadwayOrientation": "x",
+    "odiVizInvertPalette": false,
+    "miningMethod": "综放",
+    "coalPillarMin": "30",
+    "coalPillarMax": "50",
+    "coalPillarTarget": "40",
+    "faceCountSuggestedMin": "",
+    "faceCountSuggestedMax": "",
+    "faceCountSelected": "",
+    "faceWidthMin": "",
+    "faceWidthMax": "",
+    "faceAdvanceMin": "",
+    "faceAdvanceMax": "",
+    "boundaryPillarMin": "50",
+    "boundaryPillarMax": "80",
+    "boundaryPillarTarget": "65"
+  },
+  "planningDisturbanceParams": {
+    "sampleStepM": 25,
+    "maxSamples": 4500,
+    "exceedThreshold": 0.7,
+    "wMean": 0.5,
+    "wP90": 0.35,
+    "wExceed": 0.15,
+    "outerBufferM": 30
+  },
+  "planningAdvanceAxis": "x",
+  "cocontrol": {
+    "savedAt": "2026-03-07T07:11:26.149Z",
+    "enabled": false,
+    "workfaceGhosts": {},
+    "scaleConfig": {
+      "qLo": 0.05,
+      "qHi": 0.95,
+      "includeGeoOnly": true
+    },
+    "stageN": 5,
+    "stageK": 1,
+    "panelScalePct": 100,
+    "importParamsByNo": {},
+    "plannedParamsByFaceIndex": {},
+    "selectedTarget": null,
+    "analysis": {
+      "collapsed": false,
+      "selectedKey": "",
+      "checkedKeys": [],
+      "gridStepM": 25,
+      "thresholds": {
+        "t1": 0.65,
+        "t2": 0.85,
+        "t3": 0.9
+      },
+      "percents": [
+        0,
+        25,
+        50,
+        75,
+        100
+      ],
+      "sortKey": "p90",
+      "sortDesc": true
+    },
+    "results": {
+      "scalePack": null,
+      "odiUnionResult": null,
+      "productionSummary": null,
+      "coalThkHash": "h4e282e40"
+    }
+  },
+  "succession": {
+    "stage1Params": {
+      "daysPerMonth": 25,
+      "utilization": 0.85,
+      "odiVizInvertPalette": false,
+      "shearAdvanceRate": 6,
+      "driveRate": 15,
+      "installDays": 15,
+      "relocationDays": 10,
+      "singleFaceMining": true,
+      "driveParallelWithMining": true,
+      "driveCrews": 1
+    },
+    "stage2Params": {
+      "metric": "p90",
+      "threshold": 0.85,
+      "sampleStepM": 25,
+      "useOdiStarWhenAvailable": true
+    },
+    "stage3Params": {
+      "wProd": 1,
+      "wRisk": 1,
+      "wMonths": 0.15
+    },
+    "panelOrderMode": "yardConfirmed",
+    "yardDir": "NE",
+    "yardOffsetM": 120,
+    "yardConfirmed": {
+      "dir": "NE",
+      "offsetM": 120,
+      "confirmedAt": 1772867438843
+    },
+    "selectedFaceIndex": null
+  },
+  "economicsParams": {
+    "coalPriceYuanPerTon": 800,
+    "salesRatio": 1,
+    "opexVarYuanPerTon": 320,
+    "opexFixedWanPerMonth": 300,
+    "capexInitialWan": 30000,
+    "capexSustainWanPerYear": 0,
+    "discountRate": 0.1,
+    "odiVizInvertPalette": false,
+    "riskLinkEnabled": true,
+    "riskMetricKey": "p90",
+    "riskImpactThreshold": 0.85,
+    "riskDowntimeRatio": 0.1,
+    "riskExtraCostWanPerHighRiskMonth": 0
+  },
+  "scenarioParamsById": {
+    "full": {
+      "boundaryData": [],
+      "drillholeData": [
+        {
+          "id": "52-18",
+          "x": 496022.31,
+          "y": 5404502.09
+        },
+        {
+          "id": "52-19",
+          "x": 496166.57,
+          "y": 5404015.05
+        },
+        {
+          "id": "54-17",
+          "x": 496655.46,
+          "y": 5404184.68
+        },
+        {
+          "id": "54-18",
+          "x": 496814.18,
+          "y": 5403710.73
+        },
+        {
+          "id": "56-20",
+          "x": 497136.01,
+          "y": 5404331.36
+        },
+        {
+          "id": "56-22",
+          "x": 497291.62,
+          "y": 5403856.01
+        },
+        {
+          "id": "60-20",
+          "x": 498232.97,
+          "y": 5404152.17
+        },
+        {
+          "id": "BK12-3",
+          "x": 497621.5,
+          "y": 5404458.17
+        },
+        {
+          "id": "BK12-4",
+          "x": 497754,
+          "y": 5403998.03
+        },
+        {
+          "id": "BK12-8",
+          "x": 498378.44,
+          "y": 5403689.89
+        },
+        {
+          "id": "BK17-6",
+          "x": 498782.26,
+          "y": 5404074.31
+        },
+        {
+          "id": "BK20-1",
+          "x": 498695.79,
+          "y": 5404381
+        }
+      ],
+      "drillholeLayersById": {
+        "52-18": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 64,
+            "name": "中砾岩",
+            "thickness": 22.3,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 63,
+            "name": "粗砂岩",
+            "thickness": 1.82,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 62,
+            "name": "中砾岩",
+            "thickness": 23.52,
+            "aquiferTag": "含",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 61,
+            "name": "粉砂岩",
+            "thickness": 2.59,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 60,
+            "name": "15-4煤",
+            "thickness": 0.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 59,
+            "name": "粉砂岩",
+            "thickness": 2.61,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 58,
+            "name": "中砾岩",
+            "thickness": 16.76,
+            "aquiferTag": "1含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 57,
+            "name": "泥岩",
+            "thickness": 2.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 56,
+            "name": "15-5上煤",
+            "thickness": 1.73,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 55,
+            "name": "泥岩",
+            "thickness": 5.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 54,
+            "name": "15-5下煤",
+            "thickness": 2.02,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 53,
+            "name": "炭质泥岩",
+            "thickness": 1.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 52,
+            "name": "泥岩",
+            "thickness": 3.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 51,
+            "name": "中砾岩",
+            "thickness": 0.8,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 50,
+            "name": "粉砂岩",
+            "thickness": 11.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 49,
+            "name": "中砾岩",
+            "thickness": 6.2,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 48,
+            "name": "粉砂岩",
+            "thickness": 5.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 47,
+            "name": "中砾岩",
+            "thickness": 11.3,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 46,
+            "name": "15-6煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 45,
+            "name": "中砂岩",
+            "thickness": 4.4,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 44,
+            "name": "粉砂岩",
+            "thickness": 3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 43,
+            "name": "中砾岩",
+            "thickness": 18.5,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 42,
+            "name": "粉砂岩",
+            "thickness": 3.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 41,
+            "name": "泥岩",
+            "thickness": 2.83,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 40,
+            "name": "15-7煤",
+            "thickness": 3.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 39,
+            "name": "泥岩",
+            "thickness": 5.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 38,
+            "name": "中砾岩",
+            "thickness": 10.67,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "泥岩",
+            "thickness": 3.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "中砾岩",
+            "thickness": 29.8,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "粉砂岩",
+            "thickness": 4.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "中砾岩",
+            "thickness": 4.2,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "泥岩",
+            "thickness": 7.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "16-1煤",
+            "thickness": 1.81,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "粉砂岩",
+            "thickness": 10.5,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 30,
+            "name": "泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "粉砂岩",
+            "thickness": 5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "含砾细砂岩",
+            "thickness": 6.3,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粗砂岩",
+            "thickness": 11.48,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 26,
+            "name": "细砂岩",
+            "thickness": 3.97,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂岩",
+            "thickness": 7.2,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 24,
+            "name": "泥岩",
+            "thickness": 2.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "粉砂岩",
+            "thickness": 4.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "泥岩",
+            "thickness": 8.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "16-2上煤",
+            "thickness": 0.49,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "细砂岩",
+            "thickness": 1.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "16-2下煤",
+            "thickness": 1.42,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "细砂岩",
+            "thickness": 4.4,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 17,
+            "name": "炭质泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "粉砂岩",
+            "thickness": 4.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "中砾岩",
+            "thickness": 2,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "粗砂岩",
+            "thickness": 10.13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "泥岩",
+            "thickness": 3.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "中砾岩",
+            "thickness": 17.1,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "16-3上煤",
+            "thickness": 12.18,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "泥岩",
+            "thickness": 4.83,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "16-3中煤",
+            "thickness": 3.34,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "泥岩",
+            "thickness": 3.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "16-3煤",
+            "thickness": 21.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "炭质泥岩",
+            "thickness": 1.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "中砾岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "泥岩",
+            "thickness": 10.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-4煤",
+            "thickness": 0.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "泥岩",
+            "thickness": 15.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "52-19": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 53,
+            "name": "中砾岩",
+            "thickness": 14.3,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 52,
+            "name": "粉砂岩",
+            "thickness": 4.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 51,
+            "name": "粗砂岩",
+            "thickness": 3.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 50,
+            "name": "中砾岩",
+            "thickness": 4.65,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 49,
+            "name": "粉砂岩",
+            "thickness": 4.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 48,
+            "name": "炭质泥岩",
+            "thickness": 9.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 47,
+            "name": "15-5下煤",
+            "thickness": 2.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 46,
+            "name": "粉砂岩",
+            "thickness": 7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 45,
+            "name": "泥岩",
+            "thickness": 1.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 44,
+            "name": "中砾岩",
+            "thickness": 3.45,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 43,
+            "name": "粉砂岩",
+            "thickness": 4.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 42,
+            "name": "泥岩",
+            "thickness": 5.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 41,
+            "name": "15-6煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 40,
+            "name": "中砾岩",
+            "thickness": 9.3,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 39,
+            "name": "粗砂岩",
+            "thickness": 6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 38,
+            "name": "粉砂岩",
+            "thickness": 5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "中砾岩",
+            "thickness": 13.6,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "粉砂岩",
+            "thickness": 13.3,
+            "aquiferTag": "",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 35,
+            "name": "炭质泥岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "粉砂岩",
+            "thickness": 10.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "中砾岩",
+            "thickness": 1.5,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "粉砂岩",
+            "thickness": 5.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "细砂岩",
+            "thickness": 1.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "泥岩",
+            "thickness": 2.15,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "中砾岩",
+            "thickness": 21.5,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "粉砂岩",
+            "thickness": 12.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "16-1煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "炭质泥岩",
+            "thickness": 10.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "细砂岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "粉砂岩",
+            "thickness": 3.55,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "细砂岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "粉砂岩",
+            "thickness": 1.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "细砂岩",
+            "thickness": 1.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "粉砂岩",
+            "thickness": 11.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 19,
+            "name": "中砾岩",
+            "thickness": 6.45,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "粉砂岩",
+            "thickness": 15.1,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 17,
+            "name": "炭质泥岩",
+            "thickness": 0.35,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "粉砂岩",
+            "thickness": 5.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 15,
+            "name": "16-2下煤",
+            "thickness": 2.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "粉砂岩",
+            "thickness": 18.6,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 13,
+            "name": "炭质泥岩",
+            "thickness": 1.42,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "粉砂岩",
+            "thickness": 4.86,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "炭质泥岩",
+            "thickness": 0.69,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "粉砂岩",
+            "thickness": 3.57,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "16-3上煤",
+            "thickness": 18.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "炭质泥岩",
+            "thickness": 1.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 3.35,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "16-3中煤",
+            "thickness": 3.03,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂岩",
+            "thickness": 5.17,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "16-3煤",
+            "thickness": 25.29,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "炭质泥岩",
+            "thickness": 10,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-4煤",
+            "thickness": 1.17,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "细砂岩",
+            "thickness": 3.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "54-17": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 37,
+            "name": "中砂岩",
+            "thickness": 94.5,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "粉砂岩",
+            "thickness": 1.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "中砾岩",
+            "thickness": 2,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "粉砂岩",
+            "thickness": 12.25,
+            "aquiferTag": "",
+            "keyLayerTag": "SK7"
+          },
+          {
+            "seq": 33,
+            "name": "15-5下煤",
+            "thickness": 1.62,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "炭质泥岩",
+            "thickness": 0.57,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "细砂岩",
+            "thickness": 33.05,
+            "aquiferTag": "",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 30,
+            "name": "砂质泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "粉砂岩",
+            "thickness": 3.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "中砾岩",
+            "thickness": 8.3,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粉砂岩",
+            "thickness": 9.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "中砂岩",
+            "thickness": 8.8,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "含砾粉砂岩",
+            "thickness": 7.6,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "粉砂岩",
+            "thickness": 9.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "15-7煤",
+            "thickness": 2.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "粉砂岩",
+            "thickness": 19.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "中砾岩",
+            "thickness": 8.7,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "细砂岩",
+            "thickness": 15.5,
+            "aquiferTag": "",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 19,
+            "name": "炭质泥岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "粉砂岩",
+            "thickness": 1.13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "16-1煤",
+            "thickness": 0.54,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "炭质泥岩",
+            "thickness": 1.06,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂岩",
+            "thickness": 31.98,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 14,
+            "name": "炭质泥岩",
+            "thickness": 0.38,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 11.72,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "16-2下煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "粉砂岩",
+            "thickness": 12.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 10,
+            "name": "细砂岩",
+            "thickness": 7.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "粉砂岩",
+            "thickness": 4.3,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 8,
+            "name": "炭质泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 26.53,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 6,
+            "name": "16-3上煤",
+            "thickness": 12.08,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂岩",
+            "thickness": 4.11,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "泥岩",
+            "thickness": 0.55,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂岩",
+            "thickness": 6.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-3煤",
+            "thickness": 15.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "粉砂岩",
+            "thickness": 7.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "54-18": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 36,
+            "name": "砂砾岩",
+            "thickness": 20.55,
+            "aquiferTag": "含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 35,
+            "name": "粉砂岩",
+            "thickness": 6.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "砂质砾岩",
+            "thickness": 10.2,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "泥岩",
+            "thickness": 14.35,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "15-5下煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "泥岩",
+            "thickness": 22.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "细砂岩",
+            "thickness": 6.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "泥岩",
+            "thickness": 2.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "中砾岩",
+            "thickness": 8,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "泥岩",
+            "thickness": 3.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "炭质泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂岩",
+            "thickness": 4.75,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "泥岩",
+            "thickness": 8.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "中砾岩",
+            "thickness": 8,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "泥岩",
+            "thickness": 12.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "炭质泥岩",
+            "thickness": 0.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "泥岩",
+            "thickness": 3.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "粉砂岩",
+            "thickness": 13.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "泥岩",
+            "thickness": 13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "粉砂岩",
+            "thickness": 23.15,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 16,
+            "name": "细砂岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂岩",
+            "thickness": 9.35,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 14,
+            "name": "泥岩",
+            "thickness": 18.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 9.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "细砂岩",
+            "thickness": 15.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 11,
+            "name": "泥岩",
+            "thickness": 10.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "16-3上2煤",
+            "thickness": 3.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "泥岩",
+            "thickness": 3.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "粉砂岩",
+            "thickness": 2.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "16-3上1煤",
+            "thickness": 1.75,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "炭质泥岩",
+            "thickness": 0.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂岩",
+            "thickness": 4.85,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 4,
+            "name": "16-3中煤",
+            "thickness": 7.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂岩",
+            "thickness": 7.15,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-3煤",
+            "thickness": 19.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "泥岩",
+            "thickness": 3.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "56-20": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 34,
+            "name": "砂质砾岩",
+            "thickness": 18.85,
+            "aquiferTag": "含",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 33,
+            "name": "煤5",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "砂质泥岩",
+            "thickness": 7.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "煤4",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "砂质泥岩",
+            "thickness": 3.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "砂质砾岩",
+            "thickness": 7,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "15-4煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "砂质泥岩",
+            "thickness": 7.5,
+            "aquiferTag": "",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 26,
+            "name": "泥岩",
+            "thickness": 4.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "15-5下煤",
+            "thickness": 1.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "泥岩",
+            "thickness": 32,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "粉砂岩",
+            "thickness": 43.4,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 22,
+            "name": "砂质泥岩",
+            "thickness": 16.05,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "15-7煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "细砂岩",
+            "thickness": 11.25,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 19,
+            "name": "砂质泥岩",
+            "thickness": 8.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "砂质砾岩",
+            "thickness": 27.49,
+            "aquiferTag": "2含",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 17,
+            "name": "砂质泥岩",
+            "thickness": 4.15,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "16-1煤",
+            "thickness": 0.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "砂质泥岩",
+            "thickness": 32.45,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 14,
+            "name": "中砂岩",
+            "thickness": 1.8,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "砂质泥岩",
+            "thickness": 1.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "煤3",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "炭质泥岩",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "含砾粉砂岩",
+            "thickness": 5.7,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "中砾岩",
+            "thickness": 7.3,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "泥岩",
+            "thickness": 7.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "煤2",
+            "thickness": 1.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "砂质泥岩",
+            "thickness": 7.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "煤1",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "砂质泥岩",
+            "thickness": 17.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "细砂岩",
+            "thickness": 4.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-3煤",
+            "thickness": 31.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "砂质泥岩",
+            "thickness": 2.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "56-22": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 39,
+            "name": "砾岩",
+            "thickness": 45.33,
+            "aquiferTag": "含",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 38,
+            "name": "泥岩",
+            "thickness": 3.13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "粗砂岩",
+            "thickness": 3.47,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "泥岩",
+            "thickness": 5.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "中砾岩",
+            "thickness": 10.5,
+            "aquiferTag": "含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 34,
+            "name": "粉砂岩",
+            "thickness": 7.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "泥岩",
+            "thickness": 2.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "中砾岩",
+            "thickness": 12.29,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "粉砂岩",
+            "thickness": 9.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "泥岩",
+            "thickness": 1.63,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "15-5下煤",
+            "thickness": 0.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "泥岩",
+            "thickness": 13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粗砂岩",
+            "thickness": 2.36,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "泥岩",
+            "thickness": 6.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂岩",
+            "thickness": 23.98,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 24,
+            "name": "泥岩",
+            "thickness": 9.07,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "粉砂岩",
+            "thickness": 4.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "中砾岩",
+            "thickness": 13.31,
+            "aquiferTag": "2含",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 21,
+            "name": "泥岩",
+            "thickness": 12.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "中砾岩",
+            "thickness": 28.8,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "泥岩",
+            "thickness": 25.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "粉砂岩",
+            "thickness": 22.8,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 17,
+            "name": "中砾岩",
+            "thickness": 4.4,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "粉砂岩",
+            "thickness": 9.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粗砂岩",
+            "thickness": 1.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "粉砂岩",
+            "thickness": 4.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粗砂岩",
+            "thickness": 4.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "粉砂岩",
+            "thickness": 14.2,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 11,
+            "name": "泥岩",
+            "thickness": 5.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "16-1煤",
+            "thickness": 0.35,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "泥岩",
+            "thickness": 2.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "16-3上煤",
+            "thickness": 5.95,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "泥岩",
+            "thickness": 6.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "16-3中煤",
+            "thickness": 2.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "泥岩",
+            "thickness": 13.39,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "煤1",
+            "thickness": 1.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "泥岩",
+            "thickness": 7.63,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-3煤",
+            "thickness": 15.87,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "泥岩",
+            "thickness": 12,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "60-20": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 50,
+            "name": "含砾细砂岩",
+            "thickness": 14.85,
+            "aquiferTag": "1含",
+            "keyLayerTag": "SK7"
+          },
+          {
+            "seq": 49,
+            "name": "砾岩",
+            "thickness": 2.8,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 48,
+            "name": "泥岩",
+            "thickness": 11.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 47,
+            "name": "粉砂岩",
+            "thickness": 8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 46,
+            "name": "泥岩",
+            "thickness": 16.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 45,
+            "name": "中砾岩",
+            "thickness": 8.4,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 44,
+            "name": "细砂岩",
+            "thickness": 13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 43,
+            "name": "粉砂岩",
+            "thickness": 28.15,
+            "aquiferTag": "",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 42,
+            "name": "中砾岩",
+            "thickness": 16.85,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 41,
+            "name": "中砂岩",
+            "thickness": 19.45,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 40,
+            "name": "粉砂岩",
+            "thickness": 5.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 39,
+            "name": "炭质泥岩",
+            "thickness": 1.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 38,
+            "name": "粉砂岩",
+            "thickness": 1.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "炭质泥岩",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "粉砂岩",
+            "thickness": 8.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "煤3",
+            "thickness": 0.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "粉砂岩",
+            "thickness": 12.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "15-7煤",
+            "thickness": 0.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "含砾粉砂岩",
+            "thickness": 46.9,
+            "aquiferTag": "2含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 31,
+            "name": "中砾岩",
+            "thickness": 0.65,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "粉砂岩",
+            "thickness": 4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "中砾岩",
+            "thickness": 2.5,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "含砾粉砂岩",
+            "thickness": 8.3,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "中砾岩",
+            "thickness": 1.2,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "含砾粉砂岩",
+            "thickness": 2.4,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "中砾岩",
+            "thickness": 6.55,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "粉砂岩",
+            "thickness": 22.05,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 23,
+            "name": "16-2上煤",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "粉砂岩",
+            "thickness": 2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "16-2下煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "粉砂岩",
+            "thickness": 24,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "泥岩",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "煤2",
+            "thickness": 0.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "粉砂岩",
+            "thickness": 17.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 16,
+            "name": "炭质泥岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂岩",
+            "thickness": 14.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 14,
+            "name": "细砂岩",
+            "thickness": 6.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 2.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "煤1",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "粉砂岩",
+            "thickness": 9.25,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 10,
+            "name": "16-3上煤",
+            "thickness": 5.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "粉砂岩",
+            "thickness": 1.05,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "炭质泥岩",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 0.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "泥岩",
+            "thickness": 0.55,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "16-3中煤",
+            "thickness": 1.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "泥岩",
+            "thickness": 1.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "16-3煤",
+            "thickness": 19.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "粉砂岩",
+            "thickness": 19,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "粗砂岩",
+            "thickness": 11.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "BK12-3": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 59,
+            "name": "砾岩",
+            "thickness": 7.42,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 58,
+            "name": "泥岩",
+            "thickness": 14.63,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 57,
+            "name": "粉砂岩",
+            "thickness": 12,
+            "aquiferTag": "",
+            "keyLayerTag": "SK7"
+          },
+          {
+            "seq": 56,
+            "name": "15-1下煤",
+            "thickness": 0.51,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 55,
+            "name": "粉砂岩",
+            "thickness": 7.19,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 54,
+            "name": "中砾岩",
+            "thickness": 10.9,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 53,
+            "name": "粉砂岩",
+            "thickness": 5.74,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 52,
+            "name": "中砾岩",
+            "thickness": 9.97,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 51,
+            "name": "15-2煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 50,
+            "name": "粉砂质泥岩",
+            "thickness": 11.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 49,
+            "name": "15-3煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 48,
+            "name": "粉砂质泥岩",
+            "thickness": 2.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 47,
+            "name": "煤6",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 46,
+            "name": "粉砂质泥岩",
+            "thickness": 9.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 45,
+            "name": "泥岩",
+            "thickness": 3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 44,
+            "name": "粗砾岩",
+            "thickness": 10.57,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 43,
+            "name": "粉砂岩",
+            "thickness": 15.77,
+            "aquiferTag": "",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 42,
+            "name": "15-4煤",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 41,
+            "name": "泥岩",
+            "thickness": 0.96,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 40,
+            "name": "粗砾岩",
+            "thickness": 9.15,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 39,
+            "name": "粉砂质泥岩",
+            "thickness": 14.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 38,
+            "name": "15-5下煤",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "粉砂岩",
+            "thickness": 9.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "中砾岩",
+            "thickness": 3.4,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "粉砂岩",
+            "thickness": 51.94,
+            "aquiferTag": "",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 34,
+            "name": "中砾岩",
+            "thickness": 19.95,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "粉砂质泥岩",
+            "thickness": 13.51,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "15-7煤",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "泥岩",
+            "thickness": 2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "中砾岩",
+            "thickness": 9.71,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "粉砂质泥岩",
+            "thickness": 7.67,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "中砾岩",
+            "thickness": 13.54,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粉砂质泥岩",
+            "thickness": 10.88,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "16-1煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂质泥岩",
+            "thickness": 17.85,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "粉砂岩",
+            "thickness": 49.16,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 23,
+            "name": "煤5",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "粉砂岩",
+            "thickness": 22.39,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 21,
+            "name": "煤4",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "粉砂岩",
+            "thickness": 10.4,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 19,
+            "name": "炭质泥岩",
+            "thickness": 5.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "粉砂岩",
+            "thickness": 0.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "炭质泥岩",
+            "thickness": 1.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "粉砂岩",
+            "thickness": 1.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "炭质泥岩",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "煤3",
+            "thickness": 1.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 1.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "煤2",
+            "thickness": 2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "粉砂岩",
+            "thickness": 2.9,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 10,
+            "name": "16-3上煤",
+            "thickness": 1.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "粉砂岩",
+            "thickness": 2.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "煤1",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "16-3中煤",
+            "thickness": 1.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂质泥岩",
+            "thickness": 1.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "16-3煤",
+            "thickness": 20.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂质泥岩",
+            "thickness": 8.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-4煤",
+            "thickness": 4.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "细砂岩",
+            "thickness": 9.01,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "BK12-4": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 40,
+            "name": "砾岩",
+            "thickness": 23.24,
+            "aquiferTag": "1含",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 39,
+            "name": "粉砂岩",
+            "thickness": 8.26,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 38,
+            "name": "15-3煤",
+            "thickness": 0.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 37,
+            "name": "粉砂岩",
+            "thickness": 18.13,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "中砾岩",
+            "thickness": 20.78,
+            "aquiferTag": "1含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 35,
+            "name": "粉砂岩",
+            "thickness": 6.81,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "中砾岩",
+            "thickness": 13.68,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "粉砂岩",
+            "thickness": 27.26,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "中砾岩",
+            "thickness": 33.14,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "粉砂岩",
+            "thickness": 14.71,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "中砾岩",
+            "thickness": 11.39,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "泥岩",
+            "thickness": 12.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "15-7煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粉砂岩",
+            "thickness": 2.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "中砾岩",
+            "thickness": 5.28,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂质泥岩",
+            "thickness": 6.91,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "中砾岩",
+            "thickness": 27.17,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "粉砂岩",
+            "thickness": 31.77,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "细砾岩",
+            "thickness": 17.88,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "粉砂岩",
+            "thickness": 11.69,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 20,
+            "name": "16-2上煤",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "粉砂质泥岩",
+            "thickness": 1.66,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "16-2下煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "粉砂质泥岩",
+            "thickness": 18,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂质泥岩",
+            "thickness": 7.12,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "煤",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂质泥岩",
+            "thickness": 9.58,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 12,
+            "name": "煤",
+            "thickness": 0.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "粉砂质泥岩",
+            "thickness": 6.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "中砾岩",
+            "thickness": 3.32,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "粉砂质泥岩",
+            "thickness": 5.66,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 8,
+            "name": "16-3上煤",
+            "thickness": 1.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 4.42,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 6,
+            "name": "16-3煤",
+            "thickness": 20.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂质泥岩",
+            "thickness": 2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "炭质泥岩",
+            "thickness": 1.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂质泥岩",
+            "thickness": 1.7,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-4煤",
+            "thickness": 3.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "细砂岩",
+            "thickness": 14.21,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "BK12-8": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 34,
+            "name": "砂砾岩",
+            "thickness": 14.45,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "粉砂岩",
+            "thickness": 16.89,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "中砾岩",
+            "thickness": 12.2,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "粉砂质泥岩",
+            "thickness": 12.27,
+            "aquiferTag": "",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 30,
+            "name": "中砾岩",
+            "thickness": 1.63,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "粉砂质泥岩",
+            "thickness": 4.48,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "中砾岩",
+            "thickness": 12.2,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "粉砂质泥岩",
+            "thickness": 6.22,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "粗砾岩",
+            "thickness": 6.5,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "粉砂质泥岩",
+            "thickness": 5.84,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "粗砾岩",
+            "thickness": 6.22,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "粉砂岩",
+            "thickness": 11.56,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "中砾岩",
+            "thickness": 0.6,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "泥岩",
+            "thickness": 18.33,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "中砾岩",
+            "thickness": 61.22,
+            "aquiferTag": "2含",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 19,
+            "name": "泥岩",
+            "thickness": 25.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "含砾粉砂岩",
+            "thickness": 5.18,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "16-2下煤",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "含砾粉砂岩",
+            "thickness": 48.26,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂岩",
+            "thickness": 11.95,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 14,
+            "name": "煤",
+            "thickness": 0.29,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 15.13,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 12,
+            "name": "煤",
+            "thickness": 0.67,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "粉砂质泥岩",
+            "thickness": 20.77,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 10,
+            "name": "16-3上煤",
+            "thickness": 0.43,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "粉砂质泥岩",
+            "thickness": 7.7,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 8,
+            "name": "16-3中煤",
+            "thickness": 0.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "粉砂质泥岩",
+            "thickness": 2.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "16-3煤",
+            "thickness": 17.56,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂质泥岩",
+            "thickness": 1.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "煤",
+            "thickness": 0.24,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂质泥岩",
+            "thickness": 5.92,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "煤",
+            "thickness": 0.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "细砂岩",
+            "thickness": 23.82,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "BK17-6": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 30,
+            "name": "砂砾岩",
+            "thickness": 9.05,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "粉砂岩",
+            "thickness": 10.05,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "泥岩",
+            "thickness": 5.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 27,
+            "name": "煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "泥岩",
+            "thickness": 38.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "砾岩",
+            "thickness": 38,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "15-4煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 23,
+            "name": "砾岩",
+            "thickness": 72.15,
+            "aquiferTag": "1含",
+            "keyLayerTag": "SK6"
+          },
+          {
+            "seq": 22,
+            "name": "泥岩",
+            "thickness": 9.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "粉砂岩",
+            "thickness": 4.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "中砾岩",
+            "thickness": 9.3,
+            "aquiferTag": "1含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 19,
+            "name": "粉砂质泥岩",
+            "thickness": 16.45,
+            "aquiferTag": "",
+            "keyLayerTag": "SK5"
+          },
+          {
+            "seq": 18,
+            "name": "15-7煤",
+            "thickness": 0.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "泥岩",
+            "thickness": 10.65,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "中砾岩",
+            "thickness": 55.25,
+            "aquiferTag": "2含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "粉砂岩",
+            "thickness": 34.6,
+            "aquiferTag": "",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 14,
+            "name": "炭质泥岩",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "粉砂岩",
+            "thickness": 2.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "炭质泥岩",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 11,
+            "name": "煤",
+            "thickness": 1.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "粉砂岩",
+            "thickness": 15.3,
+            "aquiferTag": "",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 9,
+            "name": "16-2煤",
+            "thickness": 0.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "粉砂岩",
+            "thickness": 12.2,
+            "aquiferTag": "",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 7,
+            "name": "粉砂岩",
+            "thickness": 2.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "炭质泥岩",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "粉砂岩",
+            "thickness": 2,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 4,
+            "name": "16-3中煤",
+            "thickness": 0.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "粉砂质泥岩",
+            "thickness": 1.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "16-3煤",
+            "thickness": 25.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "泥岩",
+            "thickness": 4.25,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ],
+        "BK20-1": [
+          {
+            "seq": null,
+            "name": "Var2",
+            "thickness": 3,
+            "aquiferTag": "Var4",
+            "keyLayerTag": "Var5"
+          },
+          {
+            "seq": 37,
+            "name": "中砾岩",
+            "thickness": 13.31,
+            "aquiferTag": "含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 36,
+            "name": "砂质泥岩",
+            "thickness": 6.55,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 35,
+            "name": "15-4煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 34,
+            "name": "砂质泥岩",
+            "thickness": 27.6,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 33,
+            "name": "15-5上煤",
+            "thickness": 0.4,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 32,
+            "name": "中砾岩",
+            "thickness": 12.8,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 31,
+            "name": "泥岩",
+            "thickness": 8.77,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 30,
+            "name": "中砾岩",
+            "thickness": 8.23,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 29,
+            "name": "泥岩",
+            "thickness": 5.32,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 28,
+            "name": "中砾岩",
+            "thickness": 14.88,
+            "aquiferTag": "3含",
+            "keyLayerTag": "SK4"
+          },
+          {
+            "seq": 27,
+            "name": "泥岩",
+            "thickness": 8.1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 26,
+            "name": "中砾岩",
+            "thickness": 18,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 25,
+            "name": "泥岩",
+            "thickness": 7.45,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 24,
+            "name": "中砾岩",
+            "thickness": 24.65,
+            "aquiferTag": "3含",
+            "keyLayerTag": "SK3"
+          },
+          {
+            "seq": 23,
+            "name": "泥岩",
+            "thickness": 4.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 22,
+            "name": "中砾岩",
+            "thickness": 13.2,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 21,
+            "name": "泥岩",
+            "thickness": 4.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 20,
+            "name": "中砾岩",
+            "thickness": 59.73,
+            "aquiferTag": "3含",
+            "keyLayerTag": "SK2"
+          },
+          {
+            "seq": 19,
+            "name": "泥岩",
+            "thickness": 11.47,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 18,
+            "name": "中砾岩",
+            "thickness": 5.9,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 17,
+            "name": "粉砂质泥岩",
+            "thickness": 41.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 16,
+            "name": "中砾岩",
+            "thickness": 6.9,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 15,
+            "name": "泥岩",
+            "thickness": 5.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 14,
+            "name": "中砾岩",
+            "thickness": 8,
+            "aquiferTag": "3含",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 13,
+            "name": "泥岩",
+            "thickness": 7.5,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 12,
+            "name": "粗砂岩",
+            "thickness": 6.6,
+            "aquiferTag": "",
+            "keyLayerTag": "SK1"
+          },
+          {
+            "seq": 11,
+            "name": "煤",
+            "thickness": 0.8,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 10,
+            "name": "粗砂岩",
+            "thickness": 3.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 9,
+            "name": "16-3上煤",
+            "thickness": 3.48,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 8,
+            "name": "泥岩",
+            "thickness": 6.22,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 7,
+            "name": "16-3中煤",
+            "thickness": 1,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 6,
+            "name": "泥岩",
+            "thickness": 3.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 5,
+            "name": "煤",
+            "thickness": 0.3,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 4,
+            "name": "泥岩",
+            "thickness": 4.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 3,
+            "name": "16-3煤",
+            "thickness": 20.2,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 2,
+            "name": "泥岩",
+            "thickness": 1.9,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          },
+          {
+            "seq": 1,
+            "name": "粗砂岩",
+            "thickness": 14.18,
+            "aquiferTag": "",
+            "keyLayerTag": ""
+          }
+        ]
+      },
+      "workingFaceData": [],
+      "generatedPoints": null,
+      "mineActualHeightM": 4.5,
+      "aquiferMineHeightByFace": [],
+      "aquiferSelectedFaceNo": 1,
+      "roofCavingAngleDeg": 0,
+      "aquiferRoofCavingAngleByFace": [],
+      "surfaceMineHeightByFace": [],
+      "surfaceSelectedFaceNo": 1,
+      "surfaceRoofCavingAngleByFace": [],
+      "upwardMineHeightByFace": [],
+      "upwardSelectedFaceNo": 1,
+      "upwardRoofCavingAngleByFace": [],
+      "paramExtractionResult": {
+        "doneAt": "2026-03-07T07:11:04.936Z",
+        "points": [
+          {
+            "id": "52-18",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5404502.09,
+            "Ti": 16.779736450949503,
+            "Ei": 18.017724926357026,
+            "Hi": 284.6952284853416,
+            "Di": 57.05486462557438,
+            "Mi": 21.251433209424903,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.251433209424903,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "52-19",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496166.57,
+            "y": 5404015.05,
+            "Ti": 11.969285113739062,
+            "Ei": 24.97902794052887,
+            "Hi": 92.07867227801192,
+            "Di": 191.6227717743918,
+            "Mi": 25.25407367441324,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 25.25407367441324,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "54-17",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496655.46,
+            "y": 5404184.68,
+            "Ti": 32.89165433156425,
+            "Ei": 24.950028184221367,
+            "Hi": 217.40923479225648,
+            "Di": 114.93978787872034,
+            "Mi": 15.573278969154245,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 15.573278969154245,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "54-18",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496814.18,
+            "y": 5403710.73,
+            "Ti": 23.121918656981702,
+            "Ei": 24.97036937945039,
+            "Hi": 96.16714556550124,
+            "Di": 161.7186628863,
+            "Mi": 19.102219107984414,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.102219107984414,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "56-20",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497136.01,
+            "y": 5404331.36,
+            "Ti": 7.648051353697635,
+            "Ei": 12.105081664599785,
+            "Hi": 237.95074735767008,
+            "Di": 42.01149797695838,
+            "Mi": 31.080042444403812,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 31.080042444403812,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "56-22",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497291.62,
+            "y": 5403856.01,
+            "Ti": 10.617617132577735,
+            "Ei": 18.0257094992639,
+            "Hi": 278.738421890937,
+            "Di": 60.7706122441927,
+            "Mi": 15.913085816697308,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 15.913085816697308,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "60-20",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498232.97,
+            "y": 5404152.17,
+            "Ti": 28.10042428515947,
+            "Ei": 24.94249203672227,
+            "Hi": 253.4589736553553,
+            "Di": 77.90680213559509,
+            "Mi": 19.31780299299755,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.31780299299755,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BK12-3",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497621.5,
+            "y": 5404458.17,
+            "Ti": 15.796345162617847,
+            "Ei": 24.92498504074525,
+            "Hi": 295.45958096766583,
+            "Di": 110.65446561177373,
+            "Mi": 20.136751812408345,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.136751812408345,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BK12-4",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497754,
+            "y": 5403998.03,
+            "Ti": 20.80253761398188,
+            "Ei": 18.02803681855223,
+            "Hi": 283.3067868451132,
+            "Di": 54.11118315227186,
+            "Mi": 20.689696625373564,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.689696625373564,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BK12-8",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498378.44,
+            "y": 5403689.89,
+            "Ti": 60.914643033857956,
+            "Ei": 18.007451523698673,
+            "Hi": 140.13606329382773,
+            "Di": 132.21369758513725,
+            "Mi": 17.585333975982234,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 17.585333975982234,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BK17-6",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5404074.31,
+            "Ti": 16.58190568540306,
+            "Ei": 12.10135580501308,
+            "Hi": 142.46007745529215,
+            "Di": 199.4997806188104,
+            "Mi": 25.435041870116287,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 25.435041870116287,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BK20-1",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498695.79,
+            "y": 5404381,
+            "Ti": 24.63877158286084,
+            "Ei": 18.006652409654386,
+            "Hi": 199.58717662129467,
+            "Di": 134.72871540991724,
+            "Mi": 20.207016604835758,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.207016604835758,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BND-1",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5403689.89,
+            "Ti": 19.421296759725795,
+            "Ei": 22.497950220791555,
+            "Hi": 161.90412475720802,
+            "Di": 136.60525381381723,
+            "Mi": 21.15221564913153,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.15221564913153,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BND-2",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5403689.89,
+            "Ti": 43.14389693176241,
+            "Ei": 18.121208955593985,
+            "Hi": 170.1294173405177,
+            "Di": 128.0835566729702,
+            "Mi": 19.35138171305636,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.35138171305636,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BND-3",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5404502.09,
+            "Ti": 23.87798444142291,
+            "Ei": 18.43303003670381,
+            "Hi": 205.609722464635,
+            "Di": 129.14964864857674,
+            "Mi": 20.591413789362377,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.591413789362377,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          },
+          {
+            "id": "BND-4",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5404502.09,
+            "Ti": 16.779736450949503,
+            "Ei": 18.017724926357026,
+            "Hi": 284.6952284853416,
+            "Di": 57.05486462557438,
+            "Mi": 21.251433209424903,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.251433209424903,
+            "inWorkface": false,
+            "onWorkfaceEdge": false
+          }
+        ],
+        "geology": {
+          "boundaryCtrl": [],
+          "workfaceCtrl": []
+        },
+        "mining": {
+          "evalPoints": []
+        },
+        "summary": {
+          "geologyEvalCount": 12,
+          "generatedEvalCount": 4,
+          "evalPointCount": 16
+        }
+      },
+      "odiResult": {
+        "keptFactorKeys": [
+          "Di",
+          "Ei",
+          "Hi",
+          "Mi",
+          "Ti"
+        ],
+        "weights": {
+          "wd": 0.45,
+          "wo": 0.3,
+          "wf": 0.25
+        },
+        "minOdi": 141.52645277946147,
+        "maxOdi": 249.7718796107286,
+        "scaleRef": null,
+        "points": [
+          {
+            "id": "52-18",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5404502.09,
+            "Ti": 16.779736450949503,
+            "Ei": 18.017724926357026,
+            "Hi": 284.6952284853416,
+            "Di": 57.05486462557438,
+            "Mi": 21.251433209424903,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.251433209424903,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 43.72847814116325,
+              "DSmax": 72.00697952848806,
+              "Ksi": 59.92964552270406,
+              "Dsi": 72.99758645926175,
+              "Asi": 84.39354337329269,
+              "Hf": 182.4495901017936,
+              "Kw": 52.01299041522208,
+              "Bf": 162.50061265796376,
+              "Af": 50.257989192568004
+            },
+            "wd": 115.73545766965131,
+            "wo": 217.3207753552585,
+            "wf": 447.22118236754744,
+            "odi": 229.0824841498075,
+            "odiNorm": 0.8088658702120348
+          },
+          {
+            "id": "52-19",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496166.57,
+            "y": 5404015.05,
+            "Ti": 11.969285113739062,
+            "Ei": 24.97902794052887,
+            "Hi": 92.07867227801192,
+            "Di": 191.6227717743918,
+            "Mi": 25.25407367441324,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 25.25407367441324,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 40.442283418191366,
+              "DSmax": 34.0161948990101,
+              "Ksi": 40.991615186913826,
+              "Dsi": 71.6641437242841,
+              "Asi": 75.54124370124711,
+              "Hf": 67.69660180243329,
+              "Kw": 36.92948687836056,
+              "Bf": 62.57339602155223,
+              "Af": 41.3486972360841
+            },
+            "wd": 74.45847831720147,
+            "wo": 188.19700261244503,
+            "wf": 208.54818193843016,
+            "odi": 142.1024615110817,
+            "odiNorm": 0.005321321634383044
+          },
+          {
+            "id": "54-17",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496655.46,
+            "y": 5404184.68,
+            "Ti": 32.89165433156425,
+            "Ei": 24.950028184221367,
+            "Hi": 217.40923479225648,
+            "Di": 114.93978787872034,
+            "Mi": 15.573278969154245,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 15.573278969154245,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 49.06977486014433,
+              "DSmax": 67.077527365879,
+              "Ksi": 60.24882775530799,
+              "Dsi": 74.3530321976315,
+              "Asi": 86.37485482108376,
+              "Hf": 145.50365795474616,
+              "Kw": 47.53306341903066,
+              "Bf": 130.28645815803765,
+              "Af": 48.607928916106566
+            },
+            "wd": 116.14730222602333,
+            "wo": 220.97671477402326,
+            "wf": 371.9311084479211,
+            "odi": 211.54207754589774,
+            "odiNorm": 0.6468229357677767
+          },
+          {
+            "id": "54-18",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 496814.18,
+            "y": 5403710.73,
+            "Ti": 23.121918656981702,
+            "Ei": 24.97036937945039,
+            "Hi": 96.16714556550124,
+            "Di": 161.7186628863,
+            "Mi": 19.102219107984414,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.102219107984414,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 40.48250408505741,
+              "DSmax": 38.84068746682404,
+              "Ksi": 42.680126805422894,
+              "Dsi": 64.51365626272515,
+              "Asi": 70.35342967811036,
+              "Hf": 70.94044892910202,
+              "Kw": 35.26517777699585,
+              "Bf": 65.10822966348289,
+              "Af": 38.95355465936845
+            },
+            "wd": 79.32319155188145,
+            "wo": 177.5472127462584,
+            "wf": 210.2674110289492,
+            "odi": 141.52645277946147,
+            "odiNorm": 0
+          },
+          {
+            "id": "56-20",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497136.01,
+            "y": 5404331.36,
+            "Ti": 7.648051353697635,
+            "Ei": 12.105081664599785,
+            "Hi": 237.95074735767008,
+            "Di": 42.01149797695838,
+            "Mi": 31.080042444403812,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 31.080042444403812,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 35.016868184275495,
+              "DSmax": 56.60724944347224,
+              "Ksi": 50.84232364670445,
+              "Dsi": 64.91735282372763,
+              "Asi": 71.4642095201591,
+              "Hf": 152.8719906655267,
+              "Kw": 49.46388181707853,
+              "Bf": 137.13675335947292,
+              "Af": 47.39703747092087
+            },
+            "wd": 91.62411762774774,
+            "wo": 187.22388599059119,
+            "wf": 386.869663312999,
+            "odi": 194.1154345579136,
+            "odiNorm": 0.48583097981984763
+          },
+          {
+            "id": "56-22",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497291.62,
+            "y": 5403856.01,
+            "Ti": 10.617617132577735,
+            "Ei": 18.0257094992639,
+            "Hi": 278.738421890937,
+            "Di": 60.7706122441927,
+            "Mi": 15.913085816697308,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 15.913085816697308,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 41.154348122505006,
+              "DSmax": 68.58794718378535,
+              "Ksi": 54.784643402795005,
+              "Dsi": 69.45243897646716,
+              "Asi": 80.86509581672013,
+              "Hf": 176.7951555068043,
+              "Kw": 46.79510654713299,
+              "Bf": 156.88888499359817,
+              "Af": 45.325888951078355
+            },
+            "wd": 109.74229530629034,
+            "wo": 205.1021781959823,
+            "wf": 425.8050359986138,
+            "odi": 217.3659453462788,
+            "odiNorm": 0.7006253731627468
+          },
+          {
+            "id": "60-20",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498232.97,
+            "y": 5404152.17,
+            "Ti": 28.10042428515947,
+            "Ei": 24.94249203672227,
+            "Hi": 253.4589736553553,
+            "Di": 77.90680213559509,
+            "Mi": 19.31780299299755,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.31780299299755,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 48.44557881918808,
+              "DSmax": 72.7167359789859,
+              "Ksi": 61.6533629002058,
+              "Dsi": 73.17778132120517,
+              "Asi": 85.07466149054063,
+              "Hf": 166.07384014454436,
+              "Kw": 51.04867828458652,
+              "Bf": 148.38682445802354,
+              "Af": 50.426474956570495
+            },
+            "wd": 121.16231479817398,
+            "wo": 219.9058057119516,
+            "wf": 415.93581784372486,
+            "odi": 224.478737833695,
+            "odiNorm": 0.7663352391185955
+          },
+          {
+            "id": "BK12-3",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497621.5,
+            "y": 5404458.17,
+            "Ti": 15.796345162617847,
+            "Ei": 24.92498504074525,
+            "Hi": 295.45958096766583,
+            "Di": 110.65446561177373,
+            "Mi": 20.136751812408345,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.136751812408345,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 51.45426355669104,
+              "DSmax": 76.87587571264439,
+              "Ksi": 64.63919783649125,
+              "Dsi": 86.1125717810698,
+              "Asi": 98.83423598334612,
+              "Hf": 190.0922723847448,
+              "Kw": 54.709147817188104,
+              "Bf": 169.23859032381264,
+              "Af": 54.55005051127649
+            },
+            "wd": 128.33013926933543,
+            "wo": 249.58600560090719,
+            "wf": 468.590061037022,
+            "odi": 249.7718796107286,
+            "odiNorm": 1
+          },
+          {
+            "id": "BK12-4",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 497754,
+            "y": 5403998.03,
+            "Ti": 20.80253761398188,
+            "Ei": 18.02803681855223,
+            "Hi": 283.3067868451132,
+            "Di": 54.11118315227186,
+            "Mi": 20.689696625373564,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.689696625373564,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 44.360691148192345,
+              "DSmax": 73.16866275872043,
+              "Ksi": 61.221781709874065,
+              "Dsi": 72.44691718106527,
+              "Asi": 84.26742023803058,
+              "Hf": 182.31526256987613,
+              "Kw": 52.40524569392902,
+              "Bf": 162.44573809082186,
+              "Af": 50.61809678897866
+            },
+            "wd": 117.52935390691277,
+            "wo": 217.93611912896992,
+            "wf": 447.78434314360567,
+            "odi": 230.21513078270314,
+            "odiNorm": 0.8193295606057288
+          },
+          {
+            "id": "BK12-8",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498378.44,
+            "y": 5403689.89,
+            "Ti": 60.914643033857956,
+            "Ei": 18.007451523698673,
+            "Hi": 140.13606329382773,
+            "Di": 132.21369758513725,
+            "Mi": 17.585333975982234,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 17.585333975982234,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 48.5540450239387,
+              "DSmax": 58.30070351014591,
+              "Ksi": 64.10929001015342,
+              "Dsi": 70.2693861853609,
+              "Asi": 81.90503680443719,
+              "Hf": 105.0596203011194,
+              "Kw": 47.64357633234242,
+              "Bf": 95.93254000343094,
+              "Af": 50.24934566129085
+            },
+            "wd": 106.8547485340846,
+            "wo": 216.2837129999515,
+            "wf": 298.8850822981836,
+            "odi": 187.69102131486943,
+            "odiNorm": 0.4264805441376221
+          },
+          {
+            "id": "BK17-6",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5404074.31,
+            "Ti": 16.58190568540306,
+            "Ei": 12.10135580501308,
+            "Hi": 142.46007745529215,
+            "Di": 199.4997806188104,
+            "Mi": 25.435041870116287,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 25.435041870116287,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 40.97209579372013,
+              "DSmax": 40.31386935315031,
+              "Ksi": 51.084841785725395,
+              "Dsi": 82.68636533646546,
+              "Asi": 89.31826153470726,
+              "Hf": 99.76680990065543,
+              "Kw": 44.34079125675101,
+              "Bf": 90.8612948072578,
+              "Af": 48.49220712154825
+            },
+            "wd": 81.28596514687044,
+            "wo": 223.0894686568981,
+            "wf": 283.46110308621246,
+            "odi": 174.37080068471425,
+            "odiNorm": 0.3034248084812906
+          },
+          {
+            "id": "BK20-1",
+            "cat": "geo",
+            "faceIndex": null,
+            "x": 498695.79,
+            "y": 5404381,
+            "Ti": 24.63877158286084,
+            "Ei": 18.006652409654386,
+            "Hi": 199.58717662129467,
+            "Di": 134.72871540991724,
+            "Mi": 20.207016604835758,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.207016604835758,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 44.60699789653833,
+              "DSmax": 57.44472580451274,
+              "Ksi": 56.71029931152387,
+              "Dsi": 76.66461979730839,
+              "Asi": 86.54859762226228,
+              "Hf": 133.99768782693266,
+              "Kw": 47.00712120850613,
+              "Bf": 120.4306109544448,
+              "Af": 48.70686241321012
+            },
+            "wd": 102.05172370105107,
+            "wo": 219.92351673109454,
+            "wf": 350.1422824030937,
+            "odi": 199.43590128557477,
+            "odiNorm": 0.5349828644159027
+          },
+          {
+            "id": "BND-1",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5403689.89,
+            "Ti": 19.421296759725795,
+            "Ei": 22.497950220791555,
+            "Hi": 161.90412475720802,
+            "Di": 136.60525381381723,
+            "Mi": 21.15221564913153,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.15221564913153,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 42.28545100830841,
+              "DSmax": 49.85093253154691,
+              "Ksi": 49.24405646150015,
+              "Dsi": 70.38727417228569,
+              "Asi": 77.95443683784393,
+              "Hf": 109.98902251186634,
+              "Kw": 41.99780663377905,
+              "Bf": 99.32154959685579,
+              "Af": 44.099103277069084
+            },
+            "wd": 92.13638353985532,
+            "wo": 197.58576747162977,
+            "wf": 295.4074820195703,
+            "odi": 174.5889733393164,
+            "odiNorm": 0.30544034540500964
+          },
+          {
+            "id": "BND-2",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5403689.89,
+            "Ti": 43.14389693176241,
+            "Ei": 18.121208955593985,
+            "Hi": 170.1294173405177,
+            "Di": 128.0835566729702,
+            "Mi": 19.35138171305636,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 19.35138171305636,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 46.386829037676364,
+              "DSmax": 58.10884301769489,
+              "Ksi": 60.36482098315577,
+              "Dsi": 72.5739454831317,
+              "Asi": 83.23080182551179,
+              "Hf": 119.69419016173943,
+              "Kw": 47.47935989251003,
+              "Bf": 108.36167173937837,
+              "Af": 49.449448608857416
+            },
+            "wd": 104.49567205537124,
+            "wo": 216.16956829179924,
+            "wf": 324.9846704024853,
+            "odi": 193.12009051307814,
+            "odiNorm": 0.47663572719834885
+          },
+          {
+            "id": "BND-3",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 498782.26,
+            "y": 5404502.09,
+            "Ti": 23.87798444142291,
+            "Ei": 18.43303003670381,
+            "Hi": 205.609722464635,
+            "Di": 129.14964864857674,
+            "Mi": 20.591413789362377,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 20.591413789362377,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 44.71259712079562,
+              "DSmax": 58.58823416063684,
+              "Ksi": 56.93307957190688,
+              "Dsi": 76.49894146550285,
+              "Asi": 86.41516552339887,
+              "Hf": 137.4243037177021,
+              "Kw": 47.489122673116015,
+              "Bf": 123.42728708271966,
+              "Af": 48.93155766799201
+            },
+            "wd": 103.30083128143247,
+            "wo": 219.8471865608086,
+            "wf": 357.2722711415298,
+            "odi": 201.75759783026965,
+            "odiNorm": 0.5564313136729224
+          },
+          {
+            "id": "BND-4",
+            "cat": "gray",
+            "faceIndex": null,
+            "x": 496022.31,
+            "y": 5404502.09,
+            "Ti": 16.779736450949503,
+            "Ei": 18.017724926357026,
+            "Hi": 284.6952284853416,
+            "Di": 57.05486462557438,
+            "Mi": 21.251433209424903,
+            "delta": 0,
+            "lpi": 0,
+            "lci": 0,
+            "trueCoalThk": 21.251433209424903,
+            "inWorkface": false,
+            "onWorkfaceEdge": false,
+            "indicators": {
+              "Smax": 43.72847814116325,
+              "DSmax": 72.00697952848806,
+              "Ksi": 59.92964552270406,
+              "Dsi": 72.99758645926175,
+              "Asi": 84.39354337329269,
+              "Hf": 182.4495901017936,
+              "Kw": 52.01299041522208,
+              "Bf": 162.50061265796376,
+              "Af": 50.257989192568004
+            },
+            "wd": 115.73545766965131,
+            "wo": 217.3207753552585,
+            "wf": 447.22118236754744,
+            "odi": 229.0824841498075,
+            "odiNorm": 0.8088658702120348
+          }
+        ]
+      },
+      "showLayerDrillholes": true,
+      "showLayerEvalPoints": true,
+      "showLayerInterpolation": true,
+      "showEvalBoundaryPoints": true,
+      "showEvalWorkfaceLocPoints": true,
+      "showEvalEdgeCtrlPoints": true,
+      "showEvalCenterCtrlPoints": true,
+      "odiLevelFilter": null,
+      "odiVizPalette": "blueRed",
+      "odiVizInvertPalette": false,
+      "odiVizSteps": 5,
+      "odiVizRange": {
+        "min": "",
+        "max": ""
+      },
+      "aquiferOdiSmoothPasses": 0,
+      "showBoundaryLabels": false,
+      "showDrillholeLabels": false,
+      "showWorkfaceOutline": false,
+      "showMeasuredPoints": true,
+      "miningHeight": 20.96,
+      "stepLength": 25,
+      "richFactor": 1.1,
+      "scenarioWeights": {
+        "wd": 0.45,
+        "wo": 0.3,
+        "wf": 0.25
+      },
+      "selectedCoal": "16-3煤",
+      "selectedUpperCoal": "",
+      "geologyLayoutMode": "2x2",
+      "geoPickA": "Ti",
+      "geoPickB": "Hi",
+      "mapVizSettings": {
+        "Ti": {
+          "palette": "viridis",
+          "range": {
+            "enabled": false,
+            "min": "",
+            "max": ""
+          }
+        },
+        "Hi": {
+          "palette": "viridis",
+          "range": {
+            "enabled": false,
+            "min": "",
+            "max": ""
+          }
+        },
+        "Di": {
+          "palette": "viridis",
+          "range": {
+            "enabled": false,
+            "min": "",
+            "max": ""
+          }
+        },
+        "Mi": {
+          "palette": "viridis",
+          "range": {
+            "enabled": false,
+            "min": "",
+            "max": ""
+          }
+        }
+      },
+      "measuredConstraintData": [],
+      "measuredConstraintLines": [],
+      "selectedMeasuredLineId": "",
+      "errorAnalysisByLineId": {},
+      "measuredZoningResult": null,
+      "selectedAquiferType": "",
+      "selectedSkLayerPick": 2
+    }
+  }
+}

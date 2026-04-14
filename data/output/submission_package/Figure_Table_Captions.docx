@@ -1,0 +1,304 @@
+"""
+Generate Figure & Table Captions (LaTeX + Word) for SCI Paper Submission.
+
+Output:
+  data/output/submission_package/Figure_Table_Captions.docx
+"""
+
+from docx import Document
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from pathlib import Path
+
+OUT = Path(r"D:\xiangmu\miningplan\data\output\submission_package")
+
+
+def add_caption(doc, label, caption_text):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_before = Pt(12)
+
+    run_label = p.add_run(label)
+    run_label.bold = True
+    run_label.font.name = "Times New Roman"
+    run_label.font.size = Pt(10)
+    run_label._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    run_text = p.add_run(" " + caption_text)
+    run_text.font.name = "Times New Roman"
+    run_text.font.size = Pt(10)
+    run_text._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    doc = Document()
+
+    style = doc.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style.font.size = Pt(10)
+    style.paragraph_format.line_spacing = 1.15
+
+    # Title
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("Figure and Table Captions for SCI Submission")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(14)
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    note = doc.add_paragraph()
+    note.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    run = note.add_run(
+        "Note: All figures are 300 DPI (PNG/TIF) + vector PDF. "
+        "Tables are in separate .docx files. "
+        "Supplementary figures are labeled Fig. S1\u2013S4."
+    )
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(9)
+    run.font.italic = True
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    doc.add_paragraph()  # spacer
+
+    # ═══════════════════════════════════════════════════════════
+    #  MAIN FIGURES
+    # ═══════════════════════════════════════════════════════════
+
+    heading = doc.add_paragraph()
+    run = heading.add_run("MAIN FIGURES")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(11)
+    run.font.color.rgb = None
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    captions_main = [
+        ("Fig. 1",
+         "Spatial distribution of the Overburden Disturbance Index (ODI) for Case 0 "
+         "(Surface Subsidence scenario). (a) ODI heatmap interpolated using cubic "
+         "gridding with a 5-step blue\u2013red diverging colormap. White triangles "
+         "indicate borehole locations with IDs annotated. The solid white line "
+         "delineates the study area boundary, and dashed pink lines outline mining "
+         "faces. The colorbar shows normalized ODI values from 0 (undisturbed) to 1 "
+         "(severely disturbed)."),
+
+        ("Fig. 2",
+         "Spatial interpolation maps of geological parameters for Case 0 (Surface "
+         "Subsidence). (a) Stratum thickness $T_i$ (m), (b) distance to aquifer "
+         "$H_i$ (m), (c) mining depth $D_i$ (m), and (d) mining height $M_i$ (m). "
+         "All maps use the viridis colormap with cubic interpolation. White triangles "
+         "mark borehole positions."),
+
+        ("Fig. 3",
+         "Spatial distribution map of evaluation points, boreholes, mining faces, and "
+         "study area boundary for Case 0 (Surface Subsidence). The black solid line "
+         "represents the boundary, dashed lines indicate individual mining faces (BJ1\u2013BJ4), "
+         "and colored dots show evaluation points categorized by geological zone."),
+
+        ("Fig. 4",
+         "Frequency distribution histogram of normalized ODI values for Case 0 "
+         "(Surface Subsidence). The red dashed line indicates the mean ODI "
+         "($\\mu = 0.3250$). The distribution is right-skewed, indicating that the "
+         "majority of evaluation points exhibit low disturbance levels."),
+
+        ("Fig. 5",
+         "ODI level classification pie chart for Case 0 (Surface Subsidence) based on "
+         "measured zoning thresholds. Five disturbance levels are shown: Level I "
+         "(Stable, 3.2%), Level II (Slight, 70.8%), Level III (Moderate, 0.5%), "
+         "Level IV (Strong, 0.0%), and Level V (Severe, 25.4%)."),
+
+        ("Fig. 6",
+         "Parameter scatter matrix showing the pairwise relationships among stratum "
+         "thickness ($T_i$), distance to aquifer ($H_i$), and mining depth ($D_i$) "
+         "for Case 0. Diagonal panels show parameter frequency distributions; "
+         "off-diagonal panels show scatter plots with kernel density trends."),
+
+        ("Fig. 7",
+         "Error analysis between ODI predictions and measured subsidence values for "
+         "Case 0. (a) Survey Line 1 ($N=16$), (b) Survey Line 2 ($N=16$), and "
+         "(c) Survey Line 3 ($N=56$). Each panel shows the ODI renormalized values "
+         "(blue solid line), measured values (red dashed line), and absolute error "
+         "ratio (gray bars) for each measurement point."),
+
+        ("Fig. 8",
+         "Weight coefficient radar chart showing the relative contributions of "
+         "geological ($w_d$), mining ($w_o$), and composite ($w_f$) factors to the "
+         "ODI calculation for Case 0 (Surface Subsidence). "
+         "$w_d = 0.45$, $w_o = 0.30$, $w_f = 0.25$."),
+    ]
+
+    for label, text in captions_main:
+        add_caption(doc, label, text)
+
+    # ═══════════════════════════════════════════════════════════
+    #  SUPPLEMENTARY FIGURES
+    # ═══════════════════════════════════════════════════════════
+
+    heading2 = doc.add_paragraph()
+    run = heading2.add_run("SUPPLEMENTARY FIGURES")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(11)
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    captions_supp = [
+        ("Fig. S1",
+         "Pearson correlation matrix between geological/mining parameters ($T_i$, "
+         "$H_i$, $D_i$, $M_i$) and the Overburden Disturbance Index (ODI). Data "
+         "aggregated from all seven engineering cases. Blue indicates negative "
+         "correlation, red indicates positive correlation. Values are annotated "
+         "in each cell."),
+
+        ("Fig. S2",
+         "Measured versus predicted ODI scatter plots for Case 0 (Surface "
+         "Subsidence). (a) Survey Line 1, (b) Survey Line 2, and (c) Survey Line 3. "
+         "Both measured and ODI values are normalized to [0, 1]. The black dashed "
+         "line represents the ideal 1:1 agreement. Colored solid lines show linear "
+         "regression fits with $R^2$ values annotated."),
+
+        ("Fig. S3",
+         "Cross-case comparison of ODI statistics across all seven engineering cases. "
+         "Grouped bars show mean ODI (blue, with standard deviation error bars), "
+         "90th percentile P90 (orange), maximum ODI (red), and sample size $N$ "
+         "(purple, secondary axis)."),
+
+        ("Fig. S4",
+         "Parameter sensitivity analysis showing Pearson correlation coefficients "
+         "between each geological/mining parameter ($T_i$, $H_i$, $D_i$, $M_i$) and "
+         "ODI, grouped by engineering case. Positive values indicate that higher "
+         "parameter values are associated with greater disturbance."),
+    ]
+
+    for label, text in captions_supp:
+        add_caption(doc, label, text)
+
+    # ═══════════════════════════════════════════════════════════
+    #  TABLES
+    # ═══════════════════════════════════════════════════════════
+
+    heading3 = doc.add_paragraph()
+    run = heading3.add_run("TABLES")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(11)
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    captions_table = [
+        ("Table 1",
+         "Statistical summary of ODI values across all seven engineering cases. "
+         "N: number of evaluation points; Min/Max: minimum and maximum ODI; "
+         "Mean: arithmetic mean; Std: standard deviation; P50: median; "
+         "P90: 90th percentile; Skewness: distribution asymmetry."),
+
+        ("Table 2",
+         "Comparison of ODI weight coefficients across engineering cases. "
+         "$w_d$: geological factor weight; $w_o$: mining operation weight; "
+         "$w_f$: composite factor weight. Weights sum to 1.0 for each case."),
+
+        ("Table 3",
+         "Error analysis between ODI predictions and field measurements for "
+         "Case 0 (Surface Subsidence). MAE: mean absolute error; RMSE: root mean "
+         "square error; Mean/Max Error Ratio: relative discrepancy between "
+         "predicted and measured values."),
+
+        ("Table 4",
+         "Statistical summary of geological and mining parameters ($T_i$, $H_i$, "
+         "$D_i$, $M_i$) across all engineering cases. Min, Max, Mean, and Std "
+         "are reported in meters."),
+
+        ("Table 5",
+         "ODI level zoning distribution for each engineering case. Levels I\u2013V "
+         "correspond to Stable, Slight, Moderate, Strong, and Severe disturbance. "
+         "Cell values show point counts and percentages. Level thresholds are "
+         "based on measured zoning results (Case 0) or equal-width bins "
+         "(0\u20130.2, 0.2\u20130.4, 0.4\u20130.6, 0.6\u20130.8, 0.8\u20131.0)."),
+    ]
+
+    for label, text in captions_table:
+        add_caption(doc, label, text)
+
+    # ═══════════════════════════════════════════════════════════
+    #  LATEX VERSION
+    # ═══════════════════════════════════════════════════════════
+
+    doc.add_paragraph()
+    heading4 = doc.add_paragraph()
+    run = heading4.add_run("LATEX VERSION (copy-paste ready)")
+    run.bold = True
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(11)
+    run.font.color.rgb = None
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+
+    latex_lines = []
+    latex_lines.append(r"\section*{Figure Captions}")
+    latex_lines.append("")
+
+    fig_latex = [
+        (r"\figurecaption{Fig. 1}", r"Spatial distribution of the Overburden Disturbance Index (ODI) for Case 0 (Surface Subsidence scenario). ODI heatmap interpolated using cubic gridding with a 5-step blue--red diverging colormap. White triangles indicate borehole locations. The solid white line delineates the study area boundary, and dashed pink lines outline mining faces."),
+        (r"\figurecaption{Fig. 2}", r"Spatial interpolation maps of geological parameters for Case 0: (a) stratum thickness $T_i$, (b) distance to aquifer $H_i$, (c) mining depth $D_i$, and (d) mining height $M_i$ (all in meters). Viridis colormap with cubic interpolation."),
+        (r"\figurecaption{Fig. 3}", r"Spatial distribution map for Case 0 showing evaluation points, boreholes, mining faces, and study area boundary."),
+        (r"\figurecaption{Fig. 4}", r"Frequency distribution histogram of normalized ODI values for Case 0. Red dashed line indicates mean ODI ($\mu = 0.3250$)."),
+        (r"\figurecaption{Fig. 5}", r"ODI level classification for Case 0: Level I (Stable, 3.2\%), Level II (Slight, 70.8\%), Level III (Moderate, 0.5\%), Level IV (Strong, 0.0\%), Level V (Severe, 25.4\%)."),
+        (r"\figurecaption{Fig. 6}", r"Parameter scatter matrix showing pairwise relationships among $T_i$, $H_i$, and $D_i$ for Case 0."),
+        (r"\figurecaption{Fig. 7}", r"Error analysis for Case 0: (a) Survey Line 1, (b) Survey Line 2, (c) Survey Line 3. Blue solid line: ODI renormalized; red dashed line: measured; gray bars: error ratio."),
+        (r"\figurecaption{Fig. 8}", r"Weight coefficient radar chart for Case 0. $w_d = 0.45$ (Geology), $w_o = 0.30$ (Mining), $w_f = 0.25$ (Composite)."),
+    ]
+
+    for label, text in fig_latex:
+        p = doc.add_paragraph()
+        run = p.add_run(f"{label}\n{text}")
+        run.font.name = "Consolas"
+        run.font.size = Pt(8)
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "Consolas")
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    run = p.add_run(r"\section*{Supplementary Figure Captions}")
+    run.font.name = "Consolas"
+    run.font.size = Pt(8)
+    run.bold = True
+
+    supp_latex = [
+        (r"\figurecaption{Fig. S1}", r"Pearson correlation matrix between geological/mining parameters ($T_i$, $H_i$, $D_i$, $M_i$) and ODI, aggregated from all seven cases."),
+        (r"\figurecaption{Fig. S2}", r"Measured versus predicted ODI scatter plots for Case 0: (a) Line 1, (b) Line 2, (c) Line 3. Black dashed: 1:1 line; colored solid: linear fit with $R^2$."),
+        (r"\figurecaption{Fig. S3}", r"Cross-case comparison of ODI statistics (Mean, P90, Max, $N$) across seven engineering cases."),
+        (r"\figurecaption{Fig. S4}", r"Parameter sensitivity analysis: Pearson $r$ between $T_i$, $H_i$, $D_i$, $M_i$ and ODI, by case."),
+    ]
+
+    for label, text in supp_latex:
+        p = doc.add_paragraph()
+        run = p.add_run(f"{label}\n{text}")
+        run.font.name = "Consolas"
+        run.font.size = Pt(8)
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    run = p.add_run(r"\section*{Table Captions}")
+    run.font.name = "Consolas"
+    run.font.size = Pt(8)
+    run.bold = True
+
+    table_latex = [
+        (r"\tablecaption{Table 1}", r"Statistical summary of ODI values across seven engineering cases (N, Min, Max, Mean, Std, P50, P90, Skewness)."),
+        (r"\tablecaption{Table 2}", r"ODI weight coefficients ($w_d$, $w_o$, $w_f$) across engineering cases."),
+        (r"\tablecaption{Table 3}", r"Error analysis between ODI predictions and field measurements for Case 0 (MAE, RMSE, Error Ratio)."),
+        (r"\tablecaption{Table 4}", r"Statistical summary of geological/mining parameters ($T_i$, $H_i$, $D_i$, $M_i$) across all cases."),
+        (r"\tablecaption{Table 5}", r"ODI level zoning distribution (I--V) for each engineering case."),
+    ]
+
+    for label, text in table_latex:
+        p = doc.add_paragraph()
+        run = p.add_run(f"{label}\n{text}")
+        run.font.name = "Consolas"
+        run.font.size = Pt(8)
+
+    doc.save(OUT / "Figure_Table_Captions.docx")
+    print(f"[OK] Figure_Table_Captions.docx")
+
+
+if __name__ == "__main__":
+    main()

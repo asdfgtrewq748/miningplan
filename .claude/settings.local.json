@@ -21,7 +21,28 @@
       "Bash(curl -L -o /c/Users/Administrator/miniconda_installer.exe https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe)",
       "Bash(curl -k -L -o /c/Users/Administrator/miniconda_installer.exe https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe)",
       "Bash(powershell -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://repo.anaconda.com/miniconda/Miniconda3-latest-Windows-x86_64.exe' -OutFile 'C:\\\\Users\\\\Administrator\\\\miniconda_installer.exe'\")",
-      "Bash(powershell -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Windows-x86_64.exe' -OutFile 'C:\\\\Users\\\\Administrator\\\\miniconda_installer.exe'\")"
+      "Bash(powershell -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/Miniconda3-latest-Windows-x86_64.exe' -OutFile 'C:\\\\Users\\\\Administrator\\\\miniconda_installer.exe'\")",
+      "Bash(npx vite:*)",
+      "Bash(npm run:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173/)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3001/docs)",
+      "mcp__chrome-devtools__new_page",
+      "Bash(pip install:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -c \"print\\('hello'\\)\")",
+      "Bash(ls -la *.zip)",
+      "Bash(ls supplementary_figures/*.png)",
+      "Bash(ls -la *.py *.bat *.sh)",
+      "Bash(ls -la data/output/verify_* data/output/_debug* data/output/*_main.png)",
+      "Bash(rm -f data/output/0-*.png data/output/1-*.png data/output/2-*.png data/output/3-*.png data/output/4-*.png data/output/5-*.png data/output/6-*.png)",
+      "Bash(rm -f data/output/_debug_buttons.json)",
+      "Bash(rm -f data/output/verify_heatmap.png data/output/verify_pie.png data/output/verify_radar.png)",
+      "Bash(rmdir data/output/eps_figures)",
+      "Bash(rm -f capture_demo.py export_demo_results.py)",
+      "Bash(ls data/output/word_tables/table*/Table*.docx)",
+      "Bash(ls data/output/supplementary_figures/*.png)",
+      "Bash(ls \"d:/xiangmu/miningplan/data/output/supplementary_figures/\"*.png)"
     ]
   }
 }

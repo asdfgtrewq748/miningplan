@@ -1,0 +1,52 @@
+{
+  "经济参数": {
+    "coalPriceYuanPerTon": 800,
+    "salesRatio": 1,
+    "opexVarYuanPerTon": 320,
+    "opexFixedWanPerMonth": 300,
+    "capexInitialWan": 30000,
+    "capexSustainWanPerYear": 0,
+    "discountRate": 0.1,
+    "odiVizInvertPalette": false,
+    "riskLinkEnabled": true,
+    "riskMetricKey": "p90",
+    "riskImpactThreshold": 0.85,
+    "riskDowntimeRatio": 0.1,
+    "riskExtraCostWanPerHighRiskMonth": 0
+  },
+  "ODI缩放配置": {
+    "qLo": 0.05,
+    "qHi": 0.95,
+    "includeGeoOnly": true
+  },
+  "调控阶段N": 5,
+  "调控阶段K": 1,
+  "采掘参数": {
+    "daysPerMonth": 25,
+    "utilization": 0.85,
+    "odiVizInvertPalette": false,
+    "shearAdvanceRate": 6,
+    "driveRate": 15,
+    "installDays": 15,
+    "relocationDays": 10,
+    "singleFaceMining": true,
+    "driveParallelWithMining": true,
+    "driveCrews": 1
+  },
+  "接续评价参数": {
+    "metric": "p90",
+    "threshold": 0.85,
+    "sampleStepM": 25,
+    "useOdiStarWhenAvailable": true
+  },
+  "多目标权重": {
+    "wProd": 1,
+    "wRisk": 1,
+    "wMonths": 0.15
+  },
+  "大巷确认": {
+    "dir": "NE",
+    "offsetM": 120,
+    "confirmedAt": 1772868553024
+  }
+}
