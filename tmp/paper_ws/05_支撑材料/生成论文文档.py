@@ -9,7 +9,7 @@ from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import qn
-from docx.shared import Cm, Inches, Pt
+from docx.shared import Cm, Inches, Pt, RGBColor
 from PIL import Image
 
 try:
@@ -232,6 +232,34 @@ def add_heading(doc: Document, level: int, text: str) -> None:
     run.bold = True
     run.font.size = Pt(13 if level == 2 else 11)
     set_east_asia_font(run, "黑体" if level == 2 else "宋体")
+
+
+def add_placeholder_heading(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.left_indent = Cm(0.2)
+    p.paragraph_format.right_indent = Cm(0.2)
+    p_pr = p._element.get_or_add_pPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:fill"), "FFF2CC")
+    p_pr.append(shd)
+    run = p.add_run(text)
+    run.bold = True
+    run.font.size = Pt(11)
+    run.font.color.rgb = RGBColor(0x9C, 0x57, 0x00)
+    set_east_asia_font(run, "黑体")
+
+
+def add_placeholder_detail(doc: Document, text: str) -> None:
+    p = doc.add_paragraph()
+    p.paragraph_format.space_after = Pt(2)
+    p.paragraph_format.left_indent = Cm(0.4)
+    p.paragraph_format.right_indent = Cm(0.2)
+    run = p.add_run(text)
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    set_east_asia_font(run, "宋体")
 
 
 def copy_section_layout(src, dst, columns: int) -> None:
@@ -474,6 +502,7 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
     in_references = False
     bookmark_id = 1
     in_math_block = False
+    in_placeholder_block = False
     math_lines: list[str] = []
 
     pending_table_captions: list[str] = []
@@ -499,6 +528,7 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
                 continue
 
         if not stripped:
+            in_placeholder_block = False
             i += 1
             continue
 
@@ -602,17 +632,25 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
         if stripped.startswith("## "):
             heading_text = strip_markdown(stripped[3:])
             in_references = heading_text == "参考文献"
+            in_placeholder_block = False
             add_heading(doc, 2, heading_text)
             body_started = True
             i += 1
             continue
 
         if stripped.startswith("### "):
-            add_heading(doc, 3, strip_markdown(stripped[4:]))
+            heading_text = strip_markdown(stripped[4:])
+            if heading_text.startswith("待补图"):
+                add_placeholder_heading(doc, heading_text)
+                in_placeholder_block = True
+            else:
+                in_placeholder_block = False
+                add_heading(doc, 3, heading_text)
             i += 1
             continue
 
         if stripped.startswith("**表") or stripped.startswith("**Table "):
+            in_placeholder_block = False
             pending_table_captions.append(strip_markdown(stripped))
             i += 1
             continue
@@ -632,25 +670,32 @@ def convert(md_path: Path, docx_path: Path) -> tuple[int, bool]:
         if stripped.startswith("![") and "](" in stripped and stripped.endswith(")"):
             alt = stripped[2: stripped.index("](")]
             rel = stripped[stripped.index("](") + 2 : -1]
+            in_placeholder_block = False
             add_image(doc, md_path, strip_markdown(alt), rel)
             i += 1
             continue
 
         if stripped.startswith("- "):
+            in_placeholder_block = False
             add_list_item(doc, stripped[2:], numbered=False)
             i += 1
             continue
 
         if re.match(r"^\d+\.\s+", stripped) and not in_references:
+            in_placeholder_block = False
             add_list_item(doc, re.sub(r"^\d+\.\s+", "", stripped), numbered=True)
             i += 1
             continue
 
         if in_references:
+            in_placeholder_block = False
             add_reference_paragraph(doc, stripped, bookmark_id)
             bookmark_id += 1
         else:
-            add_body_paragraph(doc, stripped, transform, math_counter)
+            if in_placeholder_block:
+                add_placeholder_detail(doc, strip_markdown(stripped))
+            else:
+                add_body_paragraph(doc, stripped, transform, math_counter)
         i += 1
 
     doc.save(docx_path)
