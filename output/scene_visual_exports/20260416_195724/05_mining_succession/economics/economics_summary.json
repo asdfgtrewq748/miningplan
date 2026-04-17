@@ -1,0 +1,14 @@
+{
+  "months": 136,
+  "npvWan": 911343.1778366175,
+  "discountRateYear": 0.1,
+  "discountRateMonth": 0.007974140428903764,
+  "paybackMonth": 12,
+  "totalRevenueWan": 2431246.2462227866,
+  "totalCostWan": 848798.7987912918,
+  "totalNetCashWan": 1582447.4474314952,
+  "unitCostYuanPerTon": 349.1208675838558,
+  "unitMarginYuanPerTon": 650.8791324161442,
+  "highRiskMonths": 0,
+  "lastCumCashWan": 1582447.447431497
+}
