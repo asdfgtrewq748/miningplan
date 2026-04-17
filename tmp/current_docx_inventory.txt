@@ -1,0 +1,183 @@
+paragraphs=169 tables=4 sections=12
+styles used:
+150	Normal
+12	Heading 2
+7	Heading 1
+
+PARAGRAPHS
+000	[Normal]	基于覆岩扰动指数约束的采区多目标协同规划方法
+001	[Normal]	作者：李杨，王楠，刘浩天（通信作者）
+002	[Normal]	单位：中国矿业大学（北京）能源与矿业学院，北京 100083
+003	[Normal]	作者简介：李杨（1982—），男，河北唐山人，教授，博士，研究方向为矿业工程。
+004	[Normal]	通信作者：刘浩天（2001—），男，河北唐山人，博士研究生，研究方向为矿业工程。Tel：17692508100，E-mail：gqt2500103011@student.cumtb.edu.cn。
+005	[Normal]	结果说明，该方法能够在统一空间参照和统一风险口径下完成参数场构建、风险前置约束和规划对象生成，可为采区规划中的多目标权衡与后续评价提供可复核的工程方法框架；当前结果主要用于验证方法链贯通能力，工程定案仍需结合矿井尺度与约束参数进一步校核。
+006	[Normal]	关键词：采区规划；覆岩扰动指数；多目标协同规划；风险前置约束；采掘接续；工程经济评价
+007	[Normal]	Multi-objective collaborative planning method for mining district constrained by overburden disturbance index
+008	[Normal]	LI Yang, WANG Nan, LIU Haotian (Corresponding author)
+009	[Normal]	School of Energy and Mining Engineering, China University of Mining and Technology-Beijing, Beijing 100083, China
+010	[Normal]	Abstract: To address the difficulty of converting discrete geological information into continuous planning constraints, the heterogeneous expression of multi-scenario overburden disturbance risks, and the weak transferability of planning results to downstream evaluation, a multi-objective collaborative mining-district planning method constrained by the overburden disturbance index (ODI) is proposed. The method constructs an effective layout domain and continuous parameter fields from boundary, borehole and design-parameter inputs, unifies surface subsidence, aquifer disturbance and upward-mining-related risks into the ODI framework, and embeds the risk indicator into working-face and roadway layout generation. In the sample study area, the coal thickness of 15 boreholes ranges from 2.8 to 4.8 m with an average of 3.7933 m. Within the original boundary area of 255250.00 m2, the generated layout contains 3 working faces and 11 roadways, with a layout area of 176565.72 m2, an effective coverage ratio of 69.17%, a total roadway length of 4817.50 m, and an average planning score of 68.8. The ODI field has a mean value of 0.4669, a P90 value of 0.7474, and 15.89% of grids exceeding 0.70. The results indicate that the proposed method can integrate parameter-field construction, forward risk constraints, and planning-object generation under a unified spatial and risk-evaluation framework.
+011	[Normal]	Keywords: mining district planning; overburden disturbance index; multi-objective collaborative planning; risk pre-constraint; mining succession; engineering economic evaluation
+013	[Heading 1]	0 引言
+014	[Normal]	采区规划位于煤矿生产决策链前端，其结果直接影响工作面布置、巷道工程量、资源回收率、采掘接续组织以及工程经济效益。随着煤矿智能化建设由单机装备升级逐步转向多源数据协同、业务流程联动和平台化决策，采区规划已不再是单纯的平面布置问题，而成为同时涉及地质建模、风险约束、方案生成、生产组织与经济评价的复合决策问题[1-3]。在现有工程实践中，采区边界、钻孔、分层、参数场、风险分析与方案评价往往分散在不同软件、表格和人工处理环节中，同一批基础数据需要反复整理、重复转换和多次校核，不仅拉长了方案迭代周期，也削弱了中间成果在后续环节中的复用价值。因此，面向采区规划全过程构建统一的数据组织、风险约束与方案决策方法，已成为煤矿规划设计由经验驱动向数据驱动和协同决策转变的重要需求。
+015	[Normal]	围绕采动覆岩响应、地表沉陷、导水裂隙带发育、含水层受扰及上行开采可行性等问题，已有研究从采动应力重分布、裂隙演化规律、覆岩失稳机理与沉陷预测等方面开展了大量探索，为采区规划中的风险识别与安全控制提供了重要理论基础[4-10]。与此同时，地下矿山布置优化、多目标规划及生产调度研究表明，候选方案生成、目标排序和多方案比较能够提升规划决策质量[11-15]。近年来，数字孪生、矿山地质建模和过程管理技术的发展，也使采区边界、钻孔、分层和生产状态在统一数据空间中的组织与维护成为可能[16-18]；矿山经济评价方法则由静态收益核算逐步扩展到考虑风险扰动的现金流和净现值分析框架[19-21]。总体来看，现有研究已分别在风险表征、布局优化和数据管理等方面取得较多成果，为采区智能规划提供了方法储备。
+016	[Normal]	然而，现有工作在采区规划应用层面仍存在明显不足。其一，钻孔和分层信息本质上属于离散样本和属性集合，如何将其转化为可直接参与空间布置和方案筛选的连续参数场，现有研究讨论仍不充分。其二，地表沉陷、含水层扰动和上行开采等风险场景具有不同量纲、不同判据和不同分析尺度，多数研究仍聚焦于单一风险场景或单一判据，尚难形成可在规划阶段统一参与方案比较的约束表达。其三，已有布局优化研究多强调某一阶段的几何求解或算法排序，对于规划结果如何继续进入采掘接续组织、参数调控和工程经济评价环节讨论不足，导致“规划—校核—评价”之间仍存在明显割裂。上述问题决定了现有研究尚未形成真正面向采区规划设计的一体化决策链，难以支撑风险前置控制、多目标权衡和下游连续决策的协同实施。
+017	[Normal]	从采区规划的工程语境看，规划对象并不是孤立存在的几何图形，而是受地质条件、保护约束、资源价值和覆岩扰动共同制约的空间决策对象。若仅依据几何可布置性或局部经验进行方案生成，虽然能够快速形成初始布局，但可能忽视高扰动敏感区、资源分布差异和后续接续组织约束，导致规划结果在实施阶段频繁调整；反之，若在布局完成后再进行风险校核和经济评价，又容易造成方案重复迭代、评价口径不一致和中间结果难复用。因此，采区规划亟需一种能够把有效布置域、连续参数场、多场景风险约束和后续评价链路统一起来的方法，使风险控制由事后解释转向前置约束，使布局结果由单阶段输出转变为可持续传递的上游决策对象。
+018	[Normal]	基于此，本文提出一种基于覆岩扰动指数（overburden disturbance index，ODI）约束的采区多目标协同规划方法。方法主线包括：构建有效布置域与连续参数场，将离散钻孔和边界信息转化为可计算约束；建立ODI统一风险口径，使地表沉陷、含水层扰动和上行开采等风险能够在同一尺度下参与规划；在工程效率、资源覆盖和扰动控制之间进行多目标权衡，形成可复核的工作面与巷道布局结果；最后，将规划结果作为后续采掘接续和经济评价的上游输入。本文强调的是样例条件下方法链和对象链的贯通性，不将当前结果扩展为真实矿井条件下的普适最优结论。
+019	[Normal]	本文主要开展以下工作：构建采区有效布置域与连续参数场，建立多场景 ODI 风险统一表达方法；构建面向工程效率、资源回收与覆岩扰动控制的多目
+020	[Normal]	标协同规划模型，形成多模式候选方案生成、筛选与比选机制；结合研究区案例，对参数场构建结果、ODI 风险分布、结构化规划结果与ODI风险统计结果进行分析。研究结果可为采区规划中的多目标权衡、风险前置控制与方案比选提供统一的计算框架和技术路径。
+022	[Heading 1]	1 基于覆岩扰动指数约束的采区多目标协同规划方法
+023	[Heading 2]	1.1 覆岩扰动约束机理与 ODI 统一表达
+024	[Normal]	采区规划的本质是在几何可实施性、资源回收与覆岩扰动控制之间寻求可接受折中。当采动引起的覆岩变形、裂隙发育和应力重分布超过安全阈值时，工作面布置范围、推进方式及回采参数将受到明显约束；反之，若一味采取保守布局，虽然有利于扰动控制，却可能压缩可采空间、降低资源回收水平并削弱生产组织效率。因此，采区规划并不是单纯的几何布局问题，而是一个受覆岩扰动约束驱动的多目标协同决策问题。图1可将该关系概括为“采区规划决策变量—覆岩扰动响应特征—规划决策约束结果”的传递链，即规划变量通过布置方式、尺度参数与推进组织影响覆岩扰动的空间分布、强度水平和演化特征，扰动响应再反向作用于空间约束、强度约束和过程约束，最终参与规划方案的形成与筛选。
+026	[Normal]	图1 覆岩扰动约束机理示意图
+027	[Normal]	对规划域内任意位置x，ODI可表示为
+028	[Normal]	ODI(x)=Σ(i=1..n) w_i x_i                                                   （1）
+029	[Normal]	并满足
+030	[Normal]	0≤x_i≤1，Σ(i=1..n) w_i=1，w_i≥0                                      （2）
+031	[Normal]	式中，ODI为覆岩扰动指数；x_i为第i类风险因子的归一化指标值；w_i为相应权重；n为纳入计算的风险因子数量。
+032	[Normal]	进一步定义候选方案π的ODI统计指标为
+033	[Normal]	ODI_bar(π)=1/|A_π| ∫_{A_π} ODI(x) dx                                  （3）
+034	[Normal]	P90_π=Q_0.90{ODI(x) | x∈A_π}                                         （4）
+036	[Normal]	E_π=|{x∈A_π | ODI(x)>T_ODI}|/|A_π|                                    （5）
+037	[Normal]	式中，π为候选规划方案；A_π为方案π对应的布置区域；|A_π|为区域面积；Q_90表示ODI的90%分位数；T_ODI为扰动控制阈值；E_π表示方案区域内ODI超过阈值的暴露比例。上述统计量用于把风险场从图层表达转化为方案级评价指标。
+039	[Heading 2]	1.2 有效布置域与连续参数场构建
+040	[Normal]	采区规划首先面临输入对象异构的问题。采区边界属于几何约束对象，钻孔数据具有离散采样特征，分层信息和设计参数则表现为具有工程语义的属性集合。若缺少统一组织方式，这些对象很难同时进入同一套规划流程。为此，本文以研究区边界、钻孔、分层和设计参数为基础，构建采区规划参数体系，并在统一空间参照下完成几何边界处理、参数映射和候选方案生成。表1汇总了“数据输入—参数体系构建—采区规划输出”的主要参数与约束条件，说明采区规划并不是直接对原始边界做简单布置，而是需要经过边界合法性校核、有效布置域提取、尺度参数输入和评价指标联动等环节，才能形成可参与方案生成与优选的统一参数体系。
+041	[Normal]	设原始采区边界为Ω_0，边界煤柱约束、区段煤柱约束及保护对象约束对应的缓冲集合分别为B_b、B_s和D_p，则有效布置域可写为
+042	[Normal]	Ω_e=Ω_0 \\ (B_b∪B_s∪D_p)                                               （6）
+043	[Normal]	式中，Ω为原始采区边界，B_b为边界煤柱宽度，B_s为区段煤柱宽度，D_p为局部保护距离，Ω_e为经约束内缩和几何合法性处理后的有效布置域。若内缩后出现多连通域或局部狭长畸变，则保留主连通区域并采用降级内缩策略，以保证后续工作面布置具有几何可解性。
+044	[Normal]	对给定样点集合，煤层厚度等参数场可表示为
+045	[Normal]	z(x)=Σ(i=1..n)[d_i(x)^(-p) z_i] / Σ(i=1..n)d_i(x)^(-p)                  （7）
+046	[Normal]	式中，z(x)为规划位置x处的参数估计值；z_i为第i个钻孔样点的观测值；d_i(x)为位置x与第i个钻孔之间的距离；p为距离衰减指数。该表达体现反距离加权插值思想，目的在于把有限钻孔样点转换为可参与空间规划和风险叠加的连续参数场。
+047	[Normal]	由此，采区规划的基础输入可归纳为4类：其一为几何边界与有效布置域；其二为钻孔、分层与厚度场等连续参数表达；其三为边界煤柱、区段煤柱、工作面宽度、推进长度和推进方向等设计参数；其四为 ODI 约束、资源评价与工程效率评价等指标体系。上述4类输入并不是彼此割裂的静态信息，而是在同一空间域、同一参数口径和同一评价框架下共同作用于候选方案生成过程。
+048	[Heading 2]	1.3 候选方案生成与多目标协同规划模型
+049	[Normal]	在满足几何可实施性和安全隔离要求的前提下，采区规划需要在工程效率、资源回收和覆岩扰动控制之间进行权衡。仅输出单一方案往往难以覆盖实际决策中的多目标偏好，也不利于后续人工复核与工程调整。基于此，本文将候选方案组织为统一候选池上的多视角筛选问题，并构建多目标协同规划模型。
+050	[Normal]	设候选方案集合为Π，其中每个方案π包括工作面布置、巷道结构、推进方向、尺寸参数和煤柱配置等空间对象。
+051	[Normal]	F(π)=w_e S_e(π)+w_r S_r(π)+w_m S_m(π)                                  （8）
+052	[Normal]	并满足
+053	[Normal]	w_e+w_r+w_m=1，w_e≥0，w_r≥0，w_m≥0                                    （9）
+054	[Normal]	式中，S_e(π)、S_r(π)和S_m(π)分别表示方案π在工程效率、资源覆盖和扰动控制方面的评价值；w_e、w_r和w_m为对应权重，且满足w_e+w_r+w_m=1。该目标函数用于说明多目标权衡口径，不替代真实矿井条件下的最终工程优选。
+055	[Normal]	具体而言，工程效率、资源回收、覆岩扰动控制和综合权衡可作为同一候选池上的不同评价口径。工程效率口径关注有效布置域覆盖率、工作面连续性、巷道组织便利性和实施稳定性；资源回收口径关注厚度场和可采资源价值；覆岩扰动控制口径关注ODI均值、P90及超限暴露比例；综合权衡口径则在3类目标之间进行权重调节和排序。本文将上述模式作为方法框架和候选方案组织方式说明，当前样例不输出四类模式的独立量化指标。
+056	[Normal]	对通过必要安全与几何校核的候选方案，再依据综合目标函数及其权重约束开展模式化排序与优选。
+058	[Heading 2]	1.4 方案传递与评价流程
+059	[Normal]	本文方法并不把几何布局视为终点，而是强调规划结果在后续调控、接续和经济评价环节中的连续传递。也就是说，采区规划阶段形成的工作面边界、巷道结构、覆盖范围及扰动统计量，不仅是当前求解阶段的输出，也是后续生产组织与经济测算的上游输入。这种“规划—调控—评价”的连续链条，是本文区别于传统割裂式规划流程的重要特点。
+060	[Normal]	在调控层面，规划结果可进一步转化为工作面级和生产级控制变量。例如，在含水层扰动场景下，可将工作面采高、工作面宽度、区段煤柱宽度以及推进长度作为主要调控参数，通过比较不同参数条件下ODI均值、高分位值和超限比例的变化，识别对扰动强度最敏感的控制量，并据此开展局部调整。这意味着规划阶段并不直接产出不可更改的最终工程方案，而是先形成满足必要安全与几何底线、并保留推荐阈值校核状态的候选空间对象，再通过参数调控提升其在扰动约束下的适应性。
+061	[Normal]	设接续方案为s，其指标关系可表示为
+062	[Normal]	Score_s=αP_s+βR_s+γC_s                                                 （10）
+063	[Normal]	式中，P_s为产量组织指标，R_s为风险可控性指标，C_s为工期与组织可控性指标；α、β和γ为对应权重，且满足α+β+γ=1。
+064	[Normal]	进一步地，工程经济评价可通过月度净现金流口径承接规划与接续结果。第t月净现金流可表示为
+065	[Normal]	NCF_t=Rev_t-Cost_t-RiskCost_t                                          （11）
+066	[Normal]	式中，Rev_t为第t月收入，Cost_t为常规成本，RiskCost_t为风险联动成本，NCF_t为第t月净现金流。该式用于说明经济评价可接收规划与接续结果形成的月度输入。
+067	[Normal]	本文保留工程经济评价的理论传递关系，但不在样例结果中给出未经独立导出的经济评价结论。
+068	[Normal]	因此，本文方法可概括为：以有效布置域和连续参数场为基础，以ODI为统一风险约束指标，以多目标综合评价为方案筛选口径，以采掘接续和经济评价为后续传递方向，形成从“风险前置约束—规划对象生成—方案级统计—后续评价输入”的连续决策流程。
+069	[Heading 1]	2 工程案例与结果分析
+070	[Heading 2]	2.1 研究区概况与输入数据
+071	[Normal]	为验证所提方法在采区规划场景中的适用性与链路贯通能力，选取研究区样例开展分析。该研究区以6个边界点构成的采区边界、15个钻孔样点和规划控制参数为基础输入，原始边界面积为255250.00 m²。当前验证目标限定为样例条件下的数据组织、风险表征与规划对象生成，不将样例结果解释为真实矿井条件下的工业级优选结论。
+072	[Normal]	研究区输入对象包括采区边界、钻孔样点和规划控制参数3类。钻孔样点用于构建煤层厚度等连续参数场；边界对象用于界定有效布置域；边界煤柱、区段煤柱、工作面宽度、推进长度校核阈值和ODI统计阈值则共同构成后续规划求解的约束与校核条件。
+074	[Normal]	图2 研究区钻孔空间分布图
+075	[Normal]	图2显示，15个钻孔样点在研究区内形成了基本可用的空间采样网络。样点煤厚最小值出现在ZK-107，为2.8 m；最大值出现在ZK-106，为4.8 m，样点平均煤厚为3.7933 m。这些离散样点为后续厚度场插值、资源覆盖判断和ODI风险场叠加提供了统一输入口径。
+076	[Normal]	在研究区进入规划求解前，原始边界并不直接作为工作面布置边界使用，而是结合边界煤柱、区段煤柱及局部保护距离进行约束处理。本样例采用30.0 m边界煤柱、20.0 m区段煤柱和120.0 m工作面宽度，并以走向长壁后退式开采作为布置方式。
+077	[Normal]	因此，本节的作用是把研究区输入压实为可复核的参数体系：边界提供空间范围，钻孔提供连续参数场样本，设计参数提供几何与安全约束，ODI阈值提供风险统计口径。后续结果分析均以该统一输入口径为基础。
+078	[Normal]	表1 研究区输入参数与约束条件
+080	[Heading 2]	2.2 连续参数场构建结果
+081	[Normal]	采区规划首先需要解决离散地质信息向连续规划约束转换的问题。对于研究区样例而言，15个钻孔样点提供了煤层厚度、岩石硬度、瓦斯含量和涌水量等离散属性；通过空间插值和统一边界裁剪处理，这些点状信息被转换为可与规划域、ODI风险场和工作面布局叠加分析的连续参数场。
+083	[Normal]	图3 研究区主要地质参数场分布图
+084	[Normal]	从图3可见，研究区煤层厚度样本范围为2.8～4.8 m，平均值为3.7933 m。高厚度样点主要包括ZK-106（4.8 m）及周边样点，低厚度样点以ZK-107（2.8 m）为代表。这种厚度差异说明，若仅依据几何边界进行布置，容易忽略资源条件在空间上的非均匀性。
+085	[Normal]	对于采区规划而言，厚度较高区域在资源覆盖和回收价值评价中具有更高吸引力，而厚度较低区域更适合作为边界调整、煤柱保留或低优先级布置区域。因此，连续参数场不是单纯的地质展示图，而是后续工作面排序、覆盖率统计和风险叠加分析的基础底图。
+086	[Normal]	需要强调的是，本文并不试图在该部分证明某种复杂地质建模算法的优越性，而是强调连续参数场在采区规划链路中的工程作用：它使离散钻孔信息能够以统一空间参照参与工作面生成、ODI风险计算和方案级统计。
+087	[Normal]	此外，参数场还为ODI风险表征提供了空间载体。由于多场景风险需要在同一边界、同一坐标和同一网格上进行叠加，参数场、风险场和规划对象之间的一致性直接决定了后续结果是否可比较、可传递和可复核。
+089	[Heading 2]	2.3 多场景 ODI 风险表征结果
+090	[Normal]	采区规划中的风险约束并非来源于单一判据，而是通常表现为地表沉陷、含水层扰动和上行开采等多场景下覆岩扰动的综合影响。若不同风险场景分别以各自判据独立参与规划，容易造成约束尺度不统一、比较依据不一致以及中间结果难以复用的问题。为此，本文引入 ODI 作为统一风险组织口径，将异构风险结果归一到同一尺度下，以支撑不同场景风险在同一规划框架中的统一表达、比较与传递。
+091	[Normal]	从研究区样例结果看，多场景ODI结果已经能够在同一研究区边界、钻孔参照和色标口径下表达。当前综合ODI场采用80×56网格，共4480个栅格，归一化后ODI均值为0.4669，中位数为0.4542，P90为0.7474；其中ODI>0.70的栅格占15.89%，ODI>0.80的栅格占3.55%。这说明风险信息已经从概念性指标转化为可计算、可统计和可进入规划约束的空间场。
+093	[Normal]	图4 多场景ODI分布结果对比图
+094	[Normal]	从风险分布特征看，不同场景下的ODI高值区并不完全重合。地表沉陷场景更偏向表征采动引起的地表影响范围，含水层扰动场景更强调导水裂隙带和含水层受扰风险，上行开采场景则更关注上覆扰动条件下的安全边界。统一为ODI后，不同场景可在同一统计口径下比较，从而避免多指标、多量纲并列时难以进入方案筛选的问题。
+095	[Normal]	在规划语境下，ODI的价值体现在两个层面：一是识别高扰动敏感区，当前样例中ODI>0.70区域占15.89%，可作为工作面布置时需重点避让或降权处理的区域；二是提供方案级风险统计基础，例如均值0.4669、P90=0.7474和高阈值暴露比例3.55%等指标，可直接进入后续布局评价。
+096	[Normal]	由此，ODI不再是布局完成后的附加说明图层，而是能够在候选方案生成前即参与约束设定和风险排序。对于研究区样例而言，ODI场的建立完成了从“边界+钻孔输入”到“风险约束可参与规划”的关键转换。
+097	[Normal]	表2 多场景 ODI 风险组织关系
+099	[Heading 1]	3 结构化规划结果与风险统计
+100	[Heading 2]	3.1 结构化规划结果
+101	[Normal]	在有效布置域、连续参数场和ODI风险场共同作用下，本文进一步开展采区规划结果生成与风险约束检验。与传统只给出静态边界划分的做法不同，本文将钻孔样点、连续参数场、保护煤柱约束和ODI风险场纳入同一评价口径，使规划结果能够以工作面、巷道、覆盖面积和ODI统计量等可复核指标表达。
+103	[Normal]	图5 含水层扰动约束下最终规划布局与ODI场叠置图
+104	[Normal]	从样例结果看，当前规划共形成3个工作面和11条巷道，巷道总长度为4817.50 m，工作面布置面积为176565.72 m²，相对于原始边界的有效覆盖率为69.17%。3个工作面的推进长度分别为WF-01推进515.1 m、WF-02推进536.6 m、WF-03推进551.1 m，平均推进长度为534.3 m。需要说明的是，800.0 m在本样例中作为推荐/校核阈值使用，当前3个工作面的推进长度均低于该阈值，因此该结果用于证明对象生成、风险统计与后续传递链路，不作为真实生产方案的最终工程定案。
+105	[Normal]	从布局结果本身看，工作面并非直接贴附原始边界外轮廓，而是在有效布置域内形成必要的保护距离和工程边界。WF-01面积52181.16 m²、WF-02面积61822.04 m²、WF-03面积62562.51 m²，说明各工作面在空间上形成了连续且相互隔离的条带式布局；平均规划评分为68.8，其中WF-03评分最高，为71.5。
+107	[Normal]	图6 采区规划布局结果图
+108	[Normal]	表3 当前样例规划结果统计表
+110	[Heading 2]	3.2 规划结果向采掘接续与工程经济评价的传递
+111	[Normal]	本文方法的一个重要特点，是不把采区规划的几何布局视为终点，而是强调规划结果可以继续作为采掘接续和工程经济评价的上游输入。在本样例中，工作面边界、巷道路径、推进长度、布置面积和ODI统计量均已形成可传递的规划结果，后续环节可据此组织生产顺序、产量核算和经济评价。
+112	[Normal]	在采掘接续层面，规划阶段形成的工作面边界和推进关系可映射为接续任务对象。当前样例以示意方式给出由采区规划空间结果向采掘接续空间结果的传递路径，其证据重点是“对象可传递、链路可延伸”，而不是未经独立导出的量化优选结论。
+114	[Normal]	图7 规划结果向采掘接续传递示意图
+115	[Normal]	在调控层面，规划结果还可进一步转化为工作面级控制变量。当前样例明确给出了120.0 m工作面宽度、20.0 m区段煤柱宽度和30.0 m边界煤柱宽度，并可与ODI均值0.4669、P90=0.7474及ODI>0.70比例15.89%等统计量对应，用于后续敏感性分析。
+117	[Normal]	图8 规划对象与评价参数联动示意图
+118	[Normal]	在工程经济评价层面，规划与接续结果可以继续进入收入、成本、风险联动成本和现金流分析过程。当前样例已完成规划对象向后续评价口径的传递，但尚不具备独立导出的真实矿井经济对照数据，因此本文仅说明工程经济评价的输入关系与计算口径，不给出未经数据支撑的现金流曲线或经济优选结论。
+120	[Normal]	图9 工程经济评价输入口径示意图
+121	[Normal]	综上，研究区样例表明，本文方法已完成“边界与钻孔输入—参数场构建—ODI风险组织—规划对象生成—后续评价输入”的连续运行过程。在15个钻孔、6个边界点和4480个ODI栅格的样例条件下，方法生成3个工作面、11条巷道、69.17%有效覆盖率和15.89%高ODI暴露比例等可复核结果。其核心价值在于证明方法链和对象链已经贯通，而非证明某一单独模块在真实矿井条件下达到普适最优。
+122	[Normal]	表4 当前样例参数与ODI统计表
+123	[Heading 1]	4 讨论
+124	[Heading 2]	4.1 ODI 前置约束对采区规划的作用
+125	[Normal]	传统采区规划多采用“先形成布局方案、再开展风险校核”的串行方式。该流程容易使地表沉陷、含水层扰动和上行开采等风险因素停留在后验修正环节，一旦校核不满足要求，往往需要重新调整边界、工作面和巷道布置。本文将ODI作为前置约束，使风险信息在候选布局形成阶段即参与空间筛选和统计评价。
+126	[Normal]	从研究区样例看，ODI场提供了可量化的风险入口：均值0.4669反映总体扰动水平，P90=0.7474反映高分位风险，ODI>0.70和ODI>0.80比例分别为15.89%和3.55%，可用于识别高扰动敏感区并指导工作面避让或降权。
+127	[Normal]	进一步看，ODI统一表达的价值还体现在连续传递能力上。由于ODI在规划阶段已形成方案级统计指标，因此可直接作为后续采高调控、采掘接续和经济评价的上游输入，不需要在下游环节重新定义风险口径。
+129	[Heading 2]	4.2 参数场驱动的规划方法相对于传统经验布置的意义
+130	[Normal]	采区规划结果的可靠性不仅取决于边界几何条件，还与地质属性的空间连续变化密切相关。传统经验式布置能够快速形成初始形态，但对钻孔控制下的厚度差异、资源富集区和低厚度区响应不足，容易造成资源评价与几何布置脱节。
+131	[Normal]	研究区样例表明，参数场引入后，高低厚度区在规划评价中的作用可以被区分：样点煤厚从2.8 m变化到4.8 m，平均值为3.7933 m。高厚度区在资源覆盖评价中更具吸引力，而低厚度区则提示布局需结合边界约束和风险约束进行权衡。
+132	[Normal]	因此，参数场不是独立的地质建模结果，而是服务规划决策的中间环节。只有当参数场、风险场和几何对象被组织在统一空间参照之下，规划结果才可能进一步传递至采掘接续与工程经济分析。
+133	[Heading 2]	4.3 后续深化方向
+134	[Normal]	本文当前结果主要证明所提方法在样例条件下的链路贯通能力，即能够实现采区边界、钻孔样点、连续参数场、ODI风险场和规划对象之间的连续组织与传递。现有结果形成3个工作面、11条巷道和4817.50 m巷道总长度，说明该方法在方法链和对象链层面具有较好的完整性。
+135	[Normal]	同时，本文结论具有明确适用边界。当前验证主要基于样例级输入和既有程序输出，尚未形成多个真实矿井案例下的系统对照，因此现阶段更适合支撑“方法可行”和“链路贯通”的结论，而不宜扩展为真实矿井条件下的优选幅度判断。
+136	[Normal]	后续研究应在实矿数据中补充多方案对照、调控参数敏感性分析、接续排程数值和经济评价结果，使当前已经打通的方法链进一步转化为可量化的工程优选依据。
+137	[Heading 1]	5 结论
+138	[Normal]	1）针对采区规划中地质信息离散、风险约束异构以及规划结果与后续评价脱节的问题，提出了基于ODI约束的采区多目标协同规划方法，构建了“有效布置域—连续参数场—ODI风险场—规划对象—后续评价输入”的一体化决策链。
+139	[Normal]	2）通过将地表沉陷、含水层扰动和上行开采等多场景风险统一组织为ODI指标，实现了异构风险在同一尺度下的前置表达。样例ODI场均值为0.4669，P90为0.7474，ODI>0.70栅格占15.89%，能够为高扰动敏感区识别和方案级风险统计提供依据。
+140	[Normal]	3）研究区样例验证表明，在15个钻孔样点和6个边界点条件下，方法形成3个工作面和11条巷道，布置面积176565.72 m²，巷道总长度4817.50 m，有效覆盖率69.17%，平均规划评分68.8，说明规划结果能够由输入数据稳定传递为工程布置对象。
+141	[Normal]	4）当前结果主要支撑样例条件下的方法贯通和对象链有效性。真实矿井条件下的工程优选结论仍需结合实矿案例、参数标定、接续排程和经济评价结果进一步检验。
+142	[Heading 1]	参考文献
+143	[Normal]	[1] WU Xuefei, LI Hongxia, WANG Baoli, et al. Review on improvements to the safety level of coal mines by applying intelligent coal mining[J]. Sustainability, 2022, 14(24): 16400. DOI: 10.3390/su142416400.
+144	[Normal]	[2] WANG Guofa, REN Huaiwei, ZHAO Guorui, et al. Research and practice of intelligent coal mine technology systems in China[J]. International Journal of Coal Science & Technology, 2022, 9(1). DOI: 10.1007/s40789-022-00491-3.
+145	[Normal]	[3] ZHANG Kexue, KANG Lei, CHEN Xuexi, et al. A review of intelligent unmanned mining current situation and development trend[J]. Energies, 2022, 15(2): 513. DOI: 10.3390/en15020513.
+146	[Normal]	[4] YANG Yi, LI Yingchun, WANG Lujun, et al. On strata damage and stress disturbance induced by coal mining based on physical similarity simulation experiments[J]. Scientific Reports, 2023, 13(1). DOI: 10.1038/s41598-023-42148-4.
+147	[Normal]	[5] REN Yiwei, YUAN Qiang, CHEN Jie, et al. Evolution characteristics of mining-induced fractures in overburden strata under close-multi coal seams mining based on optical fiber monitoring[J]. Engineering Geology, 2024, 343: 107802. DOI: 10.1016/j.enggeo.2024.107802.
+148	[Normal]	[6] YANG Xiao, SHI Longqing, QIU Mei, et al. Spatiotemporal evolution patterns of mining-induced overburden damage based on microseismic event response analysis[J]. Journal of Applied Geophysics, 2025, 242: 105876. DOI: 10.1016/j.jappgeo.2025.105876.
+149	[Normal]	[7] ZHANG Jie, WANG Li, YANG Tao, et al. Study on overburden failure characteristics and ground pressure behavior in shallow coal seam mining underneath the gully[J]. Frontiers in Earth Science, 2024, 12. DOI: 10.3389/feart.2024.1375979.
+150	[Normal]	[8] CAO Jian, HUANG Qingxiang, GUO Lingfei. Subsidence prediction of overburden strata and ground surface in shallow coal seam mining[J]. Scientific Reports, 2021, 11(1). DOI: 10.1038/s41598-021-98520-9.
+151	[Normal]	[9] PRAKASH Amar, BHARTI Abhay Kumar, VERMA Aniket. Unearthing underground mining-induced strata disturbance by electrical resistivity tomography interpretation[J]. Environmental & Engineering Geoscience, 2022, 28(4): 361-369. DOI: 10.2113/eeg-d-21-00073.
+152	[Normal]	[10] SHI Xiuchang, ZHANG Jixing. Characteristics of overburden failure and fracture evolution in shallow buried working face with large mining height[J]. Sustainability, 2021, 13(24): 13775. DOI: 10.3390/su132413775.
+153	[Normal]	[11] FOROUGHI Sorayya, HAMIDI Jafar Khademi, MONJEZI Masoud, et al. The integrated optimization of underground stope layout designing and production scheduling incorporating a non-dominated sorting genetic algorithm (NSGA-II)[J]. Resources Policy, 2019, 63: 101408. DOI: 10.1016/j.resourpol.2019.101408.
+154	[Normal]	[12] SHAN Yang, KE Li, XIANG Jun, et al. Multi-objective optimisation based on NSGA-II of mine cut-off grade from the perspective of resource security[J]. International Journal of Mining, Reclamation and Environment, 2025: 1-20. DOI: 10.1080/17480930.2025.2532460.
+155	[Normal]	[13] GU Xiaowei, WANG Xunhong, LIU Zaobao, et al. A multi-objective optimization model using improved NSGA-II for optimizing metal mines production process[J]. IEEE Access, 2020, 8: 28847-28858. DOI: 10.1109/access.2020.2972018.
+156	[Normal]	[14] NESBITT Peter, BLAKE Lewis R., LAMAS Patricio, et al. Underground mine scheduling under uncertainty[J]. European Journal of Operational Research, 2021, 294(1): 340-352. DOI: 10.1016/j.ejor.2021.01.011.
+157	[Normal]	[15] PATHIRANAGE Ishara Hewa, NEUMANN Aneta. Multi-objective evolutionary optimization for large-scale open pit mine scheduling[C]//2024 IEEE Congress on Evolutionary Computation (CEC). 2024: 1-8. DOI: 10.1109/CEC60901.2024.10612008.
+158	[Normal]	[16] ZHANG Xuhui, LV Xinyuan, WANG Yan, et al. Production process management for intelligent coal mining based on digital twin[M]//Digital Twin Driven Service. 2022: 251-277. DOI: 10.1016/B978-0-323-91300-3.00008-5.
+159	[Normal]	[17] QU Juncong, KIZIL Mehmet S., YAHYAEI Mohsen, et al. Digital twins in the minerals industry: a comprehensive review[J]. Mining Technology, 2023, 132(4): 267-289. DOI: 10.1080/25726668.2023.2257479.
+160	[Normal]	[18] PAN Dongdong, XU Zhenhao, LU Xinming, et al. 3D scene and geological modeling using integrated multi-source spatial data: methodology, challenges, and suggestions[J]. Tunnelling and Underground Space Technology, 2020, 100: 103393. DOI: 10.1016/j.tust.2020.103393.
+161	[Normal]	[19] AHMED Haitham M., ADEWUYI Sefiu, AHMED Hussin M. A. Continuous cash flow modeling for economic evaluation and risk analysis in mine planning using Monte Carlo simulation[J]. Journal of King Abdulaziz University: Engineering Sciences, 2024, 34(2). DOI: 10.4197/eng.34-2.6.
+162	[Normal]	[20] LI Jiaoqun, WU Tong, LU Zengxiang, et al. Investigation into mining economic evaluation approaches based on the Rosenblueth point estimate method[J]. Applied Sciences, 2023, 13(15): 9011. DOI: 10.3390/app13159011.
+163	[Normal]	[21] DEHGHANI Hesam, ATAEE-POUR Majid, ESFAHANIPOUR Akbar. Evaluation of the mining projects under economic uncertainties using multidimensional binomial tree[J]. Resources Policy, 2014, 39: 124-133. DOI: 10.1016/j.resourpol.2014.01.003.
+164	[Normal]	[22] LIU Xiong, ZHENG Lulin, LIU Hao, et al. Evolution of overburden fractures and the water-conducting fracture zone in closely spaced coal mine seams under highly water-rich aquifers[J]. ACS Omega, 2025. DOI: 10.1021/acsomega.5c09774.
+165	[Normal]	[23] XUE Sen, WANG Qiqing, SONG Zhen. Analysis of water-permeable fractured zone in weakly cemented overburden considering rock strain-softening[J]. Scientific Reports, 2026, 16(1). DOI: 10.1038/s41598-026-45413-4.
+166	[Normal]	[24] ZHU Xiaojun, ZHA Feng, GUO Guangli, et al. Mechanical prediction method of strata movement and surface subsidence in backfill-strip mining[J]. Scientific Reports, 2024, 14(1). DOI: 10.1038/s41598-024-82761-5.
+167	[Normal]	[25] KRATZSCH Helmut. Strata movement at the mining horizon[M]//Mining Subsidence Engineering. Berlin,
+168	[Normal]	Heidelberg: Springer, 1983: 7-40. DOI: 10.1007/978-3-642-81923-0_2.
+
+TABLES
+TABLE 0 rows=16 cols=7
+  row 0: 类别 | 参数名称 | 符号 | 数值/范围 | 单位 | 说明 | 数据来源
+  row 1: 研究区基础 | 钻孔数量 | n | 15 | 个 | 钻孔样点总数 | 钻孔/设计结果
+  row 2: 研究区基础 | 煤层厚度最小值 | h_min | 2.8 | m | 样点统计值 | 钻孔数据
+  row 3: 研究区基础 | 煤层厚度最大值 | h_max | 4.8 | m | 样点统计值 | 钻孔数据
+  row 4: 研究区基础 | 煤层厚度平均值 | h_avg | 3.7933 | m | 样点统计值 | 钻孔数据
+TABLE 1 rows=5 cols=4
+  row 0: 场景 | 关注对象 | 输入依据 | 规划作用
+  row 1: 地表沉陷 | 地表移动与沉陷风险 | 沉陷预测、保护约束 | 约束工作面布局范围
+  row 2: 含水层扰动 | 导水裂隙带与含水层受扰 | 导水带高度、含水层敏感性 | 参与风险筛选与避让
+  row 3: 上行开采 | 上覆岩层扰动与安全边界 | 采动应力、覆岩破坏特征 | 支撑可行性评价
+  row 4: 综合ODI | 多场景叠加扰动 | 多源风险归一化结果 | 形成统一方案级指标
+TABLE 2 rows=16 cols=5
+  row 0: 统计类别 | 指标 | 数值 | 单位/口径 | 说明
+  row 1: 工程布置 | 工作面数量 | 3 | 个 | 当前样例输出
+  row 2: 工程布置 | 巷道数量 | 11 | 条 | 当前样例输出
+  row 3: 工程布置 | 巷道总长度 | 4817.50 | m | 按巷道对象长度汇总
+  row 4: 工程布置 | 平均工作面宽度 | 120.0 | m | 当前样例工作面宽度统计值
+TABLE 3 rows=7 cols=5
+  row 0: 对象 | 当前样例取值 | 关联指标 | 统计值 | 用途
+  row 1: 工作面宽度 | 120.0 m | 几何布置 | 用于工作面生成 | 约束工作面空间尺度
+  row 2: 区段煤柱宽度 | 20.0 m | 安全隔离 | 规则范围15-30 m | 约束区段间距
+  row 3: 边界煤柱宽度 | 30.0 m | 边界保护 | 规则范围20-50 m | 形成有效布置域
+  row 4: ODI权重 | 0.45/0.30/0.25 | 沉陷/含水层/上行开采 | 综合风险加权 | 形成统一风险场
