@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-04-17T12:25:47.965961",
+  "boundaryCsv": "E:\\xiangmu\\miningplan\\data\\采区边界_敏东.csv",
+  "sceneDir": "E:\\xiangmu\\miningplan\\mining-plan\\frontend\\public\\demo",
+  "figures": [
+    {
+      "number": 1,
+      "title": "覆岩扰动约束机理示意图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\01-覆岩扰动约束机理示意图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\01-覆岩扰动约束机理示意图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\01-覆岩扰动约束机理示意图.pdf"
+    },
+    {
+      "number": 2,
+      "title": "研究区钻孔空间分布图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\02-研究区钻孔空间分布图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\02-研究区钻孔空间分布图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\02-研究区钻孔空间分布图.pdf"
+    },
+    {
+      "number": 3,
+      "title": "研究区主要地质参数场分布图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\03-研究区主要地质参数场分布图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\03-研究区主要地质参数场分布图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\03-研究区主要地质参数场分布图.pdf"
+    },
+    {
+      "number": 4,
+      "title": "多场景ODI分布结果对比图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\04-多场景ODI分布结果对比图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\04-多场景ODI分布结果对比图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\04-多场景ODI分布结果对比图.pdf"
+    },
+    {
+      "number": 5,
+      "title": "含水层扰动约束下最终规划布局与ODI场叠置图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\05-含水层扰动约束下最终规划布局与ODI场叠置图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\05-含水层扰动约束下最终规划布局与ODI场叠置图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\05-含水层扰动约束下最终规划布局与ODI场叠置图.pdf"
+    },
+    {
+      "number": 6,
+      "title": "采区规划布局结果图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\06-采区规划布局结果图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\06-采区规划布局结果图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\06-采区规划布局结果图.pdf"
+    },
+    {
+      "number": 7,
+      "title": "四模式规划指标对比图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\07-四模式规划指标对比图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\07-四模式规划指标对比图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\07-四模式规划指标对比图.pdf"
+    },
+    {
+      "number": 8,
+      "title": "采掘接续时序安排图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\08-采掘接续时序安排图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\08-采掘接续时序安排图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\08-采掘接续时序安排图.pdf"
+    },
+    {
+      "number": 9,
+      "title": "月产量变化曲线图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\09-月产量变化曲线图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\09-月产量变化曲线图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\09-月产量变化曲线图.pdf"
+    },
+    {
+      "number": 10,
+      "title": "采掘接续方案现金流分析图",
+      "png": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\10-采掘接续方案现金流分析图.png",
+      "svg": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\10-采掘接续方案现金流分析图.svg",
+      "pdf": "E:\\xiangmu\\miningplan\\output\\paper_insert_package\\20260417_122532\\paper_main_figures\\10-采掘接续方案现金流分析图.pdf"
+    }
+  ]
+}

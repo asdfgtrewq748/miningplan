@@ -72,3 +72,67 @@ def test_insert_figures_into_docx_writes_image_and_caption(tmp_path: Path) -> No
     out_doc = Document(output_path)
     assert len(out_doc.inline_shapes) == 1
     assert any(p.text.strip() == "图1 测试插图" for p in out_doc.paragraphs)
+
+
+def test_insert_figures_removes_legacy_placeholder_and_previous_drawing(tmp_path: Path) -> None:
+    source_docx = tmp_path / "legacy_source.docx"
+    target_docx = tmp_path / "legacy_target.docx"
+    image_path = tmp_path / "legacy.png"
+    write_demo_png(image_path)
+
+    doc = Document()
+    doc.add_paragraph("前文段落。")
+    legacy_para = doc.add_paragraph()
+    legacy_para.add_run().add_picture(str(image_path))
+    doc.add_paragraph("图5 多场景ODI风险分布结果图")
+    doc.add_paragraph("锚点段落。")
+    doc.save(source_docx)
+
+    placements = [
+        workflow.FigurePlacement(
+            figure_number=4,
+            title="多场景ODI分布结果对比图",
+            image_path=image_path,
+            anchor_text="锚点段落。",
+            anchor_mode="after",
+        )
+    ]
+
+    output_path = workflow.insert_figures_into_docx(source_docx, target_docx, placements)
+
+    out_doc = Document(output_path)
+    texts = [p.text.strip() for p in out_doc.paragraphs if p.text.strip()]
+    assert "图5 多场景ODI风险分布结果图" not in texts
+    assert "图4 多场景ODI分布结果对比图" in texts
+    assert len(out_doc.inline_shapes) == 1
+
+
+def test_four_panel_compare_keeps_each_panel_extent_independent() -> None:
+    short_points = [
+        {"x": 0.0, "y": 0.0, "odiNorm": 0.1},
+        {"x": 10.0, "y": 0.0, "odiNorm": 0.3},
+        {"x": 0.0, "y": 8.0, "odiNorm": 0.6},
+        {"x": 10.0, "y": 8.0, "odiNorm": 0.8},
+    ]
+    long_points = [
+        {"x": 0.0, "y": 0.0, "odiNorm": 0.1},
+        {"x": 80.0, "y": 0.0, "odiNorm": 0.3},
+        {"x": 0.0, "y": 40.0, "odiNorm": 0.6},
+        {"x": 80.0, "y": 40.0, "odiNorm": 0.8},
+    ]
+
+    fig = workflow.plot_multi_scenario_odi_compare_four_panels(
+        [
+            ("(a)", short_points, [], []),
+            ("(b)", long_points, [], []),
+            ("(c)", long_points, [], []),
+            ("(d)", short_points, [], []),
+        ]
+    )
+
+    axes = fig.axes[:4]
+    ax0_xlim = axes[0].get_xlim()
+    ax3_xlim = axes[3].get_xlim()
+    assert ax0_xlim[1] <= 11.0
+    assert ax3_xlim[1] <= 11.0
+    plt.close(fig)

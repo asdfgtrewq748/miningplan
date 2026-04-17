@@ -15,6 +15,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.gridspec import GridSpec
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -142,6 +144,114 @@ def _draw_plan_loops(ax: plt.Axes, plan_loops: list[dict], *, facecolor: str = "
         ax.text(cx, cy, f"No.{face.get('faceIndex', index)}", ha="center", va="center", fontsize=8, color=edgecolor, zorder=7)
 
 
+def _normalize_xy(points: list[dict], origin: tuple[float, float] | None = None) -> tuple[list[dict], tuple[float, float]]:
+    if not points:
+        return [], origin or (0.0, 0.0)
+    xs = [float(point["x"]) for point in points]
+    ys = [float(point["y"]) for point in points]
+    ox, oy = origin or (min(xs), min(ys))
+    normalized = []
+    for point in points:
+        normalized.append({**point, "x": float(point["x"]) - ox, "y": float(point["y"]) - oy})
+    return normalized, (ox, oy)
+
+
+def _interpolate_grid_filled(points: list[dict], value_key: str, resolution: int = 140):
+    xs = np.array([float(point["x"]) for point in points], dtype=float)
+    ys = np.array([float(point["y"]) for point in points], dtype=float)
+    vals = np.array([float(point.get(value_key, np.nan)) for point in points], dtype=float)
+    valid = np.isfinite(xs) & np.isfinite(ys) & np.isfinite(vals)
+    xs = xs[valid]
+    ys = ys[valid]
+    vals = vals[valid]
+    if len(xs) < 4:
+        return None
+
+    xi = np.linspace(xs.min(), xs.max(), resolution)
+    yi = np.linspace(ys.min(), ys.max(), resolution)
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+    linear = exporter.griddata((xs, ys), vals, (xi_grid, yi_grid), method="linear")
+    nearest = exporter.griddata((xs, ys), vals, (xi_grid, yi_grid), method="nearest")
+    if linear is None:
+        return xi_grid, yi_grid, nearest
+    filled = np.array(linear, dtype=float)
+    mask = ~np.isfinite(filled)
+    filled[mask] = nearest[mask]
+    return xi_grid, yi_grid, filled
+
+
+def paper_odi_cmap() -> LinearSegmentedColormap:
+    return LinearSegmentedColormap.from_list(
+        "paper_odi",
+        ["#1d4ed8", "#60a5fa", "#bfdcff", "#f9c2d0", "#ef4444"],
+        N=256,
+    )
+
+
+def plot_multi_scenario_odi_compare_four_panels(
+    panels: list[tuple[str, list[dict], list[dict], list[dict] | None]],
+) -> plt.Figure:
+    fig = plt.figure(figsize=(12.8, 9.0))
+    grid_spec = GridSpec(2, 3, figure=fig, width_ratios=[1.0, 1.0, 0.05], wspace=0.20, hspace=0.22)
+    axes = np.array(
+        [
+            [fig.add_subplot(grid_spec[0, 0]), fig.add_subplot(grid_spec[0, 1])],
+            [fig.add_subplot(grid_spec[1, 0]), fig.add_subplot(grid_spec[1, 1])],
+        ]
+    )
+    cax = fig.add_subplot(grid_spec[:, 2])
+    levels = np.linspace(0.0, 1.0, 11)
+    contour_ref = None
+    cmap = paper_odi_cmap()
+
+    for axis, (label, odi_points, drillholes, boundary) in zip(axes.flat, panels):
+        origin = None
+        if boundary:
+            _, origin = _normalize_xy(boundary)
+            boundary_norm, _ = _normalize_xy(boundary, origin=origin)
+        else:
+            boundary_norm = []
+        odi_norm, origin = _normalize_xy(odi_points, origin=origin)
+        drill_norm, _ = _normalize_xy(drillholes, origin=origin)
+        grid = _interpolate_grid_filled(odi_norm, "odiNorm", resolution=140)
+        if grid is None:
+            axis.text(0.5, 0.5, "数据不足", ha="center", va="center", transform=axis.transAxes)
+            axis.set_axis_off()
+            continue
+        xi_grid, yi_grid, zi = grid
+        contour_ref = axis.contourf(xi_grid, yi_grid, zi, levels=levels, cmap=cmap, antialiased=True)
+        for point in odi_norm:
+            axis.scatter(float(point["x"]), float(point["y"]), s=10, facecolors="white", edgecolors="#ef4444", linewidths=0.5, zorder=4)
+        if boundary_norm:
+            _draw_boundary(axis, boundary_norm, color="#f8fafc", linewidth=1.2, alpha=0.95)
+        _draw_drillholes(axis, drill_norm, size=14.0)
+        x_values = [float(point["x"]) for point in odi_norm]
+        y_values = [float(point["y"]) for point in odi_norm]
+        if boundary_norm:
+            x_values.extend(float(point["x"]) for point in boundary_norm)
+            y_values.extend(float(point["y"]) for point in boundary_norm)
+        if drill_norm:
+            x_values.extend(float(point["x"]) for point in drill_norm)
+            y_values.extend(float(point["y"]) for point in drill_norm)
+        if x_values and y_values:
+            x_min, x_max = min(x_values), max(x_values)
+            y_min, y_max = min(y_values), max(y_values)
+            x_pad = max((x_max - x_min) * 0.04, 1.0)
+            y_pad = max((y_max - y_min) * 0.04, 1.0)
+            axis.set_xlim(x_min - x_pad, x_max + x_pad)
+            axis.set_ylim(y_min - y_pad, y_max + y_pad)
+        axis.set_title(label, fontsize=10, fontweight="bold")
+        axis.set_xlabel("X / m")
+        axis.set_ylabel("Y / m")
+        axis.set_aspect("equal", adjustable="box")
+        axis.grid(color="#e2e8f0", linewidth=0.4, linestyle=":", alpha=0.7)
+
+    cbar = fig.colorbar(contour_ref, cax=cax)
+    cbar.set_label("ODI（归一化）")
+    fig.subplots_adjust(left=0.06, right=0.94, top=0.96, bottom=0.07)
+    return fig
+
+
 def plot_mechanism_schematic() -> plt.Figure:
     fig, ax = plt.subplots(figsize=(9.2, 4.6))
     ax.set_xlim(0, 1)
@@ -238,7 +348,7 @@ def plot_layout_overlay(odi_points: list[dict], drillholes: list[dict], boundary
     grid = exporter.interpolate_grid(odi_points, "odiNorm", resolution=140)
     if grid is not None:
         xi_grid, yi_grid, zi = grid
-        ax.contourf(xi_grid, yi_grid, zi, levels=np.linspace(0.0, 1.0, 11), cmap=exporter.blue_red_cmap(), antialiased=True)
+        ax.contourf(xi_grid, yi_grid, zi, levels=np.linspace(0.0, 1.0, 11), cmap=paper_odi_cmap(), antialiased=True)
     _draw_boundary(ax, boundary, color="#64748b", linewidth=0.9, alpha=0.9)
     _draw_drillholes(ax, drillholes, size=18.0)
     _draw_plan_loops(ax, plan_loops, facecolor="#fda4af", edgecolor="#db2777", alpha=0.18)
@@ -292,9 +402,6 @@ def build_main_paper_figures(
     planning_scene = apply_boundary_override(planning_scene_raw, boundary, tab_ids=("aquifer",))
     succession_scene = apply_boundary_override(succession_scene_raw, boundary, tab_ids=("aquifer",))
     aquifer_scene = apply_boundary_override(aquifer_scene, boundary, tab_ids=("aquifer",))
-    surface_scene = apply_boundary_override(surface_scene, boundary, tab_ids=("surface",))
-    full_scene = apply_boundary_override(full_scene, boundary, tab_ids=("full",))
-
     output_dir.mkdir(parents=True, exist_ok=True)
     assets: list[PaperFigureAsset] = []
 
@@ -314,6 +421,7 @@ def build_main_paper_figures(
 
     planning_aquifer = (planning_scene.get("scenarioParamsById") or {}).get("aquifer") or {}
     aquifer_tab = (aquifer_scene.get("scenarioParamsById") or {}).get("aquifer") or {}
+    succession_tab = (succession_scene.get("scenarioParamsById") or {}).get("aquifer") or {}
     surface_tab = (surface_scene.get("scenarioParamsById") or {}).get("surface") or {}
     full_tab = (full_scene.get("scenarioParamsById") or {}).get("full") or {}
     plan_loops = (planning_scene.get("workfacePlan") or {}).get("plannedWorkfaceLoopsWorld") or []
@@ -332,13 +440,13 @@ def build_main_paper_figures(
     save(
         4,
         "多场景ODI分布结果对比图",
-        plot_multi_scenario_odi_compare(
+        plot_multi_scenario_odi_compare_four_panels(
             [
-                ("(a) 地表沉陷场景", exporter.get_odi_points(surface_scene, "surface"), list(surface_tab.get("drillholeData") or []), list(surface_tab.get("boundaryData") or []) or boundary),
-                ("(b) 含水层扰动场景", exporter.get_odi_points(aquifer_scene, "aquifer"), list(aquifer_tab.get("drillholeData") or []), boundary),
-                ("(c) 全覆岩扰动场景", exporter.get_odi_points(full_scene, "full"), list(full_tab.get("drillholeData") or []), list(full_tab.get("boundaryData") or []) or boundary),
-            ],
-            boundary,
+                ("(a) 地表沉陷场景", exporter.get_odi_points(surface_scene, "surface"), list(surface_tab.get("drillholeData") or []), list(surface_tab.get("boundaryData") or [])),
+                ("(b) 含水层扰动评价场景", exporter.get_odi_points(aquifer_scene, "aquifer"), list(aquifer_tab.get("drillholeData") or []), boundary),
+                ("(c) 采掘接续场景", exporter.get_odi_points(succession_scene, "aquifer"), list(succession_tab.get("drillholeData") or []), boundary),
+                ("(d) 全覆岩综合评价场景", exporter.get_odi_points(full_scene, "full"), list(full_tab.get("drillholeData") or []), list(full_tab.get("boundaryData") or [])),
+            ]
         ),
     )
     save(
@@ -410,6 +518,23 @@ def _remove_paragraph(paragraph: Paragraph) -> None:
     parent.remove(paragraph._element)
 
 
+def _paragraph_has_drawing(paragraph: Paragraph) -> bool:
+    return bool(paragraph._element.xpath(".//*[local-name()='drawing']"))
+
+
+def _remove_legacy_placeholder(document: Document, caption_text: str) -> None:
+    try:
+        caption_para = _find_paragraph(document, caption_text)
+    except ValueError:
+        return
+    previous = caption_para._p.getprevious()
+    if previous is not None:
+        prev_para = Paragraph(previous, caption_para._parent)
+        if _paragraph_has_drawing(prev_para) or not prev_para.text.strip():
+            _remove_paragraph(prev_para)
+    _remove_paragraph(caption_para)
+
+
 def _set_caption_style(paragraph: Paragraph) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
     if paragraph.runs:
@@ -424,6 +549,7 @@ def insert_figures_into_docx(source_docx: Path, target_docx: Path, placements: l
     shutil.copyfile(source_docx, target_docx)
     document = Document(str(target_docx))
 
+    _remove_legacy_placeholder(document, "图5 多场景ODI风险分布结果图")
     for placeholder in ("图3 数据-模型-决策分层架构图", "图5 多场景ODI风险分布结果图"):
         try:
             _remove_paragraph(_find_paragraph(document, placeholder))
