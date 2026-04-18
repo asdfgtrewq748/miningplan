@@ -1,0 +1,5 @@
+plan_code,plan_name,source_mode,signature,qualified,face_count,coverage_pct,efficiency_score,recovery_score,odi_mean,odi_p90,odi_exceed_pct,total_score,notes
+A,engineering_efficiency,efficiency,x|wb=50.0000|ws=30.0000|N=5|B=308.0000,TRUE,5,89.3412,87.8180,,,,,single-objective engineering candidate; ODI stats not stored
+B,resource_recovery,recovery,y|wb=50.0000|ws=30.0000|N=9|B=335.0000|theta=0.0,TRUE,9,98.5184,98.5184,89.7629,,,,single-objective resource candidate; ODI stats not stored
+C1,disturbance_control_best,disturbance,x|wb=80.0000|ws=30-30|N=13|B=100-100|h=f2a5a1b8,TRUE,13,75.0609,,,0.3872,0.7414,14.2477,,disturbance table rank 1; matches old manuscript-style ODI stats
+C2,weighted_top,weighted,y|wb=80.0000|ws=30-30|N=5|B=350-350|h=1db0251b,FALSE,5,56.5190,55.5926,92.8183,0.6808,0.8364,60.1111,0.9223,weighted table rank 1 but unqualified; should not be used as engineering final scheme

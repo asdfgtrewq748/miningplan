@@ -1,0 +1,3070 @@
+frmEquations
+MP_InlineEquation
+MP_DisplayEquation
+ (c) Copyright 1992-2010 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/MathPage.bas 106   5/06/14 9:54a Jimm $
+True to insert error message after equation
+InsertSymbol's localized string for 'normal text'
+styles that provide manual overrides for equation processing
+amount of padding around equations that gets trimmed when GIFs are created]D
+The version of this command doesn't match the version of the MathPage WLL. Reinstall MathType to fix this condition. 
+A more recent version of MathType's WLL is required to use this command. Reinstall MathType to fix this condition. 
+MathType Commands for Microsoft Word Error 
+   process equation numbers & references
+   process equations
+!1029An error occurred copying supporting files, a file may be missing. Please reinstall MathType and try again. 
+!1005Floating equations were detected in the document! These were ignored and left for Word to handle. 
+Translation errors occurred during processing. The following text has been inserted immediately after any symbols or equations that were not successfully translated:  
+!1006An unexpected processing error occurred, please try again. If this continues to occur, try reinstalling MathType. 
+!1025Processing Equations... 
+!1026Processing Equation Numbers and References... 
+!1030Translator file is missing. Please re-install MathType and try again. 
+get TranslationError setting, default to on (insert after equation)
+Unwraps and tags all eqn numbers and references...
+!1014Processing Equation Numbers ( 
+ Removes MacroButton field wrapper from an eqn number, leaving inner field selected
+mtplaceref 
+ "MTPlaceRef"
+MTEqn 
+remove and save inner data, then delete outer field & insert insides again 
+then move our folder back to the right name
+placeholder Word uses to represent some symbols inserted via the InsertSymbol
+command. In this case we have to test the character using the InsertSymbol dialog
+insert the ENTITY tag with values from the returned info
+Replaces selection with an inserted character
+Leaves original character selected, or tag selected if inserted.
+Returns True if tag was inserted.
+in case the InsertSymbol 'dialog' throws an error...
+ Object model won't allow the Insert Symbol dialog to be opened (e.g. an equation)
+Inserts DS entity tag for charCode.
+Inserts tag, replacing any current selection. We maintain current font attributes
+Inserts tag, replacing any current selection.
+We insert a dummy picture and put the tag in the AlternativeText attrubute
+if replacing an equation, save its width and height
+ this is a fix for http://valor:8080/browse/MT-3063
+insert ENDOFPARA attribute if followed by para. mark (or end of table cell)
+Processes all equations in the document.
+also, we replace all equations with text which modifies the InlineShapes collection
+if it is an OLE equation or a picture...
+it was one of our equations, so replace with tag(s)
+re-assign as table insertion deletes object
+!1023Processing Equations (
+insert error message after equation
+ProcessEquationsInRange: error 
+Inserts space char before/after eqn based on preceding and trailing chars
+If preceded by non-whitespace, insert a space
+If followed by non-whitespace, non-punctuation, insert a space
+Returns True if equation successfully converted to a GIF
+insert ENDOFPARA attribute in tag if followed by a paragraph mark
+MPProcessEquation2 returned error code 
+Determines if the equation shape is a display equation or not.
+We do not base the decision on the style, as an equation inserted as
+a display equation could be copied/dragged to an inline location.
+We consider it NOT TO BE a display equation if:
+   - equation is inside of a table
+   - has style set to <kInlineEquationStyle>
+We consider it TO BE a display equation if the equation:
+   - has style set to <kDisplayEquationStyle>
+       2nd tab stop (if any) is right-aligned at right margin
+assume not a display equation
+equation is in a table, always treated as inlinek
+check for user-inserted style over-rides
+check for multiple graphics (equations) on a line...
+not display if other graphics (equations) in same paragraph
+not display if we previously handled equations in same paragraph
+ - a <TAB> character is before the equation
+ - an optional 2nd tab stop is right-aligned
+make sure optional 2nd tab is right-aligned at right margin
+2nd of only 2 tabstops is not right-aligned
+2nd custom tabstop must not be at right margin
+make sure there is a tab char before the equation
+equation paragraph met all of our conditions
+Inserts the DisplayEquation tags in the appropriate places
+find tab preceding the equation, insert directly before eqn if none found
+find tab following equation, insert separator before the tab
+if no tab found before cr, insert separator immediately before the cr
+insert table around paragraph
+Inserts a table wrapping the existing selection. Uses GetTableSeparator as the cell separator.
+Return background color of equation by looking for the following:
+Not sure if the equation was 'old' or somehow damaged - it wasn't showing up
+Returns string used by Word to represent "(normal text)" in the InsertSymbol dialog.
+To get it we temporarily insert some known text at the start of the doc and test its font.
+separator used to identify cells in display equation table
+{(MT
+9MTL ib.Is
+msg = MT
+lMTLib.
+"TMT
+ mTempGI
+ = MTLib .GetU
+= mt
+= MTL
+-_MT_
+ number
+mtmAQ
+MTLib.
+n number
+VType:=mtso
+right na me
+ MTLib.G
+x MTLib.0GetU
+4MTLi
+/MT-3063
+.MTIn
+MathType
+MTLib.Sh
+Mtal
+'Insert
+s.right$
+rightGr~e
+$Header: /MathType/Windows/WordMacros/UILib.bas 107   5/06/14 9:54a Jimm $
+ Note: * all functions/subs that start with MTCommand_ are "top-level" entry points called from
+       * all functions/subs that start with MTCallback_ are are called by
+Runs Set Equation Reference command
+.MTPlaceRef.DlgMain
+.MTFormatEquationSection.EditEquationSection
+.MTFormatEquationSection.NewVersion
+Runs Set Equation Preferences command
+.MTSetEqnPrefs.DlgMain
+Runs Insert Inline Equation command
+NoDirectCall_InsertInlineEqn
+Runs Insert Display Equation command
+NoDirectCall_InsertDispEqn
+Runs Insert Left-Numbered Display Equation command
+NoDirectCall_InsertLeftNumberedDispEqn
+Runs Insert Right-Numbered Display Equation command
+NoDirectCall_InsertRightNumberedDispEqn
+NoDirectCall_InsertLeftNumberedDispEqnEBA@
+NoDirectCall_InsertRightNumberedDispEqnEB
+Runs Insert Equation Number command
+NoDirectCall_InsertEqnNum
+Runs Insert Equation Reference command
+NoDirectCall_InsertEqnRef
+Runs Insert Equation Section command
+.MTSecNum.DlgMain
+.MTSecNum.InsertNextSectionBreak
+.MTSecNum.InsertNextChapterBreak
+Runs Modify Equation Section command
+.MTFormatEquationSection.DlgMain
+Runs Format Equation Numbers command
+.MTEqnNumFormat.DlgMain
+Runs Format Equations command
+.MTFormatEquations.DlgMain
+Runs Convert Equations command
+.MTConvertEquations.DlgMain
+Runs Export Equations command
+.MTExportEquations.DlgMain
+.MTTeXToggle.DlgMain
+.MTLib.MTEditEquationOpen
+.MTLib.MTEditEquationInPlace
+.MTMathInputControl.DlgMain
+.MTOptions.DlgMain
+RunMTDLLCode error:
+RunMTDLLCode 
+ in RunMTDLLCommand
+Set cls = Application.Run("new_MTCommandsDispatchClass")
+but does not execute LoadMathTypeCommands
+Loads MathType Commands template if not already loaded
+as a fix for http://valor:8080/browse/MT-2085
+Returns True if MT3 macros were found & removed
+remove if MTLib exists, but "MTW4" AND "MT5API" do not exist
+MTLib
+MTW4$
+MT5API$
+ Attibute VB_Name for Mtapi.bas
+and that's what MTCleanup does
+Calling MTCleanup
+.MTLib.MTCleanup
+Displays error telling user to reinstall MathType
+!0202An error occurred starting MathType's Commands for Word. Please re-install MathType.
+!0200MathType Commands$
+Returns True if MathType's Full Functionality is available (i.e. not an expired demo)
+Callback routine that determines which split button for inserting numbered eqns is visible
+MathType_SB_NumEqnL
+Make left-default sb visible when the last numbered eqn was on left
+MathType_SB_NumEqnR
+Make right-default sb visible when the last numbered eqn was on right
+ inits eqn numbering side from doc props, registry or default
+ saves the default side for equation numbering
+Returns True if the MT DLL version is OK, else displays error & returns False
+The MathType commands could not communicate with MathType. There was a problem starting the API. Please be sure that MathType is properly installed. 
+The version of this macro doesn't match the version of MathType's DLL. Reinstall MathType to fix this condition. 
+A more recent version of MathType's DLL is required to use this macro. Reinstall MathType to fix this condition. 
+right 19
+ith MTCo
+gMTEqnNu
+QMTB"
+ 6MTDLL
+InsertRi
+f MT
+MMTDL
+MTOp
+MTDLLCod
+w_MTp
+RMT3 m
+_MTLib
+"MTW4" A
+WMtapi.|ba
+ MTC
+6RunMT
+ug MTEqn@
+nRight
+_MT_WO
+, mtreg_
+MT_EQN_N
+ the MT 
+itAPI(mt
+MT_VBA_Asserts.log'
+MathType has detected an error in
+$Header: /MathType/Windows/WordMacros/Asserts.bas 11    10/17/11 11:13a Jimm $
+ This is our private exception which starts at the lowest recommended user defined error number
+ MTAp
+unMTDLL
+$Header: /MathType/Windows/WordMacros/AutoExec.bas 56    10/17/11 11:13a Jimm $
+ This should start with MTCommand_ but it can not since Word expects this name
+Storing Application in MTAppA@0
+Please restart Word to load MathType addin properly
+MathTypeA@
+opyright
+MTCommandsMain
+MTMacEqns
+MTWinEqns
+MTEqnNumsOnRight
+SOFTWARE\Design Science\DSMT7
+Software\Design Science\DSMT7
+Software\Design Science\DSMT7\Directories
+EqnNumsOnRight)
+SOFTWARE\Design Science\DSMT7\Directories
+Software\Design Science\DSMT7\Config
+Software\Design Science\DSMT7\MathPage
+Software\Design Science\DSMT7\WordCommands
+NoInsertEqnRefDlg
+ConvertEquationDelay
+MathType_B_InsDispMTEqn
+MathType_B_InsDispMTEqn3
+MathType_B_InsDispMTEqnMac
+MathType_B_InsDispMTEqnLeftNum
+MathType_B_InsDispMTEqnLeftNum2
+MathType_B_InsDispMTEqnLeftNum3
+MathType_B_InsDispMTEqnLeftNumMac
+MathType_B_InsDispMTEqnRightNum
+MathType_B_InsDispMTEqnRightNum2
+MathType_B_InsDispMTEqnRightNum3
+MathType_B_InsDispMTEqnRightNumMac
+MathType_B_InsEBEqn2
+MathType_B_InsHandEqn
+MathType_B_InsInlineMTEqn
+MathType_B_InsInlineMTEqn3
+MathType_B_InsInlineMTEqnMac
+MathType_B_Speak
+MathType_B_Speak3
+MathType_B_InsEBEqnLeftNum
+MathType_B_InsEBEqnRightNum
+MathType_B_InsertNumber
+MathType_B_FormatEqnNums
+MathType_B_UpdateEqnNums
+MathType_B_EquationReference
+MathType_M_EqnNumsChapsSects
+MathType_B_InsertNextSection
+MathType_B_InsertNextChapter
+MathType_B_MoreBreaks
+MathType_B_ModifyBreak
+MathType_B_BrowsePrev
+MathType_DD_BrowseType
+MathType_B_BrowseNext
+MathType_B_SetEqnPrefs
+MathType_B_FormatEqns
+MathType_B_ConvertEqns
+MathType_B_TeXToggle
+MathType_B_ExportEqns
+MathType_B_MathPage
+MathType_B_Help
+MathType_B_HelpContents
+MathType_B_HelpMTInWord
+MathType_B_HelpUnlockReg
+MathType_B_HelpAboutMT
+MathType_B_HelpContents_Mac
+MathType_B_HelpMTInWord_Mac
+MathType_B_HelpUnlockReg_Mac
+MathType_B_HelpAboutMT_Mac
+MathType_B_Web
+MathType_B_WebHomePage
+MathType_B_WebSupport
+MathType_B_WebEmailFeedback
+MathType_B_WebOrderMT
+MathType_B_FutureMT
+MathType_DL_MTOptions
+MathType_B_WebEmailFeedback_Mac
+MathType_B_WebSupport_Mac
+MathType_B_WebOrderMT_Mac
+MathType_B_FutureMT_Mac
+MathType_MTOptions_Mac
+MathType_B_OMMathPage
+% MathType!
+% MathType!End!
+MTUseMTPrefs
+MTPreferences
+MTPreferenceSource
+MTEquationNumber
+MTCustomEquationNumber
+MTDeferFieldUpdate
+MTEquationSection
+MTEqnRefPane
+ZMTEqnNumFormatPrefs
+DSEquations
+MTDisplayEquation
+MTConvertedEquation
+MTEBNumberedEquation
+MTEditEquationSection
+ (c) Copyright 1992-2015 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/Declarations.bas 9     12/02/15 4:39p Johns $
+version # of the MathType API
+ used with the return value from MTGetAppFunctionality
+----------- Numbers we compare against with MTAPIvers ----------
+Boolean, indicates type of equations in doc
+MT registry name
+MathType6
+EqnNumsOnRight
+Don't Show EqnNum's 'Insert Break?' dialog key
+Don't Show Insert Eqn Ref dialog key]$
+If set does not apply the MTConvertedEquation Style to converted equations
+MT-3373
+ amount of time to delay in milliseconds after copy to clipboard in convert equations
+Public Const mtbIDMathType_B_InsEBEqn As String = "MathType_B_InsEBEqn" ' replaced by O2007 implementation]$
+MathType 5.01 uses the MathPage 5.1 API
+maybe an inserted symbol
+Flag bit for MTLib.SaveWordState()]$
+URL codes - also see UIHelp.bas mturl's
+MTMsgBox Constants]$
+Values for MTLib.GetPlatform()
+ language type values for MTSetEqnFromLangStr
+version of struct/API; 1 = MTW 5.0a
+struct/API version; MTW5.0a = 1
+ return codes from MT DLL API
+ equation OLE 1.0 object on clipboard
+ Windows metafile equation graphic (not OLE object) on clipboard
+ Macintosh PICT equation graphic (not OLE object) on clipboard
+ equation OLE 2.0 object on clipboard
+ can't find MathType application
+ can't run the MathType application
+ the MathType application is the wrong version
+ the MathType application is already in use
+ the MathType application is not running (i.e. unexpectedly aborted)
+ time ran out waiting for the MathType application to start up
+ not equation on clipboard]$
+ options values for MTInitAPI
+ options values for MTGetLastDimension
+ options values for MTGetTranslatorsInfo
+ options values for MTXFormSetPrefs
+ options values for MTXFormSetTranslator
+ return values from MTXFormGetStatus
+ data sources/destinations for MTXFormEqn
+ data formats for MTXFormEqn
+ option values for MTSetMTPrefs
+ option values for MTXFormAddVarSub
+ find/replace types for MTXFormAddVarSub substitutions
+ replace styles for MTXFormAddVarSub substitutions where type = mtxfmVAR_SUB_PLAIN_TEXT
+ tokens for MathType translator text equations
+True to use MathType's prefs for new equations
+doc's settings for new equations
+MTW4 equation number format
+MT eqn number format]$
+MTW5 & newer property version number]$
+True if eqn number format is custom
+True if 'eqn section number = 0' check has been made]$
+Pane # containing insertion point where ref. is to be placed
+old Autotext entry for MTW3's equation# format
+ Version-independent MathType OLE ID
+MTW5 & newer property version number
+pyright 
+MTCE
+ HAPIL>MT`
+from MTG
+l"mt
+yMT`$
+\DSMT7g?
+nst mtre
+g_MT_PAS
+s`it pyly @the MT
+$MT-3373
+ispMT
+MTEqnMac
+mtbIDIns
+AboutMT_
+0MTOpO}7
+onst mtb
+IDMTOpti?
+JMTRefe
+mt_RANGE
+MTSetEqn FromL
+MT DLL 
+mtOK
+MT_NOT_F
+MTInitr
+r MTGetL
+st mtdim@FIRST 
+gPWMT
+MTUse
+MTW4>_3&e
+ng = "MT
+_MTT3
+PZMT+
+MTAPIVersion
+MTAPIConnect
+MTAPIDisconnect
+MTIsFullFunctionality
+MTGetUserString
+MTGetUserWString
+MTIncrementStatisticBy
+MTSetStatistic
+MTGetWPathToMathType
+MTGetURL
+MTCrashTest
+MTCopyButtonFace
+MTSetPreference
+MTGetPreference
+MTCloseOleObject
+MTShowAboutBox
+MTHelp
+MPProcessEquation
+MPProcessEquation2
+MTAPIGetNestingLevel
+MTClearClipboard
+MTConvertPrefsToUIForm
+MTCreateDirectory
+MTEnumTranslators
+MTEquationOnClipboard
+MTGetAppFunctionality
+MTGetClipboardText
+MTGetLangBytesFromEqn
+MTGetLangStrFromEqn
+MTGetLastDimension
+MTGetLocaleDLL
+MTGetLocaleString
+MTGetMathMLFromClipboard
+MTGetMathMLFromClipboardText
+MTGetOMMLFromClipboardHTML
+MTGetOMMLFromClipboardPNGOA
+MTGetOMMLFromClipboardRTF
+MTGetPrefsFromClipboard
+MTGetPrefsFromFile
+MTGetPrefsMTDefault
+MTGetTickCount
+MTGetTranslatorsInfo
+MTInitAPI
+MTInitLocaleStringDLL
+MTInsertHandwrittenMath
+MTIsClipboardFormatAvailable
+MTIsMathInputPanelAvailable
+MTIsMathInputPanelTheClipboardOwner
+MTOpenFileDialog
+MTPreviewDialog
+MTSaveFileDialog
+MTSetClipboardText
+MTSetEqnFromLangBytes
+MTSetEqnFromLangStr
+MTSetMTPrefs
+MTTermAPI
+MTXFormAddVarSub
+MTXFormEqn
+MTXFormGetStatus
+MTXFormReset
+MTXFormSetPrefs
+MTXFormSetTranslator
+ (c) Copyright 1992-2011 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/OS/Win/64-bits/Declarations64.bas 6     1/24/14 10:10a Jimm $
+ MTAPIV
+s/MT6-64
+ MTAPI
+HMTDe
+*MTermAP"I?HXFo
+MTBrowse 5.0
+$Header: /MathType/Windows/WordMacros/MTBrowse.bas 18    5/06/14 9:54a Jimm $
+ 0 means no selection (we assume equations)
+ 1 means equations 
+ browses through the document looking for equations in a specified order
+helper function for browsing equations
+ check this range for equations
+ used to mark either the start or end position of a EB equation
+ used to mark either the start or end position of a MT equation
+ the index number of the found EB equation]
+ the index number of the found MT equation]
+ the index number of the found MT equation
+'' OLE1, OLE2, non-OLE MathType equation
+ store the position and index of the equation
+'' MathType 1.x macro equations or MS word formula fields
+ Word 2007 Equation Builder equations
+ iterate through all of the EB equations
+ check the position against this particaular equation
+ no EB equations
+ now find the equation that is closest to where we started from
+ an equation
+ the "type" of equation that we should select
+ now loop through and find the closest equation to where we started from
+ helper function for browsing equations
+ This function will select an equation using the following values:
+ returns true if aShape represents an MT equation, false otherwise
+ returns true if aField represents an MT equation, false otherwise
+ MTEF, false otherwise
+Fails to detect WMFs with MTEF after Word 2000.  See MT-1131
+browse through equation numbers or references as well as chapter or section breaks
+ check the position against this particaular field and see if it is an equation
+equation number or reference
+MTPlaceRef
+If MTEquationSection style exists, make it not hidden
+e = "MTB
+r.Number
+mt EQFlo
+MT equat@ion
+im mtEQI
+MTBrowse(.Is
+mtEQF
+Equation
+0>-1, mTak
+.Number
+presents@ an MT
+iMTEF
+mtNOT_
+EQUATION3L
+If MTB
+, "MTPla
+$Header: /MathType/Windows/WordMacros/MTConvertEquations.bas 54    1/24/14 10:10a Jimm $
+around equations, and also turn off Typing Replaces Selection.
+!0100Convert Equations 
+ user ran Convert Equations
+ total number of equations converted
+CvtEqFromMathType
+ convert from MathType
+CvtEqFromText
+ convert from text equations
+ convert from OMML equations
+CvtEqToMathType
+ convert to MathType  
+ convert to one of the TeX text equations
+ convert to one of the MathML text equations
+MTConvertEquations: 5.0
+make sure that mtstyle_CONVERTED_EQUATION exists
+replace equations
+the following option has to be disabled when converting equations:
+Word\Preferences\Equations\General\Copy linear format to the clipboard as plain text
+pasting code in MTLib.CleanUpPasteKludge deletes this extra character
+else if converting to eqn objects, convert OLE equations first
+converting to text equations
+update Text (TeX/MathML) equations if requested
+convert text equations to text equations
+ update OMML and OMML images to MT eqns which are then converted to text below
+update OLE1, OLE2 & Non-OLE MathType Eqn Pictures selected if requested
+convert MathType equations to text equations
+update "MathType 1.x macro equations" or "Microsoft Word formula fields" if requested
+converting to MathType equations
+convert MathType equations to MathType equations
+convert OMML equations to MathType equations
+convert text equations to MathType equations
+display statistics about updated equations 
+!1200The following equations were updated: 
+!1202There was an error setting up MathType to convert equations. No equations were converted. 
+restore When Copying an Equation setting
+e = "MTC
+number
+at mtsty
+6MTLib.
+st`&@= MTXF
+xfmTR
+MTEditEquationSection: 5.0
+$Header: /MathType/Windows/WordMacros/MTEditEquationSection.bas 12    1/19/10 2:29p Jimm $
+e = "MTE
+_MTFo(rma
+Inserts an equation number at the current insertion point.
+MTEqnNum 5.0
+$Header: /MathType/Windows/WordMacros/MTEqnNum.bas 52    5/06/14 9:54a Jimm $
+Places an equation number at insertion point with current format.
+in the custom document property "MTEquationNumber". If this property
+MTW3's AutoText entry "ZMTEqnNumFormatPrefs".
+MTPlaceRef places an reference to the equation number at the location
+marked by a bookmark created by MTMarkRef (which itself is run when
+the user selects the Insert Equation Reference command).
+{macrobutton MTPlaceRef {seq MTEqn \h}({seq MTChap \c \* Arabic}.{seq MTSec \c \* Arabic}
+.{seq MTEqn \c \* Arabic})}
+shared variables for communicating with MTInsertEqnNumDlg
+!1301Insert Equation Number
+If we are numbering an EB equation do it and exit
+If the selection is in an EB equation display warning and exit
+check that an equation section has been inserted
+insert a space just in case there is another field right before
+insert fieldchars, macrobutton (for references), and
+MTPlaceRef 
+insert equation number
+update new field, and then existing equation numbers (don't force) 
+move the cursor back to the right place
+Checks if section number has been inserted in this document.
+If not, asks user if they want one inserted at start of document.
+Returns True if OK, False to Cancel insertion.
+see if we need to insert an initial chapter/section break
+MTSec 
+if user doesn't want to see warning, insert explicit break silently
+if the current format doesn't show chapter & section number, insert silently
+insert the section heading at start of doc 
+insert explicit chapter & section break
+Returns value of SEQ value at current insertion point
+insert a field using our section field identifier, & get its value
+"MTEqn "
+s @number
+USER, mt
+reg_MT_W
+MTFormatEquations: 5.0E
+$Header: /MathType/Windows/WordMacros/MTEqnNumFormat.bas 63    5/06/14 9:54a Jimm $
+format for equation numbers. Only one format is stored per document for
+all new equations. The encoded format is stored in the Custom Document
+Property "MTEquationNumber2", in the form below:
+MTW5 & newer format is a string with tokens #Cx, #Sx and #Ex, where x indicates the format,
+MTW4 Format is a 5-char string stored in the MTEquationNumber document property:
+   2: Section number char (0=none,1=Arabic,2=UpperRoman,3=LowerRoman,4=UpperAlpha,5=LowerAlpha)
+   4: Equation number char (see section number char)
+   5: Right enclosure char (_ = none)
+MT3 format is a 7-char string stored in the ZMTEqnNumFormatPrefs autotext entry:
+   4: section number char (0=Arabic,1=UpperRoman,2=LowerRoman,3=UpperAlpha,4=LowerAlpha,5=none)
+   7: equation number char (see section number char)
+in/out: true to suppress 'section# = 0' dlg on eqn# insert^
+in/out: true to suppress dlg on eqn ref insert
+out: true to use format for new numbers
+!0300Format Equation Numbers 
+update format if 'new numbers' was checked5
+If the user selected to update existing numbers...5
+CFmtEqNum
+FmtEqNumAdv
+Updates all equation number fields in the range
+Range is mt_RANGE_SELECTION or mt_RANGE_DOCUMENT
+At finish updates fields to correct all numbers
+!0310Updating equation number: 
+MTChap 
+loop thru all equation number fields
+can't use For Each, it gets confused by the deletions and insertions
+delete the old number
+insert the actual data
+move past the current number so that we don't simply do it over again
+inserts template as defined by selections
+return length of inserted text
+Inserts field according to next char in format string (1,A,a,I,i).
+Inserts # if none of these, also advances pos accordingly
+Returns length of text inserted
+Inserts the actual field, returns length of insertion
+get the right kind of field text based on type of break
+returns the equation number format to use for this document
+in doc converts MTW4 or MTW3 format if found and MTW5 format doesn't exist
+!2900The equation number formatting was created by a newer version of MathType. If you continue the newer formatting information will be lost. Do you wish to continue?
+found the MT5 property; do nothing 
+found and processed the MT4 property
+found and processed the MT3 property
+writes the equation number format & custom format properties
+Returns MTW5 format converted from MTW4 format
+if an AutoText entry for the 'MT 3 and before' equation number format exists,
+first convert MTW3 format to MTW4 format
+then convert MTW4 format to MTW5 format
+converts mtw3 equation number format to mtw4 equation number format
+set enclosure chars as defined by MT3 format
+MTW5 >&
+ MTLib.C`heckL
+fMTLib@.Write
+SER, mtr
+eg_MT_WO
+number0s...
+'/| stMT ap
+sMTSec
+equation
+ number @fields
+oveRight
+InsertNu
+" & MTLi
+MTW5
+FMT5V9
+MT4v
+_MT_WORD
+tmtp
+_NUMBER
+cessMTW
+'MT H3 a
+_MT3Q
+out: mt_RANGE_SELECTION/mt_RANGE_DOCUMENT
+!0610Export Equations
+!1451There was an error setting up MathType to export equations. No equations were exported. 
+!1450The following equations were exported:
+MTExportEquations 5.0
+ (c) Copyright 2001-2010 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/MTExportEqns.bas 21    1/24/14 10:10a Jimm $
+get number of consecutive '#'s
+Bamt_RANG
+= MTLib.0GetU
+MT_WORDC
+= MTLib
+= mt_RA
+MT XForm
+(a5mtOK|5
+All equations become MathType OLE objects.
+!0500Format Equations
+CFmtEq
+FmtEq
+MathType 
+delete "Use MT's defaults" property so we'll use these prefs.
+MTFormatEquations: 5.0
+$Header: /MathType/Windows/WordMacros/MTFormatEquations.bas 51    1/24/14 10:10a Jimm $
+Reformats all equations in selection or whole doc. User can select prefs to use.(
+update MT 1.x macro eqns & Word formula fields
+!1402There was an error setting up MathType to format equations. No equations were reformatted.
+!1400The following equations were updated: 
+e = "MTF
+ pgMTPA8
+ mt_RANG
+MATHTYPE
+XMTXFor
+mtOKK\ '
+mtxfmPRE
+MT 1.x m
+mt_RA
+!2112This break was created by a newer version of MathType. If you change it, the newer break information will be lost.
+DlgMain() is entry point for editing of preceding Equation Break field.
+search from insertion point backwards for equation section fields
+!2105No equation chapter/section break was found. You can create one using the Insert Chapter/Section Break... command.
+get the MTEditEquationSectionx macro name out of the macrobutton field and run it
+Application.Run "MTFormatEquationSection.EditEquationSection"
+MTEditEquationSection2K
+MTEditEquationSection3K
+Application.Run "MTFormatEquationSection.NewVersion"
+Handles double-click on equation section field, which contains a
+MTFormatEquationSection macro for handling.
+Handles editing of the equation section field passed in.
+searches the given range backwards for an equation chapter/section break field
+looking for {{MTSec \h}{...}}, which is an increment-style section, or
+{{MTSec \r n \h}{...}}, which is an explicit section (n is the value)
+!0705Searching for equation section... 
+ MTSec 
+MTFormatEquationSection: 5.0
+$Header: /MathType/Windows/WordMacros/MTFormatEquationSection.bas 36    5/06/14 9:54a Jimm $
+ MTChap 
+update existing equation numbers, don't force
+delete current section and re-insert
+(MTLib.G
+== MT@Lib.Is
+{{MT " 
+& " MT
+MTIn
+ mt_RAN
+[MTLib
+Opens the MathType Help file to a particular topic
+The MathType help file couldn't be found 
+MathType Help Problem
+Gets the location of MathType's Help file from the registry
+get the location of Mathtype from the registry
+Get the name of the current help file from MathType's registry
+e = "MTH
+&s_MT#%
+$Header: /MathType/Windows/WordMacros/MTHelp.bas 14    5/06/14 9:54a Jimm $
+MTInsertEBEquation:
+ Functions for inserting normal and numbered Equation Builder (EB)
+ equations into the Active Word document
+$Header: /MathType/Windows/WordMacros/MTInsertEBEquation.bas 39    9/17/12 1:21p Jimm $
+Inserts an Equation Builder (EB) equation at the current insertion point
+Insert Equation Builder Equation 
+check if we're already in an EB equation
+ used by InsertEBEquationEx to get late binding
+Inserts a left numbered EB equation at the current insertion point
+Inserts a right numbered EB equation at the current insertion point
+True for right, False for left
+Put the selection in the EB equation
+If EB Numbered Equation style is not yet defined, add it to this document.
+ Format and fill (if necessary) the left number cell
+ Format and fill (if necessary) the right number cell
+ Format and fill the equation cell (the middle cell)
+insert the equation
+Add new equation
+Add existing equation
+ used by InsertEBNumberedEqnTable to get late binding
+ Determine if the current selection is inside an EB equation
+entering SelInEBEquation 
+ In this case we could be inside the eqn at the far right
+ was just to the right of one, but not in
+exiting SelInEBEquation
+ used by SelInEBEquation and NumberExistingEBEqn to get late binding
+ Determine if the current selection is inside an EB numbered equation table
+ Returns position in EB numbered eqn table:
+   2 for left of the EB equation in the middle cell
+   3 for inside the EB equation in the middle cell
+   4 for right of the EB equation in the middle cell
+   5 for in rightmost cell
+ Size the column to the number
+Number Equation Builder Equation 
+ Disallow EB numbering in Outline view
+ Note: WrapEBEqnWithTableAndNumber adds an extra paragraph after the
+ inserted table -- we get rid of it below
+Move out of the EB number table (just below)
+ called by IsLeftOfEBDisplayEqn and IsRightOfEBDisplayEqn to get late binding
+moved = 0 => end of document (so right of the OMath)
+e = "MTI
+ MTLib@ tS
+_NUMBERE
+, MT
+`@insert
+EBNumber
+ mtt
+= MT
+MTIncrem`entSt ^
+MTComma
+MTInsertEquation
+  Handles inserting MathType inline, display, and numbered display
+  equations
+$Header: /MathType/Windows/WordMacros/MTInsertEquation.bas 35    5/06/14 9:54a Jimm $
+Inserts an inline MathType equation
+!1102Insert MathType Equation
+ the intended result of inserting an equation at the end of a row
+Inserts un-numbered MathType display equation
+Inserts left-numbered display equation
+Inserts right-numbered display equation
+Inserts a centered display equation in a new paragraph.
+if eqnNum is True, also inserts a right-justified equation number.
+If insertion point is in a table cell, center and right tabs are set based on cell width
+if we're inserting an eqn number, see if section# reqd.
+if left numbered...
+...insert the equation number
+insert tab to move to center tabstop
+if right numbered...
+...insert tab and equation number
+ PrepareInsertionPosition guarantees there is a trailing
+ paragraph following the display equation on which to
+ prepares the insertion point by a) adding paragraphs as necessary
+ following the equations to Word's built-in algorithms, and b) guaranteeing
+ a trailing paragraph following the display equation on which to
+ check to see if we are between a tab and a display equation
+ paragraph to position the cursor on after inserting the
+ equation.  WARNING: this case is not mutually exclusive
+ if we are on a blank line, then just insert
+... set tabs using display equation style
+ Detects if cursor is to the right of a display equation.
+ clearly are not to the right of a display equation
+ see if selection contains an equation
+ now look at the character to the right of the selection
+ Detects if cursor is to the left of a display equation
+ since we want to extend the selection to the right, we
+ moving to the right will move us outside the cell, so we
+ clearly are not to the left of a display equation
+ extend the selection to the right one character
+ move cursor to right by one character
+ can't extend to right, must be in a table cell
+ we expect an equation number
+ expected a equation number... fall back
+ should only be called after a successfull call to IsCursorLeftOfDisplayEquation
+Inserts an equation at the current insertion point.
+If the document has own eqn settings they're sent to MathType first.
+if document uses its own settings for new equations, send them to MathType 
+set prefs for next equation
+save current window position - fix for http://valor:8080/browse/MT-2217
+http://valor:8080/browse/MT-1014
+Word baseline alignment shifts after insterting an equation object into Word 2007
+Only for Word 2007 because on 2016 for right-to-left cause errors avoiding edit late
+inserts a new equation (and opens it in MT for editing)
+If MT display equation style is not yet defined, add it to this document.
+(Para. style based on cur style, has center & right tabs based on doc's width,
+create MTDisplay equation style based on current style
+add centered tab for equation and right tab for equation numbers
+Returns width of document containing insertion point
+= MTLib`.GetU@M
+quation @number
+ @Mt
+s(mt
+EQUATION
+e right 
+Number
+tToExten@dRight
+@number
+), "mtpl
+AC' "MTP
+Right = 
+owNumber
+/MT-2217
+e:=mtole
+HMTL
+, mtB
+MTEF
+MTLib: 5.0
+$Header: /MathType/Windows/WordMacros/MTLib.bas 286   12/02/15 4:43p Johns $
+Updating equations conversion kind]$
+public variables for MTMsgBox options
+ programmatically set this to not display MTMsgBox
+public variable for MTPastePrefDlg
+ to late to do that in MT6.6 (MT-2153)
+true if we're updating/converting equations
+number of equations updated
+public variables used for updating equations
+This command does not work inside Equation Builder equations.
+This operation is not allowed for previously numbered Equation Builder equations.
+There is a problem with the MathType language DLL for Microsoft Word. Please contact Design Science. ID  
+The MathType language file 
+ is missing. See the Office Support Read Me file in the Office Support folder inside your MathType folder for more information.
+MathType Commands for Microsoft Word Error$
+Returns True if explicit number is valid, returns value in parameter.
+!2102You entered an invalid number, please try again 
+Checks for the MTEquationSection style in the document, adds it if not found.
+ MT-3103
+Makes the MTEquationSection style not hidden, adding it if necessary.
+Makes the MTEquationSection style  hidden, adding it if necessary.
+Returns True if the MTEquationSection style is hidden, else False
+Checks for the MTConvertedEquation style in the document, adds it if not found.
+Gets the location of MathType from the registry
+C:\Program Files (x86)\MathType
+Gets the location of MathType's Language directory from the registry
+Gets the location of MathType's Preferences directory from the registry
+If registry value missing, returns MathType directory.
+Brings up a dialog to choose a MathType preference file.
+Starts in MathType's Preferences dialog.
+Choose MathType Preference File
+the Equation Preferences menu item.
+Returns MathType's "defaults for new equations" settings as a string.
+Error getting preferences from MathType
+MathType Macro Error 
+If there is an equation on the clipboard, returns the equation preferences
+in that equation as a string.
+There was not an equation on the clipboard 
+MathType Macro Message 
+The equation on the clipboard did not have any preferences attached to it
+given a file name, this will return the MathType preferences in that file
+as a string. The file must be a MathType Preference file.
+Bad file - it didn't have the right data in it
+Sets prefs that MathType will use for the next new equation.
+Returns MTSetMTPrefs result code.
+set preferences for next transformed equation
+!1100There was a problem sending your equation preferences for 
+this document to MathType. This equation will use MathType's 
+'New Equation' preferences.
+!1101MathType Preferences Problem
+Returns id of equation, 1 = OLE1, 2 = OLE2, 0 = unknown
+EQUATION.
+tests selected shape & converts into a MathType equation if its a MT picture
+Updates graphic equations (OLE/Picture equations) in doc/selection.
+equations if there is a text box anywhere in the document
+if it was an equation, ask user if we're prompting 
+1) just a For Each would re-process the "updated" equation as well
+handle deleted object error (possibly due to equation that was corrupted but was fixed by Word)
+!3336Error: Please run Convert Equations again, and select 'Switch to Office 2011' when prompted.
+apply style to inserted text
+(happens with older MT 1.1 DDE equations)
+insert filename
+equation appears in deleted text; ignore it
+ Word 2003 can extract OMML from OMML Images but not OMML Equations
+ with OMML equations directly.  No other versions of Word can deal
+Word 2007 Detected, converting OMML equations
+convert OMML to MT eqn
+ Transform the new MT Eqn to Text if necessary
+ select equation for user and get update action
+Error occurred in MTGetOMMLFromClipboardRTF
+Entering InsertMTEqnFromOMMLA@0
+) could not be found. Please reinstall MathType
+MTBlankEqn 
+Blank MT Eqn inserted
+Detecting display equation status
+ test to see if the equation is alone in a paragraph
+Exiting InsertMTEqnFromMMLA@0
+check the MathType registry keys for the location of the file
+check the MathType\Office Support folder
+ Transform an mt eqn to text.  Called by OMML conversion routines
+Updates all field equations (Word EQ fields and MathType 1.x macro equations).
+see if it is an equation
+Updates text equations that have MT4 (or greater) comments.
+   MathType<sep>Translator<sep>        where sep may vary
+   MathType<sep>End<sep>
+look for "MathType<sep>Translator<sep>count1<sep>count2<sep>"
+count1 = num chars prior to "MathType" included in the comment
+count2 = num chars following "MathType<sep>End" included in the comment
+ensure we've found an equation
+reset selection to after "MathType" that was found 
+if error, reset selection to after "MathType" that was found
+extend the selection to the end of the equation
+extend selection to end of equation, avoid infinite looping
+allow for count<sep>count<sep> missing (early MT4 betas didn't have them)
+check that selected equation contains MTEF tag
+if it was an equation, get update action
+so insert a 'Z' after the CR to ensure its deletion
+Transforms clipboard graphic into an equation.
+Format depends on how MathType has been configured by a
+previous call to MTXFormSetTranslator.
+The transformed equation is left on the clipboard.
+Returns mtOK, mtNOT_EQUATION or other error code
+Word 2002 hangs for 15-20 seconds in MTEquationOnClipboard() call
+during Export Equations
+Returns mtOK, mtNOT_EQUATION or other error
+as long as everything's OK, update the equation
+convert MTEF or Text equation to a MathType equation
+insert blankeqn.doc
+convert equation without a translator to convert to MTEF
+convert the equation
+set the equation with the MTEF string
+convert MTEF or Text equation to a text equation
+export equation
+convert equation
+insert translated equation 
+force display of selected equation that caused the error
+There was an error translating to the new format. This equation was not updated.$
+There was a problem sending the preference information (styles, sizes, and spacing settings) to MathType. This equation was not updated.$
+There was a problem writing this equation to disk (e.g. the disk may be full). This equation was not exported.$
+There was an unknown error updating this equation. This equation was not updated.
+Do you want to update this equation? 
+Update the equation counts based on the equation type
+Processing MathType Equation: $
+Processing Picture Equation: 
+Processing Word Equation Field: $
+Processing Text Equation: $
+Processing Macro Equation: 
+Processing OMML Equation: $
+displays stats about updated equations
+if at least one equation was updated
+MathType equation objects
+Non-OLE MathType equation pictures 
+MathType 1.x macro equations 
+Microsoft Word equation fields 
+MathType translator text equations 
+Word 2007 (OMML) equations 
+else if no equations updated
+No equations were found and/or updated.
+& where the rest of the name can be converted to a number
+returns version number of a newer version of a custom doc property
+Returns True if the active document contains MathType settings
+returns True if doc is configured to use its own settings for new equations,
+instead of MathType's current settings
+if settings exist but mtprop_USE_MATHTYPE_PREFS also exists, returns False.
+if settings exist and mtprop_USE_MATHTYPE_PREFS does not exists, returns True.
+Verifies user-entered section number in section number dialogs.
+ see http://wiles.dessci/jira/browse/MT-3732
+Deletes old macros from active template installed by old versions of MathType
+search for a name used in any known version of MathType. We want to delete
+MTAUTOK
+MTEQNNUMK
+MTEQNNUMFORMATK
+MTLIB
+MTLOADPREFERENCES
+MTMARKREF
+MTPLACEREFK
+MTPREFERENCES
+MTSECNUMK
+MTUPDATEEQUATIONS
+MTCONVERTEQUATIONSK
+MTFORMATEQUATIONS
+MTSECNUMNEXTK
+MTSETEQNPREFS
+MTUPDATEFIELDSK
+MTCONVERTEQATIONSDLGK
+MTDISPEQNPREFSK
+MTEQNNUMFORMATDLG
+MTEQPREFSRC
+MTFORMATEQN
+MTSECTIONNUMK
+MTSETEQPREFSK
+OLDINSERTEQUATION
+rename InsertEquation, ShowAll and EditPicture
+INSERTEQUATIONK
+If existing macro contains the phrase MTLoadPreferences.MAIN, remove that line
+MTLoadPreferences.MAIN 
+ It now forwards calls to MTHelp.MTHelpTopic
+ This is a factory method for obtaining an instance of the MTCommandsDispatch
+ class from other templates, e.g. MathType Commands 6 for Word.dot
+ The MTCommandsDispatch class methods are invoked using CallByName, and
+WriteLog "instantiating new MTCommandsDispatchClass"
+ duplicates Asserts.WriteLog from the MathType Commands 6 for Word template
+The Word version can be obtained in a number of different ways:
+ This routine will reference Word.Application.Build, which appears to match the version number obtained
+ According to Method 2, these are the Word version numbers:
+ The format of the version number is aa.b.cccc.d:
+    cc: unknown - assumed to be minor version number, it is the value that this routine returns
+ returns a count of the number of times searchfor appears in search
+ insert markers just before and after the current selection
+save string for use in DeleteEquationMarkers
+insert periods
+MTPlaceRef.CreateBookmarkName
+deletes the equation markers created in InsertEquationMarkers
+convert to mathtype equation
+insert Microsoft required namespace
+handwritten math as a MathType equation, or as OMML
+http://tesla.dessci/development/swdev/products/mathtype/MTW66/FuncSpec.htm 
+PstMathMLFromMIPToWordasMT
+ElseIf isOwner = True And pasteType = kMTEqn And format = kText Then
+PstMathMLClipToWordasMT
+PstMathMLFromCFTEXTToWordasMT
+e = "MTL
+MTMs
+.6 (MT-2p153)
+/kMT 
+r mt_SWS
+Or mt_SW
+MTLib.Ge tUser3
+vMTA
+MTIni
+tat = MT
+RENT_USE R, mt
+ f@#AIMTEqru
+=, mtB
+' MT-
+_MT_
+= MTe
+mtOKl
+W(MT
+?= MTOpe
+B! , mtp@
+= MTGetP
+2mtOK
+mt!N_NOT
+= mtpr
+ Sub MTE
+wawMT| p
+MTLib.I
+/<> mtNO
+mtOKP
+(.@Number
+MTLi
+InsertEq
+ange, MT
+ mtOLE_E
+mtOK A
+bMTGe
+MmtOK 
+ /(#I`MTEqn
+MT  
+Blank MT
+MTDat
+] Right
+la$MT
+MTEqnToT1
+@MmtNOT
+?mtO
+nt mtWOR
+hQ MT4 (
+= Len(mt
+MathType <sep>
+veRight(
+1B-MT 
+ MT4 bet
+tmtOK
+Count mt
+MathTypeP has
+ MTE
+o MTXFor
+right
+GetMTExp(ortA
+.@Number
+mtxfmTEX
+ MTXForm
+MTEF,
+downMT
+BmtE
+MTAPI
+righT
+mtBAD_
+a@Mthis
+v0WxMT 
+mtOK6 
+mtlangMT
+MT(curShHape
+mtTRA
+; smt_
+mtxfm1
+ON, mtMA@C_PICT
++ @MTLib.
+MATHTYPEJ_A<S
+MTTH$1(
+e/MT-37
+ MTHelp.Ac
+Kt"apJ ofbLMT
+= "MT_V
+" 'MTP
+AsMTEqn(
+;=  MTGet
+6.6 (MT-02153
+SuPb MTF
+MT Lib.g
+MTIs!
+]/MTPW66/
+= kMTEqn
+MTIncre
+rdasMT",
+!1697The MathType DLL cannot be found. Please reinstall MathType.
+!1609MathType Commands for Microsoft Word Error
+m mtDir
+$Header: /MathType/Windows/WordMacros/MTLibCommon.bas 6     5/06/14 9:54a Jimm $
+thType/Windows/WordMacros/MTLoadPreferences.bas 25    1/19/10 2:29p Jimm $
+Upgrades MathType 3.x preference scheme
+Run only by older MathType macros, converts to newer preferences scheme.
+MTLoadPreferences: 5.0
+$Header: /MathType/Windows/WordMacros/MTLoadPreferences.bas 25    1/19/10 2:29p Jimm $
+auto-launch macro at startup to load into MathType. Since
+initialize the DLL and check to make sure it's the right version
+ZMathTypePrefFile
+MTMathInputControl
+ (c) Copyright 2010 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/MTMathInputControl.bas 13    10/11/11 2:12p Jimm $
+e = "MTM
+yright 2
+<> pmtOK
+for use with the "MTPlaceRef" marU
+Places, at the current insertion point, a reference to a user-selectable equation number.
+TemplateProject.MTMarkRef.MAIN
+MTMarkRef 5.0
+$Header: /MathType/Windows/WordMacros/MTMarkRef.bas 26    10/11/11 2:12p Jimm $
+Handles the Insert menu's Equation Reference command.
+for use with the "MTPlaceRef" macro
+!1901Insert Equation Reference 
+!1903equation reference goes here
+MTReference
+write property containing active pane ID for MTPlaceRef to use
+!1902Double-click on the equation number you want to reference 
+R, mtreg
+L1MTC?Eq
+MTus
+MTOptions
+e = "MTO
+update selected equation so we're referring to the current number
+if "MTReference" bookmark has been placed...
+deselect equation
+select entire equation number
+ MTEQN 
+deselect equation number
+reselect all but the {seq MTEqn \h} field
+Default example:  for the equation number
+"{macrobutton MTPlaceRef {seq MTEqn \h}({seq MTSec \c}.
+{seq MTEqn \c})}" the bookmark would be assigned to only the
+"({seq MTSec \c}.{seq MTEqn \c})" part
+insert new bookmark
+field, like an equation)
+go to "MTReference" bookmark, use original pane if property exists
+allows user to insert refs in one pane & dbl-click in the other
+ the MTReference bookmark contains a "equation reference goes here",
+the MTReference bookmark was formatted with italics, so remove the formatting
+insert GoToButton to jump to the equation...
+note that this will delete the MTReference bookmark
+insert nested reference field to display equation text
+"MTReference" does not exist or we can't find our SEQ field
+!2000No location was marked for an equation reference. First choose the Insert Equation Reference command on the MathType menu, then double-click on an equation number
+This macro is used in conjunction with MTMarkRef.
+TemplateProject.MTPlaceRef.MAIN
+MTPlaceRef 5.0
+$Header: /MathType/Windows/WordMacros/MTPlaceRef.bas 43    5/06/14 9:54a Jimm $
+This macro is run when an equation number is double-clicked on.
+It checks to make sure the bookmark "MTReference", which is defined
+by the "MTMarkRef" macro, exists, then checks to see if the
+currently selected equation number has a bookmark associated with
+equation's bookmark at the location marked by "MTReference". The
+reference displays the text of the equation number, can be updated
+original equation when double-clicked on.
+increment number by 1 & try again
+e = "MTP
+> MT
+"MTR
+ number.
+Inserts a new equation section at the insertion point.
+MTSecNum: 5.0
+$Header: /MathType/Windows/WordMacros/MTSecNum.bas 50    5/06/14 9:54a Jimm $
+Entry point for inserting chapter/section break. Eqn# always reset to 1.
+Numbers can be 'next' or explicit. Field codes inserted at the current cursor position.
+The field codes inserted look like (next, explicit):
+{MacroButton MTEditEquationSection Equation Section (Next) {Seq MTEqn \h}{Seq MTSec \h}}
+{MacroButton MTEditEquationSection Equation Section n {Seq MTEqn \h}{Seq MTSec \r n \h}}
+where n is the explicit number to which the number is set.
+For chapter fields, a {Seq MTChap \r n \h} or {Seq MTChap \h} field is added after MTSec.
+The "Equation [Chapter] Section *" text is formatted with the MTEquationSection character style,
+insert the new section
+!2101Insert Chapter/Section Break
+disallow this command if inside an EB equation
+ convienence entry point for inserting a new "next" chapter break without using a dialog
+ initalize the state as if the dialog were set to insert a new chapter
+ convienence entry point for inserting a new "next" section break without using a dialog
+inserts equation section fields at insertion point/before current selection
+inserts increment-style section unless isExplicitSectionNumber is True
+if so, sectionNumber$ must contain number to use
+insert fields before any existing selection.
+The following only applys to Word 2007 EB equations
+ Move off of (i.e. not adjacent to) EB display equations
+ Make sure we're really not in an EB equation (this should never be true,
+ If the move right put ust to the right of a preceeding EB equation then ...
+ If the move right put ust to the left of a following EB equation then ... 
+Word 2007 EB equations
+insert an extra character (must NOT be a space!) so we can manage insertion point properly
+ If the TypeText above put us in an EB equation (which can happen if the cursor
+ was positioned to the right of a table at the bottom with an EB eqn just below)
+insert Macrobutton field to run equation section editing macro (MTEditEquationSection)
+insert chapter/section 'tag' and apply our own style to it 
+!2108Equation Chapter
+!2109Equation Chapter (Next) 
+!2106Equation Section
+!2107Equation Section (Next) 
+insert field to reset eqn numbering
+insert field to increment/set section number
+insert field to increment/set chapter number
+mark doc as having an equation section, avoids extra checks when
+an equation number is entered
+!2103New equation section set
+e = "MTS
+ve right
+equationA
+= MTLib.
+equence,  "MTE
+veRight
+MTUr
+eMT 
+D$SdM|MT
+MT-2x1007
+MTLib: MTSetData
+$Header: /MathType/Windows/WordMacros/MTSetData.bas 9     2/10/14 1:49p Jimm $
+Entering SetMTData 
+MTSetEqnFromLangStr called successfully
+Error in MTSetEqnFromLangStr:  
+MathType Automation Error Setting or Closing Object
+Exiting SetMTData
+MT Equation Activated
+MT eqn object closed 
+Couldn't call close on MT eqn object 
+ Convert Equations set it that way before using IDataObject.
+ forces the equation to be recreated
+for pastes within a table.  Joy.  MT-2100
+'MTLi
+yright 1
+Set equation preferences for new equations.
+MTSetEqnPrefs: 5.0
+$Header: /MathType/Windows/WordMacros/MTSetEqnPrefs.bas 30    10/11/11 2:12p Jimm $
+This macro retrieves a set of equation preferences and sets the current
+document to use these preferences for all new equations. The preference
+data is stored in the Custom Document Property "MTPreferences"
+True to use MathType settings
+!0800Set Equation Preferences
+seMT
+= MTL@ib.Get@,r
+ mtp
+MTTeXToggle
+max number equations to process, etc.
+MTToggleStart
+MTToggleEnd
+toggle equations within a Selection
+is exactly one equation
+search for nearest equation to insertion point
+this doesn't work in all situations.  See MT-17XX
+toggle equations within the current selection
+toggle equations within the whole document
+search for nearest equation to insertion point]
+ Now we check to see if the cursor is online with either equation
+ equation is handled above by inEqn, and using <= and =>
+ returns a Range containing the equation if found, Null otherwise
+ returns a Range containing the equation if found, Nothing otherwise
+ returns the equation closer to the beginning of the doc if dir is "forward"
+ or the equation closer to the end of the doc if dir is "backward"
+error: overlapping equationsA@
+ of an embedded OLE object such as a MT equation
+ This is the lesser of two evils.  See MT-1984
+ MT-2102
+If we are in a story that doesn't support display equations, we may not
+CreateDisplayEquationsStyle will blow up.  This happens in headers, for
+example, MT-2101. Consequently, we don't even consider promoting likely
+display equations in places where display equations aren't permitted
+ This code just duplicates the functionality for MTW6.5 and should be replaced in MT7
+can't determine equation type
+ invalid location for eqn entirely is dealt with in the UI template in MTTeXToggle()
+to show the user which equation we are talking about
+special cases for tables, EB equations, beginning and end of document, etc are also handled.
+It does not apply the MTDisplayEquation style.
+It shares code with MTInsertEquation for preparing the insertion point for MT equations
+ this code and MTInsertEquation.PrepareInsertionPostion modify the Selection
+ if the user selection is an insertion point in a TeX eqn,
+ resulting MT eqn
+ will insert a newline in its place in >W2007 (MT-2191), unless the
+ that in order to get the expected toggle behavior.  MT-1930
+undo moving the end point (MT-2191)
+Delete the MTBlankEqn bookmark which comes in with the equation
+ Word 2007 appears not to expand the rng to include the new blank equation
+ by the width of our field code text "{ EMBED Equation.DSMT4 }" which is
+TeX Toggle Failed: couldn't locate blank equation
+ set the new equation from the Texvc code
+finally put the cursor at the correct end of the equation, if appropriate
+ if the Selection is immediately after the equation, we have
+ delete the old MT OLE equation and replace with TeX
+ at the beginning of the document, deleting the equation range
+ A text box containing only an MT equation is deleted whenever the equation
+ is deleted. But if there is text along with the MT equation, deleting
+ the text and the MT equation doesn't remove the text box (even though
+ the equation.
+Entering SetMTTeXData
+Shutting down in SetMTTeXData
+Exiting SetMTTeXData 
+MTGetLangStrFromEqn called successfully
+Shutting down in GetMTTeXData
+Exiting GetMTTeXData 
+e = "MTT
+ gMT
+MTLib.S@
+"MTToggl
+YMTIncr
+^= tMT
+-s.right
+ks("MTTo
+ee MT-17,XX
+MTNextC'E
+MTEqn
+as a MT` equag
+MT-2102
+or MTW6.
+QMTR@c
+MTaLx, "
+ShTgMT
+lineDlg  = gMT
+MTLib.Wr
+("MT
+MT-2191)
+DSMT4 }"
+placeMTW
+s.Exists ("MTT
+\old MT0 OLE g
+MT)s
+0mtOKB
+1, mtp
+;reg_MT_
+MTUpdateFields: 5.0
+$Header: /MathType/Windows/WordMacros/MTUpdateFields.bas 31    10/11/11 2:12p Jimm $
+all equation numbers (& any other fields). It lets the user
+as forward references to equation numbers aren't updated
+!2301Update Equation Numbers 
+sel = mt_RANGE_SELECTION or mt_RANGE_DOCUMENT
+MTUpdateHome
+MTUpdateHome 
+e = "MTU
+$Header: /MathType/Windows/WordMacros/Preferences.bas 2     5/06/14 9:54a Jimm $
+$Header: /MathType/Windows/WordMacros/Registry.bas 7     10/11/11 2:12p Jimm $
+STANDARD_RIGHTS_READ       131072  0x20000
+RD_RIGHT$S_
+$Header: /MathType/Windows/WordMacros/OS/Win/64-bits/Registry64.bas 1     10/11/11 2:07p Jimm $
+$Header: /MathType/Windows/WordMacros/UIEnableDisableWord.bas 55    7/27/14 2:33p Johns $
+ a string key of button id's (one of the mtbIDXXX constants)
+ buttonID must be one of the mtbIDXXX constants defined in UIDeclarations
+UpdateCollection currentStatesCollection, States.CheckSectionNumber, temp
+ invoke another call to UpdateState, or an infinite loop ensues.  See MT-1159
+ For MTW6, we only set the supertip based on app functionality, since we aren't actually
+ called by the MTW5 class to inform the ribbon to update itself
+ called by the MTW5 class to initiate an update of the CommandBars
+  foundMathType: 
+!3009the MathType 30-day demo has expired
+!3041Insert an inline MathType equation. 
+!3042Insert a centered MathType display equation.
+!3043Insert display MathType equation with number on left. 
+!3044Insert display MathType equation with number on right.
+!3047Insert a MathType equation from handwriting 
+!3045Insert display Equation Builder equation with number on left. 
+!3046Insert display Equation Builder equation with number on right.
+!3050Insert an equation number at the insertion point. 
+!3051Set the format of equation numbers. 
+!3052Update equation numbers after rearranging the document. 
+!3079Insert a reference to an existing equation. 
+!3080Manage chapter and section breaks for equation numbering. 
+!3053Starts a new equation numbering section.
+!3054Starts a new equation numbering chapter.
+!3055Insert a break with a specified starting number.
+!3057Browse equations, equation numbers, chapter and section breaks. 
+!3058Loads fonts, styles and sizes from MathType preference files. 
+!3059Format some or all of the MathType equations in this document.
+!3060Convert equations in a document to TeX or MathML. 
+!3081Convert a run of TeX/LaTeX equation language to a MathType equation or vice-versa. Enclose TeX in $...$ for an inline equation, \[...\] for a display (paragraph) equation. 
+!3061Export equations to EPS or GIF image files. 
+!3063Allows you to enter a MathType product key and gain access to full MathType functionality.
+!3064View MathType's version number and your product key.
+!3065Open MathType's home page in your web browser.
+!3077Go to MathType's online support area. 
+MathType options for Word
+ maintain and update States.MathPageOK for use it in the future. See MT-937 -RM
+buttonStates.Add state, mtbIDMTOptions
+mtbIDhXXX@-n
+"MTRefe
+ MT-1159
+y the MT
+mpty(gMT
+, mtbID
+ut`ureMT_/F/H
+MTInWotrd?
+DispMT/"
+(mtbIDIn
+mtbID
+MTEq
+oint."),@ mtbID
+AbouxtMT
+MTInW
+ mtbIDIn
+. See MT
+MTIn0Word
+$Header: /MathType/Windows/WordMacros/OfficeVersion/2010/UIEnableDisableWord2010.bas 1     10/11/11 2:05p Jimm $
+ Execute main to initialize MathType
+$Header: /MathType/Windows/WordMacros/UIHelp.bas 25    9/17/12 1:21p Jimm $
+URL codes - also see MTDeclarations.bas mturl's
+Runs MathType Help
+NoDirectCall_ShowHelpMTInWord
+NoDirectCall_ShowWebOrderMathType
+NoDirectCall_ShowFutureMT
+NoDirectCall_ShowAboutMT
+U&nlock/Register MathType... 
+result = MTGetAppFunctionality
+    NoDirectCall_GetUnlockUI = UILib.GetUserString("!1838U&nlock MathType...")
+!3102Unlock/Register MathType
+    NoDirectCall_GetUnlockScreenTipUI = UILib.GetUserString("!3101Register MathType")
+    NoDirectCall_GetUnlockScreenTipUI = UILib.GetUserString("!3100Unlock MathType")
+ with MT
+o see MT
+mturl'
+wmtbID
+MTI~n!;/
+$Header: /MathType/Windows/WordMacros/UIRibbon.bas 57    6/23/10 6:50p Robertm $
+NoDirectCall_OnInsertInlineEqn
+NoDirectCall_OnInsertDispEqn
+NoDirectCall_OnInsertLeftNumberedDispEqn
+NoDirectCall_OnInsertRightNumberedDispEqn
+Runs Insert Handwritten Math command
+Inserts EB Inline Equation
+RunMTDLLCommand moduleCLS, "NoDirectCall_OnInsertInlineEqnEB", True, mtbIDMathType_B_InsEBEqn
+Inserts EB Left-Numbered Display Equation
+RunMTDLLCommand moduleCLS, "NoDirectCall_OnInsertLeftNumberedDispEqnEB", True, mtbIDInsEBEqnLeftNum
+Inserts EB Right-Numbered Display Equation
+RunMTDLLCommand moduleCLS, "NoDirectCall_OnInsertRightNumberedDispEqnEB", True, mtbIDInsEBEqnRightNum
+NoDirectCall_OnFormatEquations
+NoDirectCall_OnConvertEquations
+NoDirectCall_OnExportEquations
+Runs Set Equation Prefs command
+NoDirectCall_OnSetEquationPrefs
+NoDirectCall_OnInsertEquationNumber
+NoDirectCall_OnFormatEquationNumbers
+Runs Update Equation Numbers command
+NoDirectCall_OnUpdateEquationNumbers
+NoDirectCall_OnEquationReference
+Runs Insert Chapter/Section Break command
+NoDirectCall_OnInsertChapterSectionBreak
+NoDirectCall_OnInsertNextSection
+NoDirectCall_OnInsertNextChapter
+NoDirectCall_OnHelpMTInWord
+NoDirectCall_OnAboutMT
+NoDirectCall_OnWebOrderMathType
+NoDirectCall_OnFutureMT
+NoDirectCall_OnMTOptions
+RunMTDLLCommand moduleCLS, "NoDirectCall_OnBrowseType"
+ We can't use RunMTDLLCommand since we need a way to pass arguments.
+MathType works with Microsoft Word 15.38 or higher. Please update your version of Word
+ MTComm
+MTDL
+mtbI
+RunMTDLL
+ue, mtbI
+ @Number
+MTInWord
+utMT
+gMTBrows
+rights reserved
+$Header: /MathType/Windows/WordMacros/UIWrappers.bas 28    7/12/10 1:37p Jimm $
+ *** Begin MTW5 Globals ***
+ *** End MTW5 Globals ***
+ required for print preview.  See MT-1119
+Starting with Word 2002, MTEF comment records are stripped out of WMF files
+ of being ablt to edit MT picture equations as equations. Moreover, in Word 2007
+ Thus, we remove this override in MT6.0b.  See MT-1131.
+    RunMTDLLCommand "", kMTCommands & ".MTLib.MTEditPicture", False
+Inserts an equation at the insertion point
+InsertEquation is called when the EE (square root of alpha) button is clicked
+NoDirectCall_InsertEquation
+Shows/hides all nonprinting characters, and our Equation Breaks (avoids dirtying the doc)
+This macro replaces one shipped with MathType1.x.
+ (c) Copyright 1992-2010 by Design Science, Inc. All play) MathType equation.
+ This should start with MTCommand_ but it can not since older MT versions expect this name
+This macro replaces one shipped with MathType 1.x.
+Run when user clicks on an old inline (text) macrobutton MathType equation.
+\+e*RunMTD
+s & ".MT
+EMT VT3
+"s@MTEqua
+9(MTIsF
+mtOKG
+!MTc
+MTDLLCom
+err.@Number`
+ (c) Copyright 1992-2010 by Design Science, Inc. All rights reserved
+$Header: /MathType/Windows/WordMacros/UIWrappers2007.bas 2     10/11/11 2:12p Jimm $
+Equation.
+$Header: /MathType/Windows/WordMacros/OS/Win/MPOptions.frm 1     5/06/14 9:55a Jimm $
+fontName$ = MTLib.GetUserString("!0010Lucida Grande")
+fontSize = Val(MTLib.GetUserString("!001111"))
+fontName$ = MTLib.GetUserString("!0010Tahoma")
+fontSize = Val(MTLib.GetUserString("!00118.25"))
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#publish_to_mathpage_dialogA@V
+    MTLib.MTHelpTopic hlpMSWDExport_MathPage_Dialog
+!0916Uses GIF images for equations and some symbols. Supported on all platforms. 
+!0919MathType Help contains detailed information about the various MathML targets. Close this dialog and then click the Help button. 
+ER, mtre
+g_MT_MAT@HPAGE_0
+MTLib.Ge tDocT
+gBox MTL
+eg_MT_MA
+ox(MTLib
+QOI@MTLib.
+ium=MathTypeWin#convert_equations_dialogA@V
+    MTLib.MTHelpTopic hlpMSWDConvert_Equations_Dialog
+enable disable Word 2007 (OMML) equations
+in case MT had to be started up, grab the focus back
+$Header: /MathType/Windows/WordMacros/OS/Win/MTConvertEquationsDlg.frm 1     5/06/14 9:55a Jimm $
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_med 
+make sure at least one "from" equation type is selected
+!0118You must pick at least one equation type to convert.
+to indicate converting to MathType equations.
+]MTLib.M
+ion = MT
+RRENT_US@ER, mt
+dpMTEFU|
+MTt|E
+, mt
+]_MT
+)MTEF
+MTGet
+$Info(mt
+right(tr
+sMTE
+C(MTTe
+$Header: /MathType/Windows/WordMacros/OS/Win/MTConvertToInlineDlg.frm 1     5/06/14 9:55a Jimm $
+MT had
+$Header: /MathType/Windows/WordMacros/OS/Win/MTEqnNumFormatDlg.frm 1     5/06/14 9:55a Jimm $
+fontSize = Val(MTLib.GetUserString("!00118"))
+E=equation break
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#format_equation_numbers_dialogA@V
+    MTLib.MTHelpTopic hlpMSWDEquation_Number_Format_Dialogo
+Converts format string into preview (Chapter, Section & Equation# = 1)
+Returns left or right enclosure
+Returns number for preview based on index of pull-down list
+MTLi`b.Get
+Insert
+Also defined in MTExportEqns.bas
+!0644Export Equations - Choose Folder (As If Saving First File)
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#export_equations_dialog
+    MTLib.MTHelpTopic hlpMSWDExport_Equations_Dialog
+!0640Please enter a folder for exporting equations 
+!0642Please enter a pattern for exporting equations
+verify First Number field
+!0646The First Number field must be numeric. 
+MTExportEquationsDlg 5.0
+$Header: /MathType/Windows/WordMacros/OS/Win/MTExportEqns.frm 2     7/02/14 3:10p Johns $
+MTd8P`
+C/MT
+mt_RANG
+Number@ field
+Wi@YMT
+Check if we're using MT's prefs or the prefs in the document
+!0810MathType
+$Header: /MathType/Windows/WordMacros/OS/Win/MTForm
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#format_equations_dialog
+    MTLib.MTHelpTopic hlpMSWDFormat_Equations_Dialog
+MTLib.G
+_MTD
+^MTE
+ee MT-11
+mtNOT
+ations.g4MT
+MTDefaul
+MType
+@&mt_RAN
+MTLibP.Get
+%Ie2MTC
+qpMTA
+$Header: /MathType/Windows/WordMacros/OS/Win/MTInsertEqnNumDlg.frm 1     5/06/14 9:55a Jimm $
+validate the entered numbers...
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#insert_equation_number_dialog
+    MTLib.MTHelpTopic hlpMSWDInsert_Equation_Number_Dialogo
+MTLib.Ge
+mt_MBY0ESNOh1A4bt nYNC_@
+$Header: /MathType/Windows/WordMacros/OS/Win/MTInsertEqnRefDlg.frm 1     5/06/14 9:55a Jimm $
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#insert_equation_reference_dialogA@V
+    MTLib.MTHelpTopic hlpMSWDInsert_Requation_Ref_Dialog
+LMTLi
+b.MT
+$Header: /MathType/Windows/WordMacros/OS/Win/MTMsgBox.frm 1     5/06/14 9:55a Jimm $
+yright 
+"mt"O
+$Header: /MathType/Windows/WordMacros/OS/Win/MTOldOmmlXsl.frm 1     5/06/14 9:55a Jimm $
+mturlMAT
+MTL8ib.
+$Header: /MathType/Windows/WordMacros/OS/Win/MTOptionsDlg.frm 1     5/06/14 9:55a Jimm $
+always paste MathML as MT equations when no OMML support
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#mathtype_options_dialog
+    MTLib.MTHelpTopic hlpMSWDOptions_MTOptions_Dialog
+mtA@
+ mtreg_M
+MT hadQ
+$Header: /MathType/Windows/WordMacros/OS/Win/MTPastePrefDlg.frm 1     5/06/14 9:55a Jimm $\
+Use the Options control on the MathType ribbon tab to change this option.
+Use the Options command on the MathType menu to change this option.
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#mathtype_paste_pref_dialogA@V
+    MTLib.MTHelpTopic hlpMSWDPaste_Pref_Dialog
+$Header: /MathType/Windows/WordMacros/OS/Win/MTProgress.frm 1     5/06/14 9:55a Jimm $
+$Header: /MathType/Windows/WordMacros/OS/Win/MTSectionNum.frm 1     5/06/14 9:55a Jimm $
+edtChapterNumber
+edtSectionNumber
+validate the explicit number(s)... 
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#modify_chaptersection_break_dialogA@V
+        MTLib.MTHelpTopic hlpMSWDFormat_Equation_Section_Dialog
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#insert_chaptersection_break_dialogA@V
+        MTLib.MTHelpTopic hlpMSWDInsert_Equation_Section_Dialog
+number(s
+>MTLi
+insert
+nce, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/OS/Win/MTSetEqPrefs.frm 1     5/06/14 9:55a Jimm $
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#set_equation_preferences_dialog
+    MTLib.MTHelpTopic hlpMSWDSet_Equation_Preferences_Dialog
+errors displayed by MTLib... subroutines
+ (c) Copyright 1992-2010 by Design Scie
+ lMTLib.G
+ , mtp 
+MTLib...
+t_MTDefa
+|MT@,Eqn
+$Header: /MathType/Windows/WordMacros/OS/Win/MTUpdateEqnNums.frm 1     5/06/14 9:55a Jimm $
+mtreg_MT
+MTLib0.Get!!
+$Header: /MathType/Windows/WordMacros/AutoExecCls.cls 26    10/11/11 2:12p Jimm $
+ This error number is required because the CallByName
+ Expose the error number
+WriteLog "Storing Application in MTApp"
+Set MTApp.App = Application
+unload any MTW4 macros
+About to check MT4 macros
+check for MTW3 macros in the Normal template
+About to check for MTW3 macros in Normal template
+Found MT3 macrosA@0
+!0201MathType has found and removed an old version of the MathType Commands for Word. The new commands will be available the next time you run Word. Word will now Exit. 
+!0200MathType Commands 
+make sure no MTW3 menu items remain...
+removed MT3 macros - quitting
+initialize default side for equation numbering
+About to initialize eqn numbering sideA@0
+Successfully initialized eqn numbering side
+ http://valor:8080/browse/MT-2861
+Scheduling UpdatePre2007CommandBar was skipped - MTApp.App is nothing
+Unload MathType4 macros if found
+MathType Commands For Word'
+!0203An older version of the MathType Commands for Word is installed and will now be removed. Please ignore the ensuing message (Word cannot open this document template). 
+in UnloadMT4Macros errhandler looking at error number  
+Remove MTW3 menu items from Normal template
+Equation Number
+Equation ReferenceK
+Equation SectionK
+Equation Section...
+Equation Number Format...
+MathType PreferencesK
+MathType Preferences...
+Update EquationsK
+Update Equations...
+Right Numbered Disp Eqn            = Shift+Alt+Q = 256 + 1024 + 81 = 1361
+Left Numbered Disp Eqn             = Ctrl+Shift+Alt+Q = 512 + 256 + 1024 + 81 = 1873
+Edit in place selected equation    = Alt+E = 1024 + 69 = 1093
+Edit in MT selected equation       = Alt+O = 1024 + 79 = 1103
+MTCommand_InsertInlineEqn
+MTCommand_InsertDispEqn
+MTCommand_InsertRightNumberedDispEqn
+MTCommand_InsertLeftNumberedDispEqn
+MTCommand_TeXToggle
+MTCommand_EditEquationInPlace
+MTCommand_EditEquationOpen
+MTCommand_MathInputControl
+AddKeyShortcut: InsertInlineEqn
+AddKeyShortcut: InsertDispEqn
+AddKeyShortcut: InsertRightNumberedDispEqnA@0
+AddKeyShortcut: InsertLeftNumberedDispEqn
+AddKeyShortcut: EditEquationOpenA@0
+See http://valor:8080/browse/MT-2176
+with MTC
+_MT_W
+"9p$MT
+/y MTW84 mby
+MT-2861
+MTSetSI
+MT4b
+HRight N
+="MTD2_In0sert#
+_M_Mt_M[M
+nd:="MTC
+wse/MT-2
+with MathType. There was a problem starting the API. Please be sure that MathType is properly installed. 
+mtA*LAUNC
+mpMT
+> mt!
+$Header: /MathType/Windows/WordMacros/CallbackGuard.cls 15    9/17/12 1:21p Jimm $
+The MathType commands could not communicate 
+rting the API. Please be sure that MathType is properly installed. 
+MTDLL_NO
+X= ,MT`
+$Header: /MathType/Windows/WordMacros/CommandGuard.cls 14    9/17/12 1:21p Jimm $
+Only One MathType command can be executed at a time.  Please try again later.
+The MathType commands could not communicate with MathType. There was a problem sta:l
+ Dispatch to MTBrowse
+ Dispatch to  MTInsertEquation
+dispatching to MTInsertEquation.InsertInlineEquation 
+ Dispatch to MTEqnNum
+ Dispatch to MTEqnNumFormat
+ Dispatch to MTMarkRef
+ Dispatch to MTPlaceRef
+ Dispatch to MTSecNum
+ Dispatch to MTFormatEquationSection
+ Dispatch to MTFormatEquations
+ Dispatch to MTConvertEquations
+ Dispatch to MTExportEquations
+ Dispatch to MTUpdateFields
+ Dispatch to MTHelp
+ Dispatch to MTSetEqnPrefs
+ Dispatch to MTLib
+ to MTB
++QMTEqn
+sMain_MT
+>.MT
+MTW5 5.0h 
+$Header: /MathType/Windows/WordMacros/MTDLLPath.cls 42    10/11/11 2:12p Jimm $
+Check if doc's template has old MT macros installed
+!3017This copy of MathType is not activated. Convert this MathType equation into an Office equation? 
+MathType$
+activates the mt ole object
+e = "MTW
+acros/MT
+ MTComma
+m mtEqn
+MT3o
+ (c) Copyright 2007-2010 by Design Science, Inc. All rights reserved.
+$Header: /MathType/Windows/WordMacros/UIHelpCls.cls 16    10/11/11 2:12p Jimm $
+https://docs.wiris.com/en/mathtype/mathtype_desktop/start?utm_source=Product&utm_medium=MathTypeWin
+https://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWinA@V
+http://docs.wiris.com/en/mathtype/mathtype_desktop/installation?utm_source=Product&utm_medium=MathTypeWin#activate_the_productA@V
+http://docs.wiris.com/en/mathtype/start?utm_source=Product&utm_medium=MathTypeWin
+http://www.wiris.com/en/contact?utm_source=Product&utm_medium=MathTypeWin
+https://store.wiris.com/en/purchase/step1?utm_source=Product&utm_medium=MathTypeWin
+number A
+_eMT_
+= MTqdR
+$Header: /MathType/Windows/WordMacros/UILibCls.cls 7     10/11/11 2:12p Jimm $
+.MTBrowse.BrowseEquationsForward
+.MTBrowse.BrowseEquationNumberRefForward
+.MTBrowse.BrowseChapterSectionForward
+.MTBrowse.BrowseEquationsBackward
+.MTBrowse.BrowseEquationNumberRefBackward
+.MTBrowse.BrowseChapterSectionBackward
+Entering InsertInlineEqnA@0
+.MTInsertEquation.InsertInlineEquation
+Exiting InsertInlineEqn
+.MTInsertEquation.InsertDisplayEquation
+.MTInsertEquation.InsertLeftNumberedDisplayEquation
+.MTInsertEquation.InsertRightNumberedDisplayEquation
+.MTInsertEBEquation.InsertEBLeftNumberedDisplayEquation
+.MTInsertEBEquation.InsertEBRightNumberedDisplayEquation
+.MTEqnNum.DlgMain
+.MTMarkRef.DlgMain
+.MTUpdateFields.DlgMain
+>s & P".MT#I.
+MTComman
+MTIncrem
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTConvertEquationsDlg 
+   Caption         =   "!0100Convert Equations"
+PPInsertMTEquationCls
+$Header: /MathType/Windows/WordMacros/UIRibbonCls.cls 18    6/23/10 6:50p Robertm $
+NoDirectCall_InsertInlineEqnA@.
+NoDirectCall_OnInsertEquation
+NoDirectCall_InsertDispEqnA@.
+NoDirectCall_InsertLeftNumberedDispEqnA@.
+NoDirectCall_InsertLeftNumberedDispEqnEBA@.
+NoDirectCall_ShowAboutMTA@.
+MTEquati
+*gMT
+"", k@MTComm
+ & ".MT
+mtbIDg
+tRightNu@mbered
+"", kMT
+MTInWo
+AboutMTo
+gMTg
+= gMTBro
+$Header: /MathType/Windows/WordMacros/UIWrappersCls.cls 25    5/06/14 9:54a Jimm $
+.MTLib.MTEditPaste
+ It's screwy to look for MT3 macros everytime we change to
+ it is not clear that MT3 macros can be in documents from any of
+ string MT3 macros from Normal.dot.  This whole handler should be
+ removed in future versions of MT.]
+!2500This is a MathType 1.x (non-OLE) equation. The Convert Equations... command can be used to convert it to a MathType 4 equation. Do you want to do this now? 
+If MTEquationSection style exists, make it hidden
+Returns True if MTEquationSection style is visible
+Hides our MTEquationSection style if necessary before printing
+************* MTW5 class module code *****************
+Prompt to run Convert Equations
+This document contains equations created on a Macintosh computer. To view the equations correctly you should run the Convert Equations command. Would you like to run this command now?
+!1806MathType Commands for Word
+Similar to MTLib.GetPlatform, returns kPlatformWin or kPlatformMac
+ special handling for hitting return when on the right side of a EB equation
+ EB equations we have inserted are suspposed to have a table around them
+ if the return key is pressed, and we are in a EB equation table,
+ but we are not inside a EB equation
+ backup one character and see if we are in a EB equation
+ since we are in a EB equation, move one more to the left,
+ which should put the cursor just after the equation,
+ we must not be in a EB equation, so reset the selection
+st mttst yle_E@
+MTEBNumDbe
+"", kMTC
+& ".MTLi
+otmt{
+-MTC
+!(MTW5_a
+he right
+NUMBERED
+MathTypeCommands
+insertTranslationError@
+mHasFloatingEquations
+mTempGIFPath
+kInlineEquationStyle
+kDisplayEquationStyle
+kPROGRESS_EQUATION
+mtversMinVer
+MTProgresshW
+ProcessEquations
+ProcessEqnNumbersvW
+mtFILE_NOT_FOUND`a
+GetMathTypeDir
+mtreg_MT_MATHPAGE_KEY
+mtstyle_EQUATION_SECTIONL
+mtmacro_EDIT_EQUATION_SECTION
+MoveRight
+InsertEntity
+kSIInsertSymbolPlaceholderb
+wdDialogInsertSymbol
+InsertSymbol
+InsertTag
+InsertTag97A
+InsertTag2000
+mtTRANSLATOR_ERROR
+ProcessEquationsInRange
+isEquation
+IsEquationProgID
+IsDisplayEquation
+InsertDisplayTags'
+InsertAfterq5
+mpNOT_AN_EQUATION
+InsertBefore
+wdBorderRight
+rightBorderl
+numCustomTabStops
+wdAlignTabRight
+RightMargin[
+CustomTabKy
+InsertDisplayEquationTable
+wdBrightGreen
+gMTEqnNumsOnRight
+MTCommand_MTBrowseNext
+RunMTDLLCommand
+MTCommand_MTBrowsePrevious
+kMTCommandsKq
+MTEditEquationSection2
+MTEditEquationSection3
+MTEditEquationSection4
+MTEditEquationSection5
+MTCommand_ExportMathPage
+mtbIDMathPagei
+MTCommand_SetEqnPrefs
+mtbIDSetEqnPrefsji
+mtbIDInsInlineMTEqn
+mtbIDInsDispMTEqn
+mtbIDInsDispMTEqnLeftNum
+mtbIDInsDispMTEqnRightNum?P
+MTCommand_InsertLeftNumberedDispEqnEB
+MTCommand_InsertRightNumberedDispEqnEB
+MTCommand_InsertEqnNum/A
+mtbIDInsertNumberz
+MTCommand_InsertEqnRef<T
+mtbIDEquationReference
+MTCommand_InsertSecNumz)
+mtbIDMoreBreaks
+MTCommand_InsertNextSection
+mtbIDInsertNextSection
+MTCommand_InsertNextChapterAM
+mtbIDInsertNextChaptery
+MTCommand_FormatEqnSec
+mtbIDModifyBreak
+MTCommand_FormatEqnNum;
+mtbIDFormatEqnNums
+MTCommand_FormatEqns5(
+mtbIDFormatEqns&
+MTCommand_ConvertEqns
+mtbIDConvertEqns
+MTCommand_ExportEqns
+mtbIDExportEqns
+MTCommand_UpdateEqnsB
+mtbIDUpdateEqnNums
+mtbIDTeXToggle
+MTCommand_EditEquationInPlace?+
+MTCommand_MTOptions
+mtbIDMTOptions
+RunMTDLLCodeL
+LoadMathTypeCommandsAg
+ErrorNumber
+MTCommandsDispatchCls
+RemoveMT3MacrosC
+MTIsFullFunctionality;c
+mtprop_EQN_NUMS_ON_RIGHT
+mtreg_MT_WORDCMDS_LOCATION
+mtreg_MT_EQN_NUMS_ON_RIGHT_KEY8
+MTInitAPIv
+mtinitLAUNCH_AS_NEEDED
+MTAPI_VERSION
+mpMTDLL_NOT_FOUND7
+mtversMajVerHi
+mtversMajVerLo:p
+mtreg_MT_HKLM_DIRECTORIESBZ
+mtreg_MT_PROGDIR_KEY
+MTGetWPathToMathTypeB9
+MTApp
+MTMacrosInitialized
+mtprop_HAS_MAC_EQNS
+mtprop_HAS_WIN_EQNS
+mt_REGISTRY
+mtreg_HKLM
+mtreg_HKCU
+mtreg_MT_HKLM_HOME
+mtreg_MT_HKCU_HOMEe
+mtreg_MT_DIRECTORIES_LOCATION
+mtreg_MT_ASK_ON_PASTE
+mtreg_MT_HELPDIR_KEY4
+mtreg_MT_HELPFILE_KEY
+mtreg_MT_HELPFILE_LOCATION
+mtreg_MT_LANGUAGEDIR_KEY
+mtreg_MT_PASTECANCELDEF
+mtreg_MT_PREFDIR_KEY7
+mtreg_MT_VERBOSE_LOGGING_KEY
+mtreg_MT_WORD_2003_OMML_IN_RTF
+mtreg_MT_WORD_CONVFROM
+mtreg_MT_WORD_CONVMISCW
+mtreg_MT_WORD_CONVTO
+mtreg_MT_WORD_CONVTRANS@U
+mtreg_MT_WORD_DEFAULT_EQNNUM_CUSTOMHE
+mtreg_MT_WORD_DEFAULT_EQNNUM_FORMAT
+mtreg_MT_WORD_DONTSHOW_EQNNUM_WARNINGn
+mtreg_MT_WORD_DONTSHOW_EQNREFDLG\
+mtreg_MT_WORD_DONTSHOW_LANGDLLERRORw
+mtreg_MT_WORD_DONTSHOW_SLOWEQNUPDATE
+mtreg_MT_WORD_EXPORT_DIRECTORYi
+mtreg_MT_WORD_EXPORT_FILETYPE
+mtreg_MT_WORD_EXPORT_PATTERN
+mtreg_MT_WORD_EXPORT_REPLACE
+mtreg_MT_WORD_MATHML_PASTEAS
+mtreg_MT_WORD_NOAPPLY_CONVERTED_EQN_STYLE
+mtreg_MT_WORD_NO_SPACE_AFTER_INLINE
+mtreg_MT_WORD_NO_CHECK_PROG_ID`
+mtreg_MT_WORD_OMML2MML_XSL_DIRNAME
+mtreg_MT_WORD_OMML2MML_XSL_FILENAME
+mtreg_MT_WORD_SEEN_MATHMLHELP8
+mtreg_MT_CONVERTEQNS_DELAY
+mtbIDInsDispMTEqn3L
+mtbIDInsDispMTEqnMac
+mtbIDInsDispMTEqnLeftNum23
+mtbIDInsDispMTEqnLeftNum34
+mtbIDInsDispMTEqnLeftNumMac
+mtbIDInsDispMTEqnRightNum2
+mtbIDInsDispMTEqnRightNum3
+mtbIDInsDispMTEqnRightNumMac
+mtbIDInsEBEqn2
+mtbIDInsHandEqn
+mtbIDInsInlineMTEqn3
+mtbIDInsInlineMTEqnMac(
+mtbIDSpeak
+mtbIDSpeak3i
+mtbIDInsEBEqnLeftNum
+mtbIDInsEBEqnRightNum@~
+mtbIDManageChapterSections
+mtbIDBrowsePrevR
+mtbIDBrowseType
+mtbIDBrowseNextN3
+mtbIDHelp
+mtbIDHelpContents
+mtbIDHelpMTInWord
+mtbIDHelpUnlockReg3{
+mtbIDHelpAboutMT
+mtbIDHelpContentsMacy
+mtbIDHelpMTInWordMac?
+mtbIDHelpUnlockRegMace
+mtbIDHelpAboutMTMac
+mtbIDWeb
+mtbIDWebHomePage
+mtbIDWebSupport/
+mtbIDWebEmailFeedback
+mtbIDWebOrderMTsg
+mtbIDFutureMT[n
+mtbIDWebEmailFeedbackMac
+mtbIDWebSupportMac
+mtbIDWebOrderMTMac6
+mtbIDFutureMTMac
+mtbIDMTOptionsMacx<
+mtbIDOMMathPage
+MTReferenceExists
+mt_RANGE_DOCUMENT
+mt_RANGE_SELECTION
+mt_SWS_TRACKCHANGES
+mt_SWS_SMART_CUTPASTE
+mt_SWS_TYPING_REPLACE_SELECTIONa
+mt_SWS_PASTE_SMART_CUTPASTE
+mturlMATHTYPE_OMML2MATHMLXSL
+mt_MBYESNO
+mt_MBYESNOCANCELqf
+mt_MBYES
+mt_MBNO!
+mt_MBCANCEL
+CF_OEMTEXT
+mtlangTEX_INPUT
+mtlangMATHML
+mtlangMTEF
+MTAPI_MAX_PATHT
+MTAPI_PICT
+MTAPI_DIMS
+isExplicitChapterNumber
+chapterNumber0
+isExplicitSectionNumberB
+sectionNumber
+mtOLE_EQUATION
+mtWMF_EQUATION
+mtMAC_PICT_EQUATION
+mtWORD_EQUATION
+mtTEXT_EQUATION
+mtMACRO_EQUATION
+mtOLE2_EQUATION
+mtOMML_EQUATION
+mtMT_NOT_FOUNDJ$
+mtMT_CANT_RUN
+mtMT_BAD_VERSIONs
+mtMT_IN_USE
+mtMT_NOT_RUNNING
+mtRUN_TIMEOUT
+mtNOT_EQUATION
+mtMEMORY7
+mtBAD_FILE?
+mtDATA_NOT_FOUND
+mtTOO_MANY_SESSIONS.
+mtSUBSTITUTION_ERROR
+mtPREFERENCE_ERROR(
+mtBAD_PATHL\
+mtFILE_ACCESS
+mtFILE_WRITE_ERROR
+mtERROR
+mtinitLAUNCH_NOW
+mtdimFIRST
+mtdimWIDTH
+mtdimHEIGHT
+mtdimBASELINE
+mtdimHORIZ_POS_TYPES
+mtdimHORIZ_POS
+mtdimLAST
+mttrnCOUNT
+mttrnMAX_NAME@#
+mttrnMAX_DESC
+mttrnMAX_FILEu 
+mttrnOPTIONS
+mtxfmPREF_EXISTINGB
+mtxfmPREF_MTDEFAULT
+mtxfmPREF_USER
+mtxfmPREF_LASTr
+mtxfmTRANSL_INC_NONE
+mtxfmTRANSL_INC_NAME
+mtxfmTRANSL_INC_DATA-r
+mtxfmTRANSL_INC_MTDEFAULT
+mtxfmTRANSL_INC_CLIPBOARD_EXTRAd+
+mtxfmSTAT_PREF
+mtxfmSTAT_TRANSL8
+mtxfmSTAT_ACTUAL_LENX
+mtxfmPREVIOUS1
+mtxfmCLIPBOARDH
+mtxfmLOCAL
+mtxfmFILEES
+mtxfmMTEF
+mtxfmHMTEFQE
+mtxfmPICT
+mtxfmTEXT
+mtxfmHTEXT
+mtxfmGIFtZ
+mtxfmEPS_NONE
+mtxfmEPS_WMF"G
+mtxfmEPS_TIFF
+mtxfmRTF
+mtxfmPDF
+mtprfMODE_NEXT_EQN3
+mtprfMODE_MTDEFAULT
+mtprfMODE_INLINE
+mtxfmSUBST_ALL
+mtxfmSUBST_ONE
+mtxfmVAR_SUB_BAD
+mtxfmVAR_SUB_PLAIN_TEXT
+mtxfmVAR_SUB_MTEF_TEXT
+mtxfmVAR_SUB_MTEF_BINARYs{
+mtxfmVAR_SUB_DELETE
+mtxfmVAR_SUB_MAX>
+mtxfmSTYLE_FIRST$L
+mtxfmSTYLE_TEXT`
+mtxfmSTYLE_FUNCTION
+mtxfmSTYLE_VARIABLEp.
+mtxfmSTYLE_LCGREEK
+mtxfmSTYLE_UCGREEK
+mtxfmSTYLE_SYMBOL
+mtxfmSTYLE_VECTOR?
+mtxfmSTYLE_NUMBER]
+mtxfmSTYLE_LAST
+mttexteqn_START
+mttexteqn_END
+mtprop_USE_MATHTYPE_PREFSnb
+mtprop_PREFERENCES
+mtprop_PREFERENCES_FILE
+mtprop_MTW4_NUMBER_PREFS0
+mtprop_NUMBER_PREFS
+mtprop_NUMBER_PREFS_VERX
+mtprop_CUSTOM_EQNNUM_PREFS
+mtprop_DEFER_FIELD_UPDATEq
+mtprop_EQUATION_SECTION_CHECKED
+mtprop_EQNREFPANEV
+mtautotext_MT3_EQN_NUMBER_FORMAT
+mtole_PROGID
+mtstyle_DISPLAY_EQUATION
+mtstyle_CONVERTED_EQUATION
+mttstyle_EB_NUMBERED_EQUATION
+mtmacro_EDIT_EQUATION_SECTION_VER
+/Library/Frameworks/MT6-64Lib.framework/MT6-64Lib
+MTCopyButtonFace 
+MTSetPreferencei
+MTHelpLaunch 
+MTClearClipboardy
+MTConvertPrefsToUIFormSC
+MTGetAppFunctionalityl
+MTGetClipboardTextT
+MTGetLangStrFromEqnN
+MTGetLastDimension3
+MTGetOMMLFromClipboardRTFp!
+MTInitLocaleStringDLL&
+MTIsClipboardFormatAvailable2
+MTIsMathInputPanelTheClipboardOwner|0
+MTSaveFileDialogn
+srcFmt-G
+dstFmtI
+MTXFormEqnBytes
+MTXFormGetStatusx
+MTXFormResetos
+MTXFormSetTranslator+
+hWndInsertAfter
+MTBrowse
+BrowseEquationsForward
+BrowseEquationsBackward
+BrowseEquationNumberRefForward\
+BrowseEquationNumberRefBackwardT
+MTBrowseType
+BrowseEquations
+SelectEquationInRange,
+mtEQFloatingShapesPos*
+mtEQInlineShapesPos"h
+mtEQFieldsPos
+mtEQFloatingShapesIndexY
+mtEQInlineShapesIndex:X
+mtEQFieldsIndexI-
+IsShapeEquation
+IsInlineShapeEquationN
+IsFieldEquation#t
+IsPictureEquation
+MTConvertEquations
+gFindMathType
+MTConvertEquationsDlgb
+ConvertEquations:
+DoConvertEquations
+equationTypesI
+MTFormatEquationSection
+EditEquationSection
+MTEqnNumU
+gChapterNumber?
+gSectionNumber
+NumberExistingEBEqn)
+IsInEBEquation?
+InsertEqnNum[r
+CheckSectionNumber
+MTEqnNumFormat
+InsertEquationNumberi%
+MTUpdateFields
+doInsert
+MTInsertEqnNumDlg
+MTSecNum
+InsertNewEquationSectionV
+MTEqnNumFormatDlg
+UpdateEquationNumbersNf
+UpdateEquationNumbersInRange
+sMTChapB
+sMTSeco
+sMTEqnX
+InsertNumberComponent
+InsertComponentField?u
+ProcessMTW4DocProperty
+ProcessMTW3DocPropertyX
+ConvertMTW4Format
+mtw4Format
+ConvertMTW3Formatxz
+MTW3Format
+equationStyle
+equationStyleNum
+MTExportEquations
+ExportEquationDlgInfo.}
+gExportEquationDlgInfo4
+MTExportEqns
+ExportEquationshi
+DoExportEquations
+firstNumber*
+MTFormatEquationsd(
+gMTPrefs@
+gMTPrefsSource5
+MTFormatEqn
+FormatEquations
+DoFormatEquations5P
+GetPrefsFromMType
+SearchRangeForEquationSection
+FormatEquationSectionG
+ShowEquationSectionDlg
+MTSectionNumW
+DeleteCurrentEquationSection
+hlpMSWDEquation_Number_Format_Dialog;s
+hlpMSWDFormat_Equations_Dialog
+hlpMSWDSet_Equation_Preferences_Dialogn
+hlpMSWDConvert_Equations_DialogQ
+hlpMSWDInsert_Equation_Section_DialogHS
+hlpMSWDFormat_Equation_Section_Dialog
+hlpMSWDInsert_Equation_Number_Dialog
+hlpMSWDInsert_Requation_Ref_Dialog
+hlpMSWDExport_Equations_Dialog
+hlpMSWDOptions_MTOptions_Dialog
+MTHelpTopicViaRegistry1
+MTHelpTopic#
+GetMTHelpFileT
+GetMTHelpFilePath
+GetMTHelpFileNameg
+MTInsertEBEquation/
+MTStyleTypeTable
+InsertEBEquation
+SelInEBEquation
+InsertEBEquationEx
+InsertEBLeftNumberedDisplayEquationzb
+InsertEBNumberedEquationExkl
+InsertEBRightNumberedDisplayEquation
+SelInEBNumberedEqnTable
+MoveOutOfEBNumberedEqnTable
+InsertEBNumberedEqnTable
+GetEBNumberedEqnTableStyle
+RightPadding
+DistanceFromRight
+DistanceFromTopC
+GetDefaultEqnNumberWidth
+SetEBNumTableColumnWidths
+FormatEBNumberCellb0
+insertNumber#~
+wdAlignParagraphRight
+IsInEBEquationTableU
+IsSelRightOfEBDisplayEqnY
+numTabledE
+wdEndOfRangeColumnNumberxO
+wdEndOfRangeRowNumber
+WrapEBEqnWithTableAndNumber
+IsRightOfEBDisplayEqn
+InsertInlineEquation
+InsertMathTypeEquation
+InsertDisplayEquationNs
+InsertDisplayEquationEx
+InsertLeftNumberedDisplayEquation
+InsertRightNumberedDisplayEquation
+PrepareInsertionPostionh
+insertCount
+IsCursorRightOfDisplayEquation
+RepositionCursorToRightOfTabOrNumber+
+IsCursorLeftOfDisplayEquation
+RepositionCursorToLeftOfTabOrNumber
+CreateDisplayEquationStyle
+IsEquationInSelection,G
+AttemptToExtendRight
+wdStartOfRangeRowNumberz
+wdStartOfRangeColumnNumber
+DocUsesEquationSettingsy%
+InsertNewEquation3
+wdDialogInsertObject%
+MTReadingView57
+MTPaneRevisions
+equationMarker
+kMTEqn
+ConvertEquationsDelay/
+IsValidExplicitNumber
+GetMTLanguageDir
+GetMTPrefDir
+MTEditEquationOpen
+MTEditEquationd
+MTEditEquationInPlace
+MTEditPictureK
+TransformGraphicEquationm
+PasteTranslatedEquation
+PostProcessConvertedEquation
+MTEFLen
+GetMTEF
+ConvertAndInsertEquation
+InsertEquationMarkers
+DeleteEquationMarkers0
+mtEqn
+InsertMTEqnFromOMML
+XformMTEqnToTextXu
+InsertMTEqnFromMML
+InsertFileX
+SetMTData
+TransformEquation'
+mtTE_MATHTYPEm
+mtTE_TRANSLATOR
+mtTE_END
+mtTE_MTEFb!
+lenMT,
+GetMTExportType
+ConvertAndInsertEquation_MathType
+ConvertAndInsertEquation_Text
+ActivateMT
+ShutdownMT9%
+MTMsgBox
+wdActiveEndPageNumber
+DocContainsEquationSettings?
+MTCleanup?h
+new_MTCommandsDispatchClass)
+MTCommandsPresent
+PasteMathMLAsMTEqn%
+InsertNamespace
+MTEditPaste
+GetOptionPasteMathMLAsMTEquationN
+MTPastePrefDlgc
+intBottomTemp
+MTLibCommon
+mtDir(
+MTLoadPreferences*
+zMathTypePrefFile
+MTMarkRef
+MTInsertEqnRefDlg~
+MTOptionsDlgY
+InsertNextChapterBreakz
+InsertNextSectionBreakqH
+MTSetData
+MTSetEqnPrefs
+gUseMTPrefs
+gMTPrefFile}
+MTSetEqPrefsr}
+gMTConvertToInlineResult_
+gMTConvertToDisplayResult
+FindNextEquation
+ToggleNearestEquationInRange
+wdFirstCharacterLineNumber[
+FindNextMTEqnm
+isMTEqn
+toggleMTEqn
+replaceTeXWithMT
+replaceMTWithTeX]
+MTConvertToInlineDlg
+MTConvertToDisplayDlgzU
+haveToggleEndMt
+SetMTTeXData
+GetMTTeXData96
+MTUpdateEqnNums
+STANDARD_RIGHTS_ALL
+STANDARD_RIGHTS_READ
+STANDARD_RIGHTS_WRITEe<
+gMTRibbon
+MTToolbar}
+foundMathType*4
+mturlMATHTYPE_HOME
+mturlMATHTYPE_SUPPORT0
+mturlMATHTYPE_FEEDBACK
+mturlMATHTYPE_ORDER
+mturlMATHTYPE_FUTURE
+mturlMATHTYPE_REGISTER
+hlpMSWDMathType_Support_For_Word
+hlpMSWDMathType_Support_For_Word_2007
+hlpMSWDMathType_Support_For_PP
+hlpMSWDMathType_Support_For_PP_2007h,
+hlpMSWDUnlock_MathType
+MTCommand_ShowHelpContents
+MTCommand_ShowHelpMTInWord
+MTCommand_ShowUnlockReg
+MTCommand_ShowWebHomePage
+MTCommand_ShowWebSupport
+MTCommand_ShowWebEmailFeedbackc
+MTCommand_ShowWebOrderMathTypeX
+MTCommand_ShowFutureMT
+MTCommand_ShowAboutMTy
+gMTBrowseType
+MTCommand_OnRibbonLoadedr
+MTCommand_OnSelectedIndexBrowseType
+MTCommand_OnInsertInlineEqni
+MTCommand_OnInsertDispEqn(
+MTCommand_OnInsertLeftNumberedDispEqn
+MTCommand_OnInsertRightNumberedDispEqn
+MTCommand_OnInsHandEqn
+MTCommand_OnInsertInlineEqnEB
+MTCommand_OnInsertLeftNumberedDispEqnEB
+MTCommand_OnInsertRightNumberedDispEqnEB.
+MTCommand_OnFormatEquationsH
+MTCommand_OnConvertEquationsD
+MTCommand_OnTeXToggle3
+MTCommand_OnExportEquations
+MTCommand_OnMathPage
+MTCommand_OnSetEquationPrefs
+MTCommand_OnInsertEquationNumber/
+MTCommand_OnFormatEquationNumbers
+MTCommand_OnUpdateEquationNumbers
+MTCommand_OnEquationReference
+MTCommand_OnInsertChapterSectionBreak
+MTCommand_OnInsertNextSectionY
+MTCommand_OnInsertNextChapter
+MTCommand_OnModifyChapterSectionBreak
+MTCommand_OnHelpContents
+MTCommand_OnHelpMTInWordJ
+MTCommand_OnUnlockReg
+MTCommand_OnAboutMT
+MTCommand_OnWebHomePage
+MTCommand_OnWebSupport
+MTCommand_OnWebEmailFeedback
+MTCommand_OnWebOrderMathType
+MTCommand_OnFutureMT`
+MTCommand_OnMTOptions
+MTCommand_OnBrowseTypeQ
+MTCommand_OnBrowsePreviousp
+MTCommand_OnBrowseNext
+MTCallback_GetEnabled4
+MTCallback_GetSupertip
+MTCallback_GetLabelN:
+MTCallback_GetScreenTipU
+MTCallback_GetNumEqVisible
+MTCallback_IsWin7
+MTCallback_IsBeforeWin7
+MTCallback_IsWin
+MTCallback_IsMac
+MTW5_aDoc
+InsertEquationR
+IsMTEquationOnClipboard
+chk_TransMTEF
+opt_toMathType_Click
+chk_fmMathType
+chk_fmTex
+opt_toMathType
+NumTranslators
+cmbEquationz
+cbInsertNumWarningjJ
+cbInsertRefWarningjh
+cbEquation
+GetFormattedNumber
+GetPreviewNumber
+cbEquation_Click
+cmbEquation_Change@V
+Opt_MTDefault/b
+Opt_MTDefault_ClickGO
+MTOldOmmlXsl
+opt_MTEqn
+opt_ExplicitSecNumT
+UnloadMT4Macros^
+MTCommandsMain_MTBrowse_BrowseEquationsForward
+MTCommandsMain_MTBrowse_BrowseEquationNumberRefForward
+MTCommandsMain_MTBrowse_BrowseChapterSectionForward
+MTCommandsMain_MTBrowse_BrowseEquationsBackward
+MTCommandsMain_MTBrowse_BrowseEquationNumberRefBackward
+MTCommandsMain_MTBrowse_BrowseChapterSectionBackward
+MTCommandsMain_MTInsertEquation_InsertInlineEquation
+MTCommandsMain_MTInsertEquation_InsertDisplayEquation
+MTCommandsMain_MTInsertEquation_InsertLeftNumberedDisplayEquation
+MTCommandsMain_MTInsertEquation_InsertRightNumberedDisplayEquation
+MTCommandsMain_MTEqnNum_DlgMaind
+MTCommandsMain_MTEqnNumFormat_DlgMainKA
+MTCommandsMain_MTMarkRef_DlgMain
+MTCommandsMain_MTPlaceRef_DlgMain
+MTCommandsMain_MTSecNum_DlgMain
+MTCommandsMain_MTSecNum_InsertNextSectionBreak
+MTCommandsMain_MTSecNum_InsertNextChapterBreak
+MTCommandsMain_MTFormatEquationSection_EditEquationSection|
+MTCommandsMain_MTFormatEquationSection_NewVersion
+MTCommandsMain_MTFormatEquationSection_DlgMain
+MTCommandsMain_MTFormatEquations_DlgMain/
+MTCommandsMain_MTConvertEquations_DlgMain
+MTCommandsMain_MTExportEquations_DlgMain
+MTCommandsMain_MTUpdateFields_DlgMain
+MTCommandsMain_MTHelp_MTHelpTopicViaRegistry
+MTCommandsMain_MathPage_ExportAll
+MTCommandsMain_MathPage_MP_ExportTo
+MTCommandsMain_MTSetEqnPrefs_DlgMain
+MTCommandsMain_MTLib_MTEditPictureD
+MTCommandsMain_MTLib_MTCleanup
+MTCommandsMain_MTTeXToggle_DlgMainM
+MTCommandsMain_MTLib_MTEditEquationOpen
+MTCommandsMain_MTLib_MTEditEquationInPlace
+MTCommandsMain_MTMathInputControl_DlgMain!
+MTCommandsMain_MTOptions_DlgMainH
+MTCommandsMain_MTLib_MTEditPasteI
+mtObj
+NoDirectCall_ShowHelpMTInWordZi
+NoDirectCall_ShowWebOrderMathTypegq
+NoDirectCall_ShowFutureMT|
+NoDirectCall_ShowAboutMTkW
+NoDirectCall_InsertDispEqnhO
+NoDirectCall_InsertLeftNumberedDispEqnEB
+kPPInsertMTEquation
+NoDirectCall_OnInsertInlineEqnPM
+NoDirectCall_OnInsertDispEqnX
+NoDirectCall_OnInsertRightNumberedDispEqnSy
+NoDirectCall_OnInsertInlineEqnEB
+NoDirectCall_OnInsertLeftNumberedDispEqnEB
+NoDirectCall_OnInsertRightNumberedDispEqnEBE
+NoDirectCall_OnFormatEquations/O
+NoDirectCall_OnEquationReferencez
+NoDirectCall_OnInsertChapterSectionBreakT
+NoDirectCall_OnInsertNextChaptern
+NoDirectCall_OnHelpMTInWord,
+AskRunConvertEquations
+checkForEBEquationAfterReturn6
+_B_str_Right#(
+_B_var_Right9
+_B_var_TrimmT
+_B_var_MTCommandsMain
+MTInsertEBEquation
+MTLoadPreferences
+MTConvertEquationsDlg
+MTConvertToDisplayDlg
+MTInsertEqnRefDlg
+MTOptionsDlg
+MTPastePrefDlg
+MTProgress
+MTSectionNum
+MTSetEqPrefs
+MTBr 
+P"MTConv@ertEqu
+5MTs
+MTHelpGR
+MTUpd
+YMTExp*o
+MTEqnNum
+MTFormatEquations
+ProcessEqnNumbers
+InsertTag97
+InsertDisplayTags
+BrowseEquationNumberRefForward
+BrowseEquationNumberRefBackward
+SelectEquationInRange
+IsInlineShapeEquation
+IsFieldEquation
+ConvertEquations
+InsertEqnNum
+UpdateEquationNumbers
+InsertEquationNumber
+InsertComponentField
+ProcessMTW3DocProperty
+ConvertMTW3Format
+ExportEquations
+DoFormatEquations
+FormatEquationSection
+MTHelpTopicViaRegistry
+MTHelpTopic
+GetMTHelpFile
+GetMTHelpFileName
+InsertEBLeftNumberedDisplayEquation
+InsertEBNumberedEquationEx
+FormatEBNumberCell
+NumberExistingEBEqn
+IsSelRightOfEBDisplayEqn
+InsertDisplayEquation
+PrepareInsertionPostion
+RepositionCursorToRightOfTabOrNumber
+IsEquationInSelection
+InsertNewEquation
+IsInEBEquation
+IsInEBEquationTable
+MTEditEquation
+MTEditPicture
+XformMTEqnToText
+TransformGraphicEquation
+TransformEquation
+FindNextMTEqn
+DocContainsEquationSettings
+DocUsesEquationSettings
+MTCleanup
+new_MTCommandsDispatchClass
+DeleteEquationMarkers
+PasteMathMLAsMTEqn
+GetOptionPasteMathMLAsMTEquation
+InsertNextChapterBreak
+InsertNextSectionBreak
+InsertNewEquationSection
+ShutdownMT
+replaceMTWithTeX
+GetMTTeXData
+MTCommand_ShowWebEmailFeedback
+MTCommand_ShowWebOrderMathType
+MTCommand_ShowAboutMT
+MTEditEqua
+MTCommand_InsertEqnNum
+MTCommand_InsertEqnRef
+MTCommand_InsertSecNum
+MTCommand_InsertNextChapter
+MTCommand_FormatEqnNum
+MTCommand_FormatEqns
+MTCommand_UpdateEqns
+RunMTDLLCode
+LoadMathTypeCommands
+RemoveMT3Macros
+MTCommand_OnRibbonLoaded
+MTCommand_OnInsertInlineEqn
+MTCommand_OnInsertDispEqn
+MTCallback_GetScreenTip
+MTCommand_OnInsertRightNumberedDispEqnEB
+MTCommand_OnFormatEquations
+MTCommand_OnConvertEquations
+MTCommand_OnTeXToggle
+MTCommand_OnInsertEquationNumber
+MTCommand_OnInsertNextSection
+MTCommand_OnHelpMTInWord
+MTCommand_OnFutureMT
+MTCommand_OnBrowseType
+MTCommand_OnBrowsePrevious
+MTCallback_GetEnabled
+MTCallback_GetLabel
+MTCommandsMain_MTEqnNum_DlgMain
+MTCommandsMain_MTEqnNumFormat_DlgMain
+MTCommandsMain_MTFormatEquationSection_EditEquationSection
+MTCommandsMain_MTFormatEquations_DlgMain
+MTCommandsMain_MTLib_MTEditPicture
+MTCommandsMain_MTTeXToggle_DlgMain
+MTCommandsMain_MTMathInputControl_DlgMain
+MTCommandsMain_MTOptions_DlgMain
+MTCommandsMain_MTLib_MTEditPaste
+UnloadMT4Macros
+checkForEBEquationAfterReturn
+NoDirectCall_OnInsertRightNumberedDispEqnEB
+InsertEquationZ
+equationTypes
+firstNumber
+insertNumber
+srcFmt
+dstFmt
+!3201From the location of this equation in the document, it seems likely that you want a display style MathType equation even though it has inline style ($...$) delimiters.
+!3202Create Display Style Equationn
+!3203Create Inline Style Equation371
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTConvertToDisplayDlg 
+!3211Display style equations are not supported at this location in the document.  
+!3212Convert to an inline style equationS
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTConvertToInlineDlg 
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTEqnNumFormatDlg 
+   Caption         =   "!0300Format Equation Numbers"
+!0906Equations:
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTExportEqns 
+   Caption         =   "!0610Export Equations"
+1aho!0102MathType or Equation Editor equationsF
+0tnH!0104MathType translator text equations
+0abe!1637Word 2007 and later (OMML) equations
+!0101Equation types to convert:
+chk_fmMathType:
+chk_fmT
+chk_fmTexmul
+!0110MathType equations (OLE objects)5}
+0aho!0111Text using MathType translator:cvtToTex
+0tnH!0113Include MathType data as a comment
+ equations to:
+chk_TransMTEFr
+!0108Prompt before converting each equation
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTFormatEqn 
+   Caption         =   "!0500Format Equations"
+0tn_!0302New equation numbers
+!0311Update equation numbers automatically
+0aho!0324Warn when inserting first equation numberw
+!0325Warn when inserting equation references
+!0301Change the equation number format for:
+o!0316Chapter Number:o
+0aho!0317Section Number:
+o!0318Equation Number:n
+!0315Number Format:i
+cmbEquation:
+cbEquationn:{
+cbInsertNumWarning
+cbInsertRefWarning
+!0401An equation chapter/section break must be created in this document before equation numbers can be inserted. Click OK to create a break at the start of this document, starting with the following numbers.
+!0402Starting section numberTo:
+!0620Replace equation with file name
+!0613First number:
+!0403Starting chapter number:
+edtSectionNumber9
+edtChapterNumber9
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTIns
+01.2!0503MathType's 'New Equation' preferenceserSourceat
+!0504Equation on clipboardi
+!0505MathType preference file:
+!0515Use for new equationsi
+!0501Format equations using preferences from:
+opt_MTDefaultr
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTSetEqPrefs 
+   Caption         =   "!0800Set MathType Equation Preferences"
+   Caption         =   "!0400Insert Equation Number"
+!2601Double-click on the equation number that you want to reference. The reference will be placed at the current inso
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTInsertEqnRefDlg 
+   Caption         =   "!2600Insert Equation Reference"
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTMsgBox 
+   Caption         =   "!0200MathType Commands"
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTOldOmmlXsl 
+0000!3302Create a MathType equation
+0rro!3303Create an OMML equationPasteAse
+opt_MTEqnel
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTOpt
+   Caption         =   "!3300MathType Options"
+!3302Create a MathType equation.pastePrefte 
+0000!3303Create an OMML equation.on.pastePrefte 
+!3311Use the Options command on the MathType menu to change this option.
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTPastePrefDlg 
+   Caption         =   "!3310MathType Paste"
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTProgress 
+!2201Updating the equation numbers appears to be slow. You can turn off automatic equation number updating using the Format Equation Numbers command on the MathType menu.
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTSectionNum 
+   Caption         =   "!0700Insert Chapter/Section Break"
+0tnN!0708Chapter number:
+0aho!0707Next chapter number
+0aho!0702Section number:
+!0701Next section number
+R!0802MathType's 'New Equation' preferences
+0tnN!0803This document's equation preferences
+!0804Load From MathType Preference File...
+!0801When inserting new equations use these preferences:
+Opt_MTDefaultr
+Begin {C62A69F0-16DC-11CE-9E98-00AA00574A4F} MTUpdateEqnNums 
+   Caption         =   "!2200Update Equation Numbers"
+ule=MTBrowse
+Module=MTConvertEquations
+Module=MTEditEquationSection
+Module=MTEqnNum
+Module=MTEqnNumFormat
+Module=MTExportEquations
+Module=MTFormatEquations
+Module=MTFormatEquationSection
+Module=MTHelp
+Module=MTInsertEBEquation
+Module=MTInsertEquation
+Module=MTLib
+Module=MTLibCommon
+Module=MTLoadPreferences
+Module=MTMarkRef
+Module=MTMathInputControl
+Module=MTOptions
+Module=MTPlaceRef
+Module=MTSecNum
+Module=MTSetData
+Module=MTSetEqnPrefs
+Module=MTTeXToggle
+Module=MTUpdateFields
+BaseClass=MTConvertEquationsDlg
+BaseClass=MTConvertToDisplayDlg
+BaseClass=MTConvertToInlineDlg
+BaseClass=MTEqnNumFormatDlg
+BaseClass=MTExportEqns
+BaseClass=MTFormatEqn
+BaseClass=MTInsertEqnNumDlg
+BaseClass=MTInsertEqnRefDlg
+BaseClass=MTMsgBox
+BaseClass=MTOldOmmlXsl
+BaseClass=MTOptionsDlg
+BaseClass=MTPastePrefDlg
+BaseClass=MTProgress
+BaseClass=MTSectionNum
+BaseClass=MTSetEqPrefs
+BaseClass=MTUpdateEqnNums
+Class=MTCommandsDispatchCls
+Class=MTW5
+Name="MathTypeCommands"
+MTBrowse=0, 0, 0, 0, C
+MTConvertEquations=0, 0, 0, 0, C
+MTEditEquationSection=0, 0, 0, 0, C
+MTEqnNum=0, 0, 0, 0, C
+MTEqnNumFormat=0, 0, 0, 0, C
+MTExportEquations=0, 0, 0, 0, C
+MTFormatEquations=0, 0, 0, 0, C
+MTFormatEquationSection=0, 0, 0, 0, C
+MTHelp=0, 0, 0, 0, C
+MTInsertEBEquation=0, 0, 0, 0, C
+MTInsertEquation=0, 0, 0, 0, C
+MTLib=0, 0, 0, 0, C
+MTLibCommon=0, 0, 0, 0, C
+MTLoadPreferences=0, 0, 0, 0, C
+MTMarkRef=0, 0, 0, 0, C
+MTMathInputControl=0, 0, 0, 0, C
+MTOptions=0, 0, 0, 0, C
+MTPlaceRef=0, 0, 0, 0, C
+MTSecNum=0, 0, 0, 0, C
+MTSetData=0, 0, 0, 0, C
+MTSetEqnPrefs=0, 0, 0, 0, C
+MTTeXToggle=0, 0, 0, 0, C
+MTUpdateFields=0, 0, 0, 0, C
+MTConvertEquationsDlg=0, 0, 0, 0, C, 130, 130, 1494, 831, C
+MTConvertToDisplayDlg=0, 0, 0, 0, C, 156, 156, 1520, 857, C
+MTConvertToInlineDlg=0, 0, 0, 0, C, 182, 182, 1546, 883, C
+MTEqnNumFormatDlg=0, 0, 0, 0, C, 208, 208, 1572, 909, C
+MTExportEqns=0, 0, 0, 0, C, 234, 234, 1598, 935, C
+MTFormatEqn=0, 0, 0, 0, C, 260, 260, 1624, 961, C
+MTInsertEqnNumDlg=0, 0, 0, 0, C, 286, 286, 1650, 987, C
+MTInsertEqnRefDlg=0, 0, 0, 0, C, 312, 312, 1676, 1013, C
+MTMsgBox=0, 0, 0, 0, C, 0, 0, 1364, 701, C
+MTOldOmmlXsl=0, 0, 0, 0, C, 26, 26, 1390, 727, C
+MTOptionsDlg=0, 0, 0, 0, C, 52, 52, 1416, 753, C
+MTPastePrefDlg=0, 0, 0, 0, C, 78, 78, 1442, 779, C
+MTProgress=0, 0, 0, 0, C, 104, 104, 1468, 805, C
+MTSectionNum=0, 0, 0, 0, C, 130, 130, 1494, 831, C
+MTSetEqPrefs=0, 0, 0, 0, C, 156, 156, 1520, 857, C
+MTUpdateEqnNums=0, 0, 0, 0, C, 182, 182, 1546, 883, C
+MTCommandsDispatchCls=0, 0, 0, 0, C
+MTW5=0, 0, 0, 0, C
++CTExportEquations
+"MTExportEquations
+"MTFormatEquations
+.MTFormatEquationSection
+$MTInsertEBEquation
+ MTInsertEquation
+"MTLoadPreferences
+$MTMathInputControl
+$MTConvertEquations
+*MTEditEquationSection
+*MTConvertEquationsDlg
+*MTConvertToDisplayDlg
+(MTConvertToInlineDlg
+"MTEqnNumFormatDlg
+"MTInsertEqnNumDlg
+"MTInsertEqnRefDlg
+ *MTCommandsDispatchCls
+*MTCommandsDispatchCls
+ Science\DSMT7\Directories
+The version of this command doesn't match the version of the MathPage WLL. Reinstall MathType to fix this condition.
+!1026Processing Equation Numbers and References...
+A more recent version of MathType's WLL is required to use this command. Reinstall MathType to fix this condition.
+MathType Commands for Microsoft Word Error
+!1025Processing Equations...
+!1029An error occurred copying supporting files, a file may be missing. Please reinstall MathType and try again.
+!1005Floating equations were detected in the document! These were ignored and left for Word to handle.&
+Translation errors occurred during processing. The following text has been inserted immediately after any symbols or equations that were not successfully translated: 
+!1006An unexpected processing error occurred, please try again. If this continues to occur, try reinstalling MathType.
+!1030Translator file is missing. Please re-install MathType and try again.
+!1014Processing Equation Numbers (
+mtplaceref
+MTSECNUM
+There is a problem with the MathType language DLL for Microsoft Word. Please contact Design Science. ID 
+!2102You entered an invalid number, please try again
+MathType Macro Error
+There was not an equation on the clipboard
+MathType Macro Message
+!1100There was a problem sending your equation preferences for  
+Entering InsertMTEqnFromOMML
+MTBlankEqn
+Exiting InsertMTEqnFromMML
+MTPLACEREF
+There was an error translating to the new format. This equation was not updated.
+There was a problem sending the preference information (styles, sizes, and spacing settings) to MathType. This equation was not updated.
+There was a problem writing this equation to disk (e.g. the disk may be full). This equation was not exported.
+Do you want to update this equation?
+Processing MathType Equation: 
+Processing Word Equation Field: 
+MTEQNNUMFORMAT
+Processing Text Equation: 
+Processing OMML Equation: 
+Non-OLE MathType equation pictures
+MathType 1.x macro equations
+Microsoft Word equation fields
+MathType translator text equations
+Word 2007 (OMML) equations
+MTAUTO
+MTEQNNUM
+MTCONVERTEQUATIONS
+MTSECNUMNEXT
+MTUPDATEFIELDS
+MTCONVERTEQATIONSDLG
+MTDISPEQNPREFS
+MTSECTIONNUM
+MTSETEQPREFS
+INSERTEQUATION
+MTLoadPreferences.MAIN
+MT_VBA_Asserts.log
+dispatching to MTInsertEquation.InsertInlineEquation
+!2109Equation Chapter (Next)
+!2107Equation Section (Next)
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#modify_chaptersection_break_dialog
+http://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin#insert_chaptersection_break_dialog
+U&nlock/Register MathType...
+MTW4
+MT5API
+!0200MathType Commands
+The MathType commands could not communicate with MathType. There was a problem starting the API. Please be sure that MathType is properly installed.
+The version of this macro doesn't match the version of MathType's DLL. Reinstall MathType to fix this condition.
+A more recent version of MathType's DLL is required to use this macro. Reinstall MathType to fix this condition."
+Found MT3 macros
+!0201MathType has found and removed an old version of the MathType Commands for Word. The new commands will be available the next time you run Word. Word will now Exit.
+About to initialize eqn numbering side
+MathType Commands For Word
+!0203An older version of the MathType Commands for Word is installed and will now be removed. Please ignore the ensuing message (Word cannot open this document template).
+in UnloadMT4Macros errhandler looking at error number 
+Equation Reference
+Equation Section
+MathType Preferences
+Update Equations
+!3041Insert an inline MathType equation.
+!3043Insert display MathType equation with number on left.
+!3047Insert a MathType equation from handwriting#
+!3045Insert display Equation Builder equation with number on left.
+!3079Insert a reference to an existing equation.
+!3050Insert an equation number at the insertion point.
+!3052Update equation numbers after rearranging the document.
+!3080Manage chapter and section breaks for equation numbering.
+!3057Browse equations, equation numbers, chapter and section breaks.#
+!3058Loads fonts, styles and sizes from MathType preference files.
+Please restart Word to load MathType addin properly#
+!3060Convert equations in a document to TeX or MathML.
+!3077Go to MathType's online support area.
+!3081Convert a run of TeX/LaTeX equation language to a MathType equation or vice-versa. Enclose TeX in $...$ for an inline equation, \[...\] for a display (paragraph) equation.
+!3061Export equations to EPS or GIF image files.
+DistanceFromTop1
+Storing Application in MTApp
+Equation.4
+!3017This copy of MathType is not activated. Convert this MathType equation into an Office equation?
+.MTBrowse.BrowseEquationNumberRefBackward9
+https://docs.wiris.com/en/mathtype/mathtype_desktop/microsoft_office?utm_source=Product&utm_medium=MathTypeWin
+http://docs.wiris.com/en/mathtype/mathtype_desktop/installation?utm_source=Product&utm_medium=MathTypeWin#activate_the_product*
+Entering InsertInlineEqn
+Insert Equation Builder Equation
+!2500This is a MathType 1.x (non-OLE) equation. The Convert Equations... command can be used to convert it to a MathType 4 equation. Do you want to do this now?
+entering SelInEBEquation
+Number Equation Builder Equation
+CEBEqNumT
+HMTSectionNum
+eMTBrowse
+sMTConvertEquations
+nMTEditEquationSection
+mMTEqnNum
+tMTEqnNumFormat
+sMTExportEquations
+sMTFormatEquations
+nMTFormatEquationSection
+pMTHelp
+nMTInsertEBEquation
+nMTInsertEquation
+bMTLib
+nMTLibCommon
+sMTLoadPreferences
+fMTMarkRef
+lMTMathInputControl
+sMTOptions
+fMTPlaceRef
+mMTSecNum
+aMTSetData
+sMTSetEqnPrefs
+eMTTeXToggle
+sMTUpdateFields
+gMTConvertEquationsDlg
+gMTConvertToDisplayDlg
+gMTConvertToInlineDlg
+gMTEqnNumFormatDlg
+sMTExportEqns
+nMTFormatEqn
+gMTInsertEqnNumDlg
+gMTInsertEqnRefDlg
+xMTMsgBox
+lMTOldOmmlXsl
+gMTOptionsDlg
+gMTPastePrefDlg
+sMTProgress
+mMTSectionNum
+sMTSetEqPrefs
+sMTUpdateEqnNums
+sMTCommandsDispatchCls
+5MTW5

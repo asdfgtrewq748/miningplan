@@ -597,8 +597,331 @@ def draw_fig7():
     save(fig, "图7_规划接续经济闭环评价图")
 
 
+def draw_parameter_system():
+    fig, ax = setup_canvas("采区规划参数体系构建图")
+    add_label(ax, 7, 88, "从原始输入到候选方案")
+
+    steps = [
+        (6, "原始边界", ["采区外轮廓", "坐标闭合与合法性"]),
+        (22, "有效布置域", ["边界煤柱", "保护距离与裁剪"]),
+        (38, "设计参数", ["面长、推进长度", "巷道间距、煤柱宽度"]),
+        (54, "约束条件", ["几何可行", "风险阈值、采掘规则"]),
+        (70, "目标函数", ["效率、回收", "扰动控制"]),
+        (86, "候选方案池", ["Top-K 方案", "结构化对象输出"]),
+    ]
+    fills = [
+        COLORS["blue_fill"],
+        COLORS["green_fill"],
+        COLORS["mint_fill"],
+        COLORS["orange_fill"],
+        COLORS["yellow_fill"],
+        "#f5f6fb",
+    ]
+    edges = [
+        COLORS["blue_edge"],
+        COLORS["green_edge"],
+        COLORS["mint_edge"],
+        COLORS["orange_edge"],
+        COLORS["yellow_edge"],
+        "#cfd4e8",
+    ]
+    for idx, (x, title, lines) in enumerate(steps):
+        add_box(ax, x, 61, 12, 17, title, lines, fills[idx], edges[idx], title_size=12.5, text_size=8.8)
+        if idx < len(steps) - 1:
+            add_arrow(ax, (x + 12, 69.5), (steps[idx + 1][0], 69.5), lw=1.6)
+
+    add_centered_panel(
+        ax,
+        9,
+        37,
+        35,
+        13,
+        "参数进入规划的方式",
+        ["边界与钻孔并不直接等同于最终设计方案；", "它们先被转换为有效布置域、参数场和约束口径，", "再进入候选工作面与巷道生成。"],
+        COLORS["panel_fill"],
+        COLORS["panel_edge"],
+        text_size=9.3,
+    )
+    add_centered_panel(
+        ax,
+        56,
+        37,
+        35,
+        13,
+        "论文证据口径",
+        ["当前图件支撑的是参数体系已经形成可计算链路，", "不直接宣称样例结果已经满足真实矿井终判要求。"],
+        COLORS["loop_fill"],
+        COLORS["loop_edge"],
+        text_size=9.3,
+    )
+    add_arrow(ax, (44, 43.5), (56, 43.5), color=COLORS["feedback"], dashed=True)
+    add_centered_panel(
+        ax,
+        18,
+        15,
+        64,
+        9,
+        "核心作用",
+        ["把“原始资料展示”转化为“可被规划模块消费的工程参数体系”，补足参数场与候选方案之间的逻辑接口。"],
+        COLORS["gray_fill"],
+        COLORS["gray_edge"],
+        title_size=13,
+        text_size=9.5,
+    )
+    save(fig, "图5_采区规划参数体系构建图")
+
+
+def draw_odi_control_framework():
+    fig, ax = setup_canvas("基于 ODI 分布的协同调控框架图")
+    add_label(ax, 8, 88, "风险场生成")
+    add_label(ax, 39, 88, "风险分区与控制变量")
+    add_label(ax, 74, 88, "方案反馈")
+
+    add_box(
+        ax,
+        7,
+        63,
+        18,
+        14,
+        "ODI 场生成",
+        ["沉陷、含水层扰动、上行开采", "归一化指标与权重合成", "形成统一风险底图"],
+        COLORS["orange_fill"],
+        COLORS["orange_edge"],
+        text_size=9.1,
+    )
+    add_box(
+        ax,
+        31,
+        63,
+        18,
+        14,
+        "风险分区",
+        ["低 / 中 / 高扰动区", "P90、均值、阈值超限比例", "识别空间暴露强度"],
+        COLORS["yellow_fill"],
+        COLORS["yellow_edge"],
+        text_size=9.1,
+    )
+    add_box(
+        ax,
+        55,
+        63,
+        18,
+        14,
+        "调控对象识别",
+        ["工作面位置", "推进顺序", "巷道与煤柱组织"],
+        COLORS["green_fill"],
+        COLORS["green_edge"],
+        text_size=9.1,
+    )
+    add_box(
+        ax,
+        79,
+        63,
+        15,
+        14,
+        "方案对比",
+        ["筛除高风险暴露", "比较收益与扰动", "反馈阈值修订"],
+        COLORS["blue_fill"],
+        COLORS["blue_edge"],
+        text_size=9.1,
+    )
+
+    add_centered_panel(
+        ax,
+        15,
+        33,
+        70,
+        14,
+        "协同调控逻辑",
+        ["ODI 不是末端说明性指标，而是连接风险识别、方案生成、接续组织和经济评价的中介变量。", "风险分区结果进入候选方案筛选，同时把高扰动月份和高暴露空间反馈给后续接续与经济分析。"],
+        COLORS["panel_fill"],
+        COLORS["panel_edge"],
+        text_size=9.5,
+    )
+    add_centered_panel(
+        ax,
+        22,
+        13,
+        56,
+        9,
+        "边界控制",
+        ["该框架说明统一组织关系；参数权重和阈值仍需在真实矿井案例中标定。"],
+        COLORS["loop_fill"],
+        COLORS["loop_edge"],
+        title_size=13,
+        text_size=9.4,
+    )
+
+    add_arrow(ax, (25, 70), (31, 70))
+    add_arrow(ax, (49, 70), (55, 70))
+    add_arrow(ax, (73, 70), (79, 70))
+    add_arrow(ax, (86, 63), (73, 47), color=COLORS["feedback"], dashed=True, rad=0.22)
+    add_arrow(ax, (40, 63), (42, 47), color=COLORS["feedback"], dashed=True)
+    save(fig, "图7_基于ODI分布的协同调控框架图")
+
+
+def draw_succession_process():
+    fig, ax = setup_canvas("采掘接续流程与结果组织图")
+    add_label(ax, 8, 88, "空间对象到时间序列")
+
+    steps = [
+        (8, "规划结果输入", ["工作面几何", "巷道对象、ODI 暴露"]),
+        (29, "接续任务生成", ["任务拆分", "产量与工期参数"]),
+        (50, "阶段排序", ["阶段 1 / 2 / 3", "约束校核与调整"]),
+        (71, "甘特化表达", ["月度推进", "产量-风险序列"]),
+    ]
+    for idx, (x, title, lines) in enumerate(steps):
+        add_box(
+            ax,
+            x,
+            61,
+            15,
+            15,
+            title,
+            lines,
+            [COLORS["blue_fill"], COLORS["green_fill"], COLORS["yellow_fill"], COLORS["mint_fill"]][idx],
+            [COLORS["blue_edge"], COLORS["green_edge"], COLORS["yellow_edge"], COLORS["mint_edge"]][idx],
+            title_size=12.5,
+            text_size=9.1,
+        )
+        if idx < len(steps) - 1:
+            add_arrow(ax, (x + 15, 68.5), (steps[idx + 1][0], 68.5))
+
+    add_centered_panel(
+        ax,
+        16,
+        36,
+        68,
+        13,
+        "结果组织方式",
+        ["接续模块消费的不是图片截图，而是规划阶段形成的结构化工作面与巷道对象。", "这些对象进一步转化为生产任务、阶段顺序、月度推进和风险暴露序列。"],
+        COLORS["panel_fill"],
+        COLORS["panel_edge"],
+        text_size=9.6,
+    )
+    add_box(
+        ax,
+        24,
+        13,
+        22,
+        11,
+        "风险联动评价",
+        ["高 ODI 区域影响顺序与成本", "异常月份进入复核清单"],
+        COLORS["orange_fill"],
+        COLORS["orange_edge"],
+        title_size=13,
+        text_size=9.2,
+    )
+    add_box(
+        ax,
+        54,
+        13,
+        22,
+        11,
+        "方案修订入口",
+        ["回写候选池偏好", "支持重算与人工调整"],
+        COLORS["loop_fill"],
+        COLORS["loop_edge"],
+        title_size=13,
+        text_size=9.2,
+    )
+    add_arrow(ax, (46, 18.5), (54, 18.5), color=COLORS["feedback"], dashed=True)
+    add_arrow(ax, (71, 61), (65, 24), color=COLORS["feedback"], dashed=True, rad=0.14)
+    save(fig, "图10_采掘接续流程与结果组织图")
+
+
+def draw_economic_result_flow():
+    fig, ax = setup_canvas("工程经济分析流程与结果图")
+    add_label(ax, 8, 88, "经济评价输入")
+    add_label(ax, 38, 88, "现金流计算")
+    add_label(ax, 73, 88, "结果解释")
+
+    add_box(
+        ax,
+        7,
+        62,
+        19,
+        15,
+        "接续计划",
+        ["月度产量", "推进顺序", "风险暴露月份"],
+        COLORS["green_fill"],
+        COLORS["green_edge"],
+        text_size=9.2,
+    )
+    add_box(
+        ax,
+        31,
+        62,
+        19,
+        15,
+        "现金流单元",
+        ["收入 Rev", "成本 Cost", "风险联动成本 RiskCost"],
+        COLORS["yellow_fill"],
+        COLORS["yellow_edge"],
+        text_size=9.2,
+    )
+    add_box(
+        ax,
+        55,
+        62,
+        19,
+        15,
+        "评价指标",
+        ["月度 NCF", "累计现金流", "NPV、回收期"],
+        COLORS["blue_fill"],
+        COLORS["blue_edge"],
+        text_size=9.2,
+    )
+    add_box(
+        ax,
+        79,
+        62,
+        15,
+        15,
+        "复核输出",
+        ["高风险月份", "低收益阶段", "方案比较建议"],
+        COLORS["orange_fill"],
+        COLORS["orange_edge"],
+        text_size=9.2,
+    )
+    for start_x, end_x in [(26, 31), (50, 55), (74, 79)]:
+        add_arrow(ax, (start_x, 69.5), (end_x, 69.5))
+
+    add_centered_panel(
+        ax,
+        13,
+        35,
+        74,
+        13,
+        "经济闭环含义",
+        ["经济评价不是在规划结束后单独填表，而是把接续产量、风险暴露和成本修正纳入同一现金流口径。", "当 NPV、回收期或高风险月份不满足偏好时，结果可反馈至候选方案和接续顺序。"],
+        COLORS["panel_fill"],
+        COLORS["panel_edge"],
+        text_size=9.6,
+    )
+    add_centered_panel(
+        ax,
+        23,
+        14,
+        54,
+        9,
+        "当前证据边界",
+        ["样例已证明经济评价链路可运行；收益幅度和风险成本参数仍需实矿基线对照校准。"],
+        COLORS["loop_fill"],
+        COLORS["loop_edge"],
+        title_size=13,
+        text_size=9.3,
+    )
+    add_arrow(ax, (86, 62), (74, 48), color=COLORS["feedback"], dashed=True, rad=0.22)
+    save(fig, "图11_工程经济分析流程与结果图")
+
+
 if __name__ == "__main__":
     draw_fig2()
     draw_fig3()
+    draw_parameter_system()
     draw_fig5()
+    draw_odi_control_framework()
     draw_fig7()
+    draw_succession_process()
+    draw_economic_result_flow()

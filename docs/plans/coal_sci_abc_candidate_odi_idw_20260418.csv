@@ -1,0 +1,4 @@
+plan_code,source_mode,signature,odi_mean_idw,odi_p90_idw,odi_gt_070_pct_idw,odi_gt_080_pct_idw,sample_count,method_note
+A,efficiency,x|wb=50.0000|ws=30.0000|N=5|B=308.0000,0.636861,0.780606,33.5778,7.6444,4500,IDW over 32 aquifer ODI points; step=25m; outerBuffer=30m
+B,recovery,y|wb=50.0000|ws=30.0000|N=9|B=335.0000|theta=0.0,0.644879,0.793040,36.2889,9.2222,4500,IDW over 32 aquifer ODI points; step=25m; outerBuffer=30m
+C,disturbance,x|wb=80.0000|ws=30-30|N=13|B=100-100|h=f2a5a1b8,0.643727,0.784272,35.0889,7.9333,4500,IDW over 32 aquifer ODI points; step=25m; outerBuffer=30m
