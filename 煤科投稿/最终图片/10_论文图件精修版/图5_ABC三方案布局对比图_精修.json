@@ -1,0 +1,15 @@
+{
+  "source_project": "E:\\xiangmu\\miningplan\\软件案例附件\\工程文件案例\\3-采区规划案例.miningplan.json",
+  "source_odi_field": "E:\\xiangmu\\miningplan\\论文\\重构工作区\\05_支撑材料\\接口结果\\000_mindong_layout_odi_field.json",
+  "source_stats": "E:\\xiangmu\\miningplan\\docs\\plans\\coal_sci_abc_odi_unified_stats_20260418.csv",
+  "source_boundary": "E:\\xiangmu\\miningplan\\data\\采区边界_敏东.csv",
+  "source_drillholes": "E:\\xiangmu\\miningplan\\data\\钻孔坐标_敏东.csv",
+  "output_base": "E:\\xiangmu\\miningplan\\煤科投稿\\最终图片\\10_论文图件精修版\\图5_ABC三方案布局对比图_精修",
+  "plan_signatures": {
+    "A": "x|wb=50.0000|ws=30.0000|N=5|B=308.0000",
+    "B": "y|wb=50.0000|ws=30.0000|N=9|B=335.0000|theta=0.0",
+    "C": "x|wb=50.0000|ws=30.0000|N=4|B=350.0000"
+  },
+  "figure_caption_cn": "图5 A/B/C候选方案工作面布局与ODI高值区叠置对比图",
+  "figure_caption_en": "Fig.5 Comparison of A/B/C candidate layouts overlaid with high-ODI zones"
+}

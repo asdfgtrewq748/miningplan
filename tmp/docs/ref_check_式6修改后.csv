@@ -1,0 +1,9 @@
+﻿metric,value
+reference_count,50
+doi_count,50
+unique_doi_count,50
+used_body_count,50
+missing_in_body,
+missing_in_refs,
+missing_reference_numbers,
+duplicate_reference_numbers,

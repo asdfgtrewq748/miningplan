@@ -1,0 +1,3 @@
+oMath=150
+oMathPara=31
+plain_symbol_hits=0
