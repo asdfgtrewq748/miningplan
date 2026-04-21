@@ -63,12 +63,14 @@ plt.rcParams.update(
         "svg.fonttype": "none",
         "path.simplify": False,
         "axes.linewidth": 0.85,
-        "axes.labelsize": 9.2,
-        "xtick.labelsize": 8.2,
-        "ytick.labelsize": 8.2,
-        "legend.fontsize": 8.0,
-        "lines.linewidth": 1.45,
-        "lines.markersize": 4.8,
+        "font.size": 11.0,
+        "axes.titlesize": 12.8,
+        "axes.labelsize": 11.5,
+        "xtick.labelsize": 10.4,
+        "ytick.labelsize": 10.4,
+        "legend.fontsize": 10.2,
+        "lines.linewidth": 1.65,
+        "lines.markersize": 5.6,
         "figure.facecolor": "white",
         "axes.facecolor": "white",
     }
@@ -152,8 +154,8 @@ def plot_poly(ax, poly: Polygon, facecolor: str, edgecolor: str, alpha: float = 
 
 
 def panel_label(ax, label: str, title: str):
-    ax.text(0.00, 1.030, label, transform=ax.transAxes, ha="left", va="bottom", fontsize=9.5, fontweight="bold", color=COLORS["black"])
-    ax.text(0.105, 1.030, title, transform=ax.transAxes, ha="left", va="bottom", fontsize=8.8, color=COLORS["black"])
+    ax.text(0.00, 1.030, label, transform=ax.transAxes, ha="left", va="bottom", fontsize=11.8, fontweight="bold", color=COLORS["black"])
+    ax.text(0.105, 1.030, title, transform=ax.transAxes, ha="left", va="bottom", fontsize=11.0, color=COLORS["black"])
 
 
 def clean_spatial_ax(ax, bounds: tuple[float, float, float, float]):
@@ -510,7 +512,7 @@ def fig13_odi_validation() -> dict:
     }
 
 
-def ppt_card(ax, x, y, w, h, title, body="", number=None, fc="#FFFFFF", ec="#9AA7B4", accent="#3E6B9E", title_size=10.5, body_size=8.0):
+def ppt_card(ax, x, y, w, h, title, body="", number=None, fc="#FFFFFF", ec="#9AA7B4", accent="#3E6B9E", title_size=12.2, body_size=9.8):
     card = FancyBboxPatch(
         (x, y),
         w,

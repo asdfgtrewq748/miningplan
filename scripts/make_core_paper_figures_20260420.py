@@ -26,9 +26,21 @@ def get_font() -> font_manager.FontProperties:
 
 
 FONT = get_font()
+TIMES = font_manager.FontProperties(fname=r"C:\Windows\Fonts\times.ttf") if Path(r"C:\Windows\Fonts\times.ttf").exists() else font_manager.FontProperties(family="Times New Roman")
+
+mpl.rcParams.update(
+    {
+        "font.family": ["Times New Roman", "SimSun"],
+        "font.sans-serif": ["SimSun", "Times New Roman", "Microsoft YaHei", "SimHei"],
+        "axes.unicode_minus": False,
+        "svg.fonttype": "none",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+)
 
 
-def rounded_box(ax, x, y, w, h, text, *, fc="#f7fbff", ec="#7c98aa", lw=1.4, fs=10.5, weight="normal"):
+def rounded_box(ax, x, y, w, h, text, *, fc="#f7fbff", ec="#7c98aa", lw=1.4, fs=12.2, weight="normal"):
     box = FancyBboxPatch(
         (x, y),
         w,

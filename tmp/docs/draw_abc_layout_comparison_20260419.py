@@ -34,15 +34,12 @@ def find_candidate(project: dict, mode: str, signature: str) -> dict:
 
 
 def setup_font() -> None:
-    plt.rcParams["font.sans-serif"] = [
-        "Microsoft YaHei",
-        "SimHei",
-        "Arial Unicode MS",
-        "DejaVu Sans",
-    ]
+    plt.rcParams["font.family"] = ["Times New Roman", "SimSun"]
+    plt.rcParams["font.sans-serif"] = ["SimSun", "Times New Roman", "Microsoft YaHei", "SimHei"]
     plt.rcParams["axes.unicode_minus"] = False
     plt.rcParams["pdf.fonttype"] = 42
     plt.rcParams["ps.fonttype"] = 42
+    plt.rcParams["svg.fonttype"] = "none"
 
 
 def main() -> None:
@@ -70,14 +67,8 @@ def main() -> None:
     min_y = field["bounds"]["minY"]
     max_y = field["bounds"]["maxY"]
 
-    boundary = np.array(
-        [[float(r["x"]) - min_x, float(r["y"]) - min_y] for r in boundary_rows],
-        dtype=float,
-    )
-    drill_xy = np.array(
-        [[float(r["x"]) - min_x, float(r["y"]) - min_y] for r in drill_rows],
-        dtype=float,
-    )
+    boundary = np.array([[float(r["x"]) - min_x, float(r["y"]) - min_y] for r in boundary_rows], dtype=float)
+    drill_xy = np.array([[float(r["x"]) - min_x, float(r["y"]) - min_y] for r in drill_rows], dtype=float)
 
     plans = [
         {
@@ -104,26 +95,17 @@ def main() -> None:
     ]
 
     z = np.asarray(field["field"], dtype=float)
-    # The JSON field stores the same normalized ODI grid used in the manuscript audit.
     extent = [0, max_x - min_x, 0, max_y - min_y]
     xx = np.linspace(extent[0], extent[1], z.shape[1])
     yy = np.linspace(extent[2], extent[3], z.shape[0])
 
-    fig, axes = plt.subplots(1, 3, figsize=(7.4, 2.85), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(8.2, 3.10), sharex=True, sharey=True)
     for ax, plan in zip(axes, plans):
         cand = find_candidate(project, plan["mode"], plan["signature"])
         faces = cand["render"]["plannedWorkfaceLoopsWorld"]
         st = stats[plan["code"]]
 
-        ax.contourf(
-            xx,
-            yy,
-            z,
-            levels=[0.70, 0.80, 1.01],
-            colors=["#F4A582", "#D6604D"],
-            alpha=0.28,
-            antialiased=True,
-        )
+        ax.contourf(xx, yy, z, levels=[0.70, 0.80, 1.01], colors=["#F4A582", "#D6604D"], alpha=0.28, antialiased=True)
         ax.contour(xx, yy, z, levels=[0.70], colors=["#B2182B"], linewidths=0.8)
 
         ax.plot(
@@ -133,39 +115,14 @@ def main() -> None:
             lw=1.1,
             label="研究区边界",
         )
-        ax.scatter(
-            drill_xy[:, 0],
-            drill_xy[:, 1],
-            s=5,
-            color="#4D4D4D",
-            alpha=0.55,
-            linewidths=0,
-            zorder=3,
-        )
+        ax.scatter(drill_xy[:, 0], drill_xy[:, 1], s=5, color="#4D4D4D", alpha=0.55, linewidths=0, zorder=3)
 
         for face in faces:
             pts = offset_loop(face["loop"], min_x, min_y)
-            poly = Polygon(
-                pts,
-                closed=True,
-                facecolor=plan["color"],
-                edgecolor=plan["color"],
-                linewidth=1.0,
-                alpha=0.38,
-                zorder=4,
-            )
+            poly = Polygon(pts, closed=True, facecolor=plan["color"], edgecolor=plan["color"], linewidth=1.0, alpha=0.38, zorder=4)
             ax.add_patch(poly)
             cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
-            ax.text(
-                cx,
-                cy,
-                str(face["faceIndex"]),
-                ha="center",
-                va="center",
-                fontsize=5.5,
-                color="#111111",
-                zorder=5,
-            )
+            ax.text(cx, cy, str(face["faceIndex"]), ha="center", va="center", fontsize=7.1, color="#111111", zorder=5)
 
         text = (
             f"N={st['face_count']}  覆盖率={float(st['coverage_pct']):.2f}%\n"
@@ -179,20 +136,20 @@ def main() -> None:
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=5.8,
+            fontsize=7.2,
             bbox=dict(boxstyle="round,pad=0.20", fc="white", ec="#BDBDBD", lw=0.45, alpha=0.90),
             zorder=6,
         )
 
-        ax.set_title(f"({plan['code'].lower()}) {plan['title']}", fontsize=7.2, pad=3)
+        ax.set_title(f"({plan['code'].lower()}) {plan['title']}", fontsize=8.9, pad=3)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(color="#E0E0E0", linewidth=0.45, alpha=0.7)
-        ax.tick_params(labelsize=5.8, length=2.2)
+        ax.tick_params(labelsize=7.2, length=2.2)
         ax.set_xlim(-90, max_x - min_x + 90)
         ax.set_ylim(-80, max_y - min_y + 80)
 
-    axes[0].set_ylabel("Y方向相对坐标 / m", fontsize=6.8)
-    fig.supxlabel("X方向相对坐标 / m", fontsize=6.8, y=0.065)
+    axes[0].set_ylabel("Y方向相对坐标 / m", fontsize=8.4)
+    fig.supxlabel("X方向相对坐标 / m", fontsize=8.4, y=0.065)
 
     legend_items = [
         Line2D([0], [0], color="#202020", lw=1.1, label="研究区边界"),
@@ -200,14 +157,7 @@ def main() -> None:
         Line2D([0], [0], color="#B2182B", lw=0.9, label="ODI=0.70轮廓"),
         Line2D([0], [0], color="#0072B2", lw=4, alpha=0.55, label="工作面"),
     ]
-    fig.legend(
-        handles=legend_items,
-        loc="lower center",
-        ncol=4,
-        frameon=False,
-        bbox_to_anchor=(0.5, -0.01),
-        fontsize=6.4,
-    )
+    fig.legend(handles=legend_items, loc="lower center", ncol=4, frameon=False, bbox_to_anchor=(0.5, -0.01), fontsize=7.8)
 
     fig.tight_layout(rect=[0.01, 0.12, 0.995, 1.0], w_pad=0.8)
     for ext in ["png", "pdf", "svg", "tif"]:

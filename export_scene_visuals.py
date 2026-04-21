@@ -14,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import numpy as np
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap
 from matplotlib.patches import Patch
@@ -59,25 +60,28 @@ CAT_COLORS = {
     "red": "#ef4444",
 }
 
+SIMSUN = Path(r"C:\Windows\Fonts\simsun.ttc")
+TIMES = Path(r"C:\Windows\Fonts\times.ttf")
+for _font_path in (SIMSUN, TIMES):
+    if _font_path.exists():
+        fm.fontManager.addfont(str(_font_path))
+
 plt.rcParams.update(
     {
-        "font.family": "sans-serif",
-        "font.sans-serif": [
-            "Microsoft YaHei",
-            "SimHei",
-            "Noto Sans CJK SC",
-            "Source Han Sans SC",
-            "DejaVu Sans",
-        ],
+        "font.family": ["Times New Roman", "SimSun"],
+        "font.sans-serif": ["SimSun", "Times New Roman", "Microsoft YaHei", "SimHei"],
         "axes.unicode_minus": False,
-        "font.size": 9,
-        "axes.titlesize": 11,
-        "axes.labelsize": 9,
-        "legend.fontsize": 8,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "savefig.dpi": 300,
-        "figure.dpi": 150,
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 11,
+        "legend.fontsize": 10,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "savefig.dpi": 600,
+        "figure.dpi": 220,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "svg.fonttype": "none",
         "savefig.facecolor": "white",
         "axes.facecolor": "white",
     }

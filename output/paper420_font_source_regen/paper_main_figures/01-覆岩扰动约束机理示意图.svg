@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="653.04pt" height="321.84pt" viewBox="0 0 653.04 321.84" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-04-20T23:27:55.498123</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.10.8, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 321.84 
+L 653.04 321.84 
+L 653.04 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 32.7456 253.152 
+L 147.7008 253.152 
+L 147.7008 68.688 
+L 32.7456 68.688 
+z
+" clip-path="url(#p70ed871eb3)" style="fill: #e0f2fe; stroke: #334155; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 198.792 253.152 
+L 313.7472 253.152 
+L 313.7472 68.688 
+L 198.792 68.688 
+z
+" clip-path="url(#p70ed871eb3)" style="fill: #dbeafe; stroke: #334155; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 364.8384 253.152 
+L 479.7936 253.152 
+L 479.7936 68.688 
+L 364.8384 68.688 
+z
+" clip-path="url(#p70ed871eb3)" style="fill: #dcfce7; stroke: #334155; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 530.8848 253.152 
+L 620.2944 253.152 
+L 620.2944 68.688 
+L 530.8848 68.688 
+z
+" clip-path="url(#p70ed871eb3)" style="fill: #fee2e2; stroke: #334155; stroke-width: 1.2; stroke-linejoin: miter"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 11px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #0f172a" x="90.2232" y="96.022028" transform="rotate(-0 90.2232 96.022028)">输入层</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="90.2232" y="129.342459" transform="rotate(-0 90.2232 129.342459)">采区边界</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="90.2232" y="169.292081" transform="rotate(-0 90.2232 169.292081)">钻孔样点</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="90.2232" y="209.259281" transform="rotate(-0 90.2232 209.259281)">分层与参数场</text>
+   </g>
+   <g id="text_5">
+    <text style="font-weight: 700; font-size: 11px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #0f172a" x="256.2696" y="96.022028" transform="rotate(-0 256.2696 96.022028)">约束层</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="256.2696" y="129.307303" transform="rotate(-0 256.2696 129.307303)">多场景风险</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="256.2696" y="169.239347" transform="rotate(-0 256.2696 169.239347)">ODI 统一表达</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="256.2696" y="209.241703" transform="rotate(-0 256.2696 209.241703)">阈值与分级</text>
+   </g>
+   <g id="text_9">
+    <text style="font-weight: 700; font-size: 11px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #0f172a" x="422.316" y="96.000544" transform="rotate(-0 422.316 96.000544)">方案生成层</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="422.316" y="129.342459" transform="rotate(-0 422.316 129.342459)">候选布局生成</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="422.316" y="169.344816" transform="rotate(-0 422.316 169.344816)">多目标评价</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="422.316" y="209.276859" transform="rotate(-0 422.316 209.276859)">模式化比选</text>
+   </g>
+   <g id="text_13">
+    <text style="font-weight: 700; font-size: 11px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #0f172a" x="575.5896" y="96.022028" transform="rotate(-0 575.5896 96.022028)">输出层</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="575.5896" y="129.342459" transform="rotate(-0 575.5896 129.342459)">规划布局</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="575.5896" y="169.327237" transform="rotate(-0 575.5896 169.327237)">采掘接续</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 9px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #1e293b" x="575.5896" y="209.294437" transform="rotate(-0 575.5896 209.294437)">经济评价</text>
+   </g>
+   <g id="patch_6">
+    <path d="M 149.699668 160.92 
+Q 173.246549 160.92 195.116378 160.92 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+    <path d="M 190.716378 158.72 
+L 195.116378 160.92 
+L 190.716378 163.12 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 8.5px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #475569" x="173.2464" y="137.580997" transform="rotate(-0 173.2464 137.580997)">地质输入转为可计算约束</text>
+   </g>
+   <g id="patch_7">
+    <path d="M 315.746068 160.92 
+Q 339.292949 160.92 361.162778 160.92 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+    <path d="M 356.762778 158.72 
+L 361.162778 160.92 
+L 356.762778 163.12 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 8.5px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #475569" x="339.2928" y="137.580997" transform="rotate(-0 339.2928 137.580997)">风险前置进入规划生成</text>
+   </g>
+   <g id="patch_8">
+    <path d="M 481.792468 160.92 
+Q 505.339349 160.92 527.209178 160.92 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+    <path d="M 522.809178 158.72 
+L 527.209178 160.92 
+L 522.809178 163.12 
+" style="fill: none; stroke: #475569; stroke-width: 1.5; stroke-linecap: round"/>
+   </g>
+   <g id="text_19">
+    <text style="font-size: 8.5px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #475569" x="505.3392" y="137.580997" transform="rotate(-0 505.3392 137.580997)">布局结果继续向下游传递</text>
+   </g>
+   <g id="text_20">
+    <text style="font-size: 9.2px; font-family: 'Times New Roman', 'SimSun'; text-anchor: middle; fill: #334155" x="326.52" y="295.427825" transform="rotate(-0 326.52 295.427825)">规划变量通过扰动响应形成约束反馈，约束结果再反向作用于布局、接续与经济决策。</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p70ed871eb3">
+   <rect x="7.2" y="7.2" width="638.64" height="307.44"/>
+  </clipPath>
+ </defs>
+</svg>
