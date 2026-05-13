@@ -1,0 +1,19 @@
+{
+  "source_project": "E:/xiangmu/miningplan/mining-plan/frontend/public/demo/3-采区规划案例.miningplan.json",
+  "source_odi_field": "E:/xiangmu/miningplan/论文/重构工作区/05_支撑材料/接口结果/000_mindong_layout_odi_field.json",
+  "source_boundary": "E:/xiangmu/miningplan/data/采区边界_敏东.csv",
+  "source_drillholes": "E:/xiangmu/miningplan/data/钻孔坐标_敏东.csv",
+  "source_abc_stats": "E:/xiangmu/miningplan/docs/plans/coal_sci_abc_odi_unified_stats_20260418.csv",
+  "source_weighted_stats": "E:/xiangmu/miningplan/output/scene_visual_exports/20260416_201037/03_mining_planning/overview/planning_weighted_table.csv",
+  "origin_xy": [
+    495394.96,
+    5403689.89
+  ],
+  "plan_signatures": {
+    "A": "x|wb=50.0000|ws=30.0000|N=5|B=308.0000",
+    "B": "y|wb=50.0000|ws=30.0000|N=9|B=335.0000|theta=0.0",
+    "C": "x|wb=50.0000|ws=30.0000|N=4|B=350.0000",
+    "D": "y|wb=80.0000|ws=30-30|N=5|B=350-350|h=1db0251b"
+  },
+  "note": "Panel D uses the system weighted top output; source table marks qualified=false."
+}
