@@ -1,10 +1,10 @@
 {
-  "source_project": "E:/xiangmu/miningplan/mining-plan/frontend/public/demo/3-采区规划案例.miningplan.json",
-  "source_odi_field": "E:/xiangmu/miningplan/论文/重构工作区/05_支撑材料/接口结果/000_mindong_layout_odi_field.json",
-  "source_boundary": "E:/xiangmu/miningplan/data/采区边界_敏东.csv",
-  "source_drillholes": "E:/xiangmu/miningplan/data/钻孔坐标_敏东.csv",
-  "source_abc_stats": "E:/xiangmu/miningplan/docs/plans/coal_sci_abc_odi_unified_stats_20260418.csv",
-  "source_weighted_stats": "E:/xiangmu/miningplan/output/scene_visual_exports/20260416_201037/03_mining_planning/overview/planning_weighted_table.csv",
+  "source_project": "D:/xiangmu/miningplan/mining-plan/frontend/public/demo/3-采区规划案例.miningplan.json",
+  "source_odi_field": "D:/xiangmu/miningplan/论文/重构工作区/05_支撑材料/接口结果/000_mindong_layout_odi_field.json",
+  "source_boundary": "D:/xiangmu/miningplan/data/采区边界_敏东.csv",
+  "source_drillholes": "D:/xiangmu/miningplan/data/钻孔坐标_敏东.csv",
+  "source_abc_stats": "D:/xiangmu/miningplan/docs/plans/coal_sci_abc_odi_unified_stats_20260418.csv",
+  "source_weighted_stats": "D:/xiangmu/miningplan/output/scene_visual_exports/20260416_201037/03_mining_planning/overview/planning_weighted_table.csv",
   "origin_xy": [
     495394.96,
     5403689.89

@@ -240,12 +240,12 @@ def add_scale_and_north(ax: plt.Axes) -> None:
     width = x1 - x0
     height = y1 - y0
     sx = x0 + 0.08 * width
-    sy = y0 + 0.08 * height
+    sy = y0 + 0.045 * height
     length = 500.0
     ax.plot([sx, sx + length], [sy, sy], color="black", lw=1.2, solid_capstyle="butt", zorder=7)
     ax.plot([sx, sx], [sy - 14, sy + 14], color="black", lw=0.8, zorder=7)
     ax.plot([sx + length, sx + length], [sy - 14, sy + 14], color="black", lw=0.8, zorder=7)
-    ax.text(sx + length / 2, sy + 26, "500 m", ha="center", va="bottom", fontsize=7.0, zorder=7)
+    ax.text(sx + length / 2, sy + 22, "500 m", ha="center", va="bottom", fontsize=7.0, zorder=7)
 
     nx = x1 - 0.08 * width
     ny = y1 - 0.18 * height
@@ -442,7 +442,7 @@ def main() -> None:
     axes[1, 1].set_xlabel("X 相对坐标 / m")
 
     cbar = fig.colorbar(image, ax=axes_flat, fraction=0.035, pad=0.025)
-    cbar.set_label("ODI")
+    cbar.ax.set_ylabel("ODI", rotation=90, labelpad=9, va="center")
     cbar.set_ticks([0, 0.4, 0.65, 0.85, 0.9, 1.0])
     cbar.ax.set_yticklabels(["0", "0.40", "0.65", "0.85", "0.90", "1.0"])
 

@@ -1,0 +1,19 @@
+{
+  "source_images": [
+    "D:/xiangmu/miningplan/煤科投稿/论文图片包/6.20.png",
+    "D:/xiangmu/miningplan/煤科投稿/论文图片包/6.21.png",
+    "D:/xiangmu/miningplan/煤科投稿/论文图片包/6.22.png",
+    "D:/xiangmu/miningplan/煤科投稿/论文图片包/6.23.png"
+  ],
+  "crop_pixels": [
+    190,
+    88,
+    680,
+    370
+  ],
+  "source_project_candidates_checked": [
+    "D:/xiangmu/miningplan/mining-plan/frontend/public/demo/3-采区规划案例.miningplan.json",
+    "D:/xiangmu/miningplan/mining-plan/frontend/public/demo/5-采掘接续.miningplan.json"
+  ],
+  "note": "This figure is composed from the four user-provided system screenshots because some selected rows shown in the screenshots do not exactly match the saved candidate tables in the current project JSON files."
+}
