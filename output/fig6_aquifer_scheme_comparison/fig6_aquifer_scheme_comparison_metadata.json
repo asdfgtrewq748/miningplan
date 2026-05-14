@@ -1,0 +1,42 @@
+{
+  "source_aquifer_project": "D:\\xiangmu\\miningplan\\mining-plan\\frontend\\public\\demo\\2-含水层扰动评价.miningplan.json",
+  "source_planning_project": "D:\\xiangmu\\miningplan\\mining-plan\\frontend\\public\\demo\\3-采区规划案例.miningplan.json",
+  "origin_xy": [
+    495394.96,
+    5403689.89
+  ],
+  "panel_specs": [
+    {
+      "code": "A",
+      "panel": "（a）工程效率优先方案",
+      "mode": "efficiency",
+      "signature": "x|wb=50.0000|ws=30.0000|N=5|B=308.0000",
+      "show_interpolation": false
+    },
+    {
+      "code": "B",
+      "panel": "（b）资源回收优先方案",
+      "mode": "recovery",
+      "signature": "y|wb=50.0000|ws=30.0000|N=9|B=335.0000|theta=0.0",
+      "show_interpolation": false
+    },
+    {
+      "code": "C",
+      "panel": "（c）低扰动优先方案",
+      "mode": "disturbance",
+      "signature": "x|wb=80.0000|ws=30-30|N=13|B=100-100|h=f2a5a1b8",
+      "show_interpolation": true
+    },
+    {
+      "code": "D",
+      "panel": "（d）综合权重调节方案",
+      "mode": "weighted_dist",
+      "signature": "y|wb=80.0000|ws=30-30|N=5|B=350-350|h=1db0251b",
+      "show_interpolation": true
+    }
+  ],
+  "interpolation_rule": "Panels A and B do not draw interpolation; panels C and D use aquifer odiResult.points triangulated interpolation.",
+  "odi_point_count": 376,
+  "drillhole_count": 28,
+  "boundary_point_count": 8
+}
