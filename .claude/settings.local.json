@@ -42,7 +42,9 @@
       "Bash(rm -f capture_demo.py export_demo_results.py)",
       "Bash(ls data/output/word_tables/table*/Table*.docx)",
       "Bash(ls data/output/supplementary_figures/*.png)",
-      "Bash(ls \"d:/xiangmu/miningplan/data/output/supplementary_figures/\"*.png)"
+      "Bash(ls \"d:/xiangmu/miningplan/data/output/supplementary_figures/\"*.png)",
+      "Bash(python3 -c ' *)",
+      "Bash(CASE_DIR=软件案例附件/工程文件案例 GEN_SCRIPT=论文/重构工作区/05_支撑材料/生成论文导图.py OUT_DIR=tmp/sensitivity_s1_s3 python -c ' *)"
     ]
   }
 }

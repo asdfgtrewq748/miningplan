@@ -1,0 +1,207 @@
+innoextract(1)              General Commands Manual             innoextract(1)
+
+
+
+NAME
+       innoextract - tool to extract installers created by Inno Setup
+
+SYNOPSIS
+       innoextract [--extract] [--lowercase] [options] installers ...
+
+       innoextract --list [options] installers ...
+
+       innoextract --test [options] installers ...
+
+DESCRIPTION
+       innoextract is a tool that can extract installer executables created by
+       Inno Setup.
+
+       innoextract will extract files from installers specified on the command
+       line.
+
+       To  extract  a  multi-part installer with external data files, only the
+       executable (.exe) file needs to be given as an argument to innoextract.
+
+OPTIONS SUMMARY
+       Here is a short summary of the options available in innoextract. Please
+       refer to the detailed  documentation below for a complete description.
+
+       Generic options:
+               -h --help               Show supported options
+               -v --version            Print version information
+                  --license            Show license information
+
+       Actions:
+               -t --test               Only verify checksums, don't write anything
+               -e --extract            Extract files (default action)
+               -l --list               Only list files, don't write anything
+
+       Modifiers:
+                  --dump               Dump contents without converting filenames
+               -L --lowercase          Convert extracted filenames to lower-case
+                  --language LANG      Extract files for the given language
+               -T --timestamps TZ      Timezone for file times or "local" or "none"
+               -d --output-dir DIR     Extract files into the given directory
+
+       Display options:
+               -q --quiet              Output less information
+               -s --silent             Output only error/warning information
+               -c --color[=ENABLE]     Enable/disable color output
+               -p --progress[=ENABLE]  Enable/disable the progress bar
+
+OPTIONS
+       -c, --color[=ENABLE]
+              By  default  innoextract will try to detect if the terminal sup‐
+              ports shell escape codes and  enable  or  disable  color  output
+              accordingly.  Pass  1  or true to --color to force color output.
+              Pass 0 or false to never output color codes.
+
+       --dump Don't convert Windows paths to UNIX paths and  don't  substitute
+              variables in paths.
+
+       -e, --extract
+              Extract  all  files  to  the  current  directory. This action is
+              enabled by default, unless either --list or --extract is  speci‐
+              fied. You may only specify one of --extract and --test.
+
+       -h, --help
+              Show a list of the supported options.
+
+       --language LANG
+              Extract  only language-independent files and files for the given
+              language. By default all files are extracted.
+
+       --license
+              Show license information.
+
+       -l, --list
+              List files contained in the installer  but  don't  extract  any‐
+              thing.
+
+              This  option  can  be  combined  with --silent to print only the
+              names of the contained files (one per line)  without  additional
+              syntax that would make consumption by other scripts harder.
+
+              The  --list  option  can be combined with --test or --extract to
+              display the names of the files as they are extracted  even  with
+              --silent.
+
+       -L, --lowercase
+              Convert  filenames  stored in the installer to lower-case before
+              extracting.
+
+       -d, --output-dir DIR
+              Extract all files into the given directory. By default,  innoex‐
+              tract will extract all files to the current directory.
+
+              If  the  specified directory does not exist, it will be created.
+              However, the parent directory  must  exist  or  extracting  will
+              fail.
+
+       -p, --progress[=ENABLE]
+              By  default  innoextract will try to detect if the terminal sup‐
+              ports shell escape codes and enable or disable progress bar out‐
+              put  accordingly. Pass 1 or true to --progress to force progress
+              bar output. Pass 0 or false to never show a progress bar.
+
+       -q, --quiet
+              Less verbose output.
+
+       -s, --silent
+              Don't  output  anything  except  errors  and   warnings   unless
+              explicitely requested.
+
+              This  option can be combined with --list to print only the names
+              of the contained files (one per line) without additional  syntax
+              that would make consumption by other scripts harder.
+
+       -t, --test
+              Test archive integrity but don't write any output files. You may
+              only specify one of --extract and --test.
+
+       -T, --timestamps TZ
+              Inno Setup installers can contain timestamps  in  both  UTC  and
+              'local' timezones.
+
+              The  --timestamps  option specifies what timezone should be used
+              to adjust these 'local' file times.
+
+              Valid values are those accepted by tzset in the  TZ  environment
+              variable, except with the direction of the time offset reversed:
+              both -T CET and -T GMT+1 will (when DST is in effect)  give  the
+              same result.
+
+              Besides timezones, two special values are accepted:
+
+                "none"     Don't preserve file times for extracted files, both
+              for UTC and 'local' timestamps. The file times wil be  left  the
+              way the OS set them when creating the output files.
+
+                "local"   Use the system timezone for 'local' timestamps. This
+              is the normal Inno Setup behavior, and can be used together with
+              the TZ environment variable.
+
+              The default value for this option is UTC, causing innoextract to
+              not adjust 'local' file times. File times marked as UTC  in  the
+              Inno  Setup  file  will never be adjusted no matter what --time‐
+              stamps is set to.
+
+       -v, --version
+              Print the innoextract version number and  supported  Inno  Setup
+              versions.
+
+              If combined with the --silent option, only the version number is
+              printed. Otherwise, the output will contain  the  name  (innoex‐
+              tract)  followed  by  the version number on the first line, and,
+              unless the --quiet options is specified, the range of  suuported
+              Inno Setup installer versions on the second line.
+
+EXIT VALUES
+       0      Success
+
+       1      Syntax or usage error
+
+       2+     Broken or unsupported setup file, or input/output error
+
+LIMITATIONS
+       innoextract  currently  only supports extracting all the data. There is
+       no support for extracting individual files or  components  and  limited
+       support for extracting language-specific files.
+
+       Included scripts and checks are not executed.
+
+       The mapping from Inno Setup variables like the application directory to
+       subdirectories is hard-coded.
+
+       innoextract does not check if an installer includes multiple files with
+       the  same name and will continually overwrite the destination file when
+       extracting.
+
+       Names for data slice/disk files in multi-file  installers  must  follow
+       the standard naming scheme.
+
+       Encrypted installers are not supported.
+
+SEE ALSO
+       cabextract(1), unshield(1), tzset(3)
+
+BUGS
+       No known bugs.
+
+       Please report bugs to http://innoextract.constexpr.org/issues.
+
+CREDITS
+       innoextract  is  distributed  under  the  zlib/libpng license.  See the
+       LICENSE file for details.
+
+       A website is available at http://constexpr.org/innoextract/.
+
+       This program uses the excellent lzma/xz decompression  library  written
+       by Lasse Collin.
+
+AUTHOR
+       Daniel Scharrer (daniel@constexpr.org)
+
+
+
+1.4                               2013-03-11                    innoextract(1)
