@@ -1,0 +1,452 @@
+[
+  {
+    "num": 1,
+    "doi": "10.3390/su142416400",
+    "ok": true,
+    "title": "Review on Improvements to the Safety Level of Coal Mines by Applying Intelligent Coal Mining",
+    "year": 2022,
+    "container": "Sustainability",
+    "error": null
+  },
+  {
+    "num": 2,
+    "doi": "10.1007/s40789-022-00491-3",
+    "ok": true,
+    "title": "Research and practice of intelligent coal mine technology systems in China",
+    "year": 2022,
+    "container": "International Journal of Coal Science &amp; Technology",
+    "error": null
+  },
+  {
+    "num": 3,
+    "doi": "10.3390/en15020513",
+    "ok": true,
+    "title": "A Review of Intelligent Unmanned Mining Current Situation and Development Trend",
+    "year": 2022,
+    "container": "Energies",
+    "error": null
+  },
+  {
+    "num": 4,
+    "doi": "10.13199/j.cnki.cst.2020.09.001",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 5,
+    "doi": "10.13199/j.cnki.cst.2020.01.001",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 6,
+    "doi": "10.13199/j.cnki.cst.2020.07.001",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 7,
+    "doi": "10.13199/j.cnki.cst.2019.10.012",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 8,
+    "doi": "10.13199/j.cnki.cst.2019.07.019",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 9,
+    "doi": "10.13225/j.cnki.jccs.KJ19.0510",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 10,
+    "doi": "10.13225/j.cnki.jccs.ZN20.0364",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 11,
+    "doi": "10.1038/s41598-023-42148-4",
+    "ok": true,
+    "title": "On strata damage and stress disturbance induced by coal mining based on physical similarity simulation experiments",
+    "year": 2023,
+    "container": "Scientific Reports",
+    "error": null
+  },
+  {
+    "num": 12,
+    "doi": "10.1016/j.enggeo.2024.107802",
+    "ok": true,
+    "title": "Evolution characteristics of mining-induced fractures in overburden strata under close-multi coal seams mining based on optical fiber monitoring",
+    "year": 2024,
+    "container": "Engineering Geology",
+    "error": null
+  },
+  {
+    "num": 13,
+    "doi": "10.1016/j.jappgeo.2025.105876",
+    "ok": true,
+    "title": "Spatiotemporal evolution patterns of mining-induced overburden damage based on microseismic event response analysis",
+    "year": 2025,
+    "container": "Journal of Applied Geophysics",
+    "error": null
+  },
+  {
+    "num": 14,
+    "doi": "10.3389/feart.2024.1375979",
+    "ok": true,
+    "title": "Study on overburden failure characteristics and ground pressure behavior in shallow coal seam mining underneath the gully",
+    "year": 2024,
+    "container": "Frontiers in Earth Science",
+    "error": null
+  },
+  {
+    "num": 15,
+    "doi": "10.1038/s41598-021-98520-9",
+    "ok": true,
+    "title": "Subsidence prediction of overburden strata and ground surface in shallow coal seam mining",
+    "year": 2021,
+    "container": "Scientific Reports",
+    "error": null
+  },
+  {
+    "num": 16,
+    "doi": "10.2113/eeg-d-21-00073",
+    "ok": true,
+    "title": "Unearthing Underground Mining–Induced Strata Disturbance by Electrical Resistivity Tomography Interpretation",
+    "year": 2022,
+    "container": "Environmental &amp; Engineering Geoscience",
+    "error": null
+  },
+  {
+    "num": 17,
+    "doi": "10.3390/su132413775",
+    "ok": true,
+    "title": "Characteristics of Overburden Failure and Fracture Evolution in Shallow Buried Working Face with Large Mining Height",
+    "year": 2021,
+    "container": "Sustainability",
+    "error": null
+  },
+  {
+    "num": 18,
+    "doi": "10.1021/acsomega.5c09774",
+    "ok": true,
+    "title": "Evolution of Overburden Fractures and the Water-Conducting Fracture Zone in Closely Spaced Coal Mine Seams under Highly Water-Rich Aquifers",
+    "year": 2025,
+    "container": "ACS Omega",
+    "error": null
+  },
+  {
+    "num": 19,
+    "doi": "10.1038/s41598-026-45413-4",
+    "ok": true,
+    "title": "Analysis of water-permeable fractured zone in weakly cemented overburden considering rock strain-softening",
+    "year": 2026,
+    "container": "Scientific Reports",
+    "error": null
+  },
+  {
+    "num": 20,
+    "doi": "10.1038/s41598-024-82761-5",
+    "ok": true,
+    "title": "Mechanical prediction method of strata movement and surface subsidence in backfill-strip mining",
+    "year": 2024,
+    "container": "Scientific Reports",
+    "error": null
+  },
+  {
+    "num": 21,
+    "doi": "10.1007/978-3-642-81923-0_2",
+    "ok": true,
+    "title": "Strata Movement at the Mining Horizon",
+    "year": 1983,
+    "container": "Mining Subsidence Engineering",
+    "error": null
+  },
+  {
+    "num": 22,
+    "doi": "10.13225/j.cnki.jccs.2018.6041",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 23,
+    "doi": "10.13225/j.cnki.jccs.SH19.0446",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 24,
+    "doi": "10.13225/j.cnki.jccs.2018.6038",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 25,
+    "doi": "10.13199/j.cnki.cst.2021-0169",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 26,
+    "doi": "10.13199/j.cnki.cst.2021.09.024",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 27,
+    "doi": "10.13199/j.cnki.cst.2020.03.024",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 28,
+    "doi": "10.13199/j.cnki.cst.2020-0418",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 29,
+    "doi": "10.13199/j.cnki.cst.2021.04.019",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 30,
+    "doi": "10.13225/j.cnki.jccs.DZ20.0697",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 31,
+    "doi": "10.13199/j.cnki.cst.2019.07.001",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 32,
+    "doi": "10.13225/j.cnki.jccs.2012.05.002",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 33,
+    "doi": "10.13225/j.cnki.jccs.2018.6025",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 34,
+    "doi": "10.1016/j.resourpol.2019.101408",
+    "ok": true,
+    "title": "The integrated optimization of underground stope layout designing and production scheduling incorporating a non-dominated sorting genetic algorithm (NSGA-II)",
+    "year": 2019,
+    "container": "Resources Policy",
+    "error": null
+  },
+  {
+    "num": 35,
+    "doi": "10.1080/17480930.2025.2532460",
+    "ok": true,
+    "title": "Multi-objective optimisation based on NSGA-II of mine cut-off grade from the perspective of resource security",
+    "year": 2025,
+    "container": "International Journal of Mining, Reclamation and Environment",
+    "error": null
+  },
+  {
+    "num": 36,
+    "doi": "10.1109/access.2020.2972018",
+    "ok": true,
+    "title": "A Multi-Objective Optimization Model Using Improved NSGA-II for Optimizing Metal Mines Production Process",
+    "year": 2020,
+    "container": "IEEE Access",
+    "error": null
+  },
+  {
+    "num": 37,
+    "doi": "10.1016/j.ejor.2021.01.011",
+    "ok": true,
+    "title": "Underground mine scheduling under uncertainty",
+    "year": 2021,
+    "container": "European Journal of Operational Research",
+    "error": null
+  },
+  {
+    "num": 38,
+    "doi": "10.1109/CEC60901.2024.10612008",
+    "ok": true,
+    "title": "Multi-Objective Evolutionary Optimization for Large-Scale Open Pit Mine Scheduling",
+    "year": 2024,
+    "container": "2024 IEEE Congress on Evolutionary Computation (CEC)",
+    "error": null
+  },
+  {
+    "num": 39,
+    "doi": "10.13199/j.cnki.cst.2021.09.002",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 40,
+    "doi": "10.1016/B978-0-323-91300-3.00008-5",
+    "ok": true,
+    "title": "Production process management for intelligent coal mining based on digital twin",
+    "year": 2022,
+    "container": "Digital Twin Driven Service",
+    "error": null
+  },
+  {
+    "num": 41,
+    "doi": "10.1080/25726668.2023.2257479",
+    "ok": true,
+    "title": "Digital twins in the minerals industry – a comprehensive review",
+    "year": 2023,
+    "container": "Mining Technology: Transactions of the Institutions of Mining and Metallurgy",
+    "error": null
+  },
+  {
+    "num": 42,
+    "doi": "10.1016/j.tust.2020.103393",
+    "ok": true,
+    "title": "3D scene and geological modeling using integrated multi-source spatial data: Methodology, challenges, and suggestions",
+    "year": 2020,
+    "container": "Tunnelling and Underground Space Technology",
+    "error": null
+  },
+  {
+    "num": 43,
+    "doi": "10.4197/eng.34-2.6",
+    "ok": true,
+    "title": "Continuous Cash Flow Modeling for Economic Evaluation and Risk Analysis in Mine Planning Using Monte Carlo Simulation",
+    "year": 2024,
+    "container": "Journal of King Abdulaziz University: Engineering Sciences",
+    "error": null
+  },
+  {
+    "num": 44,
+    "doi": "10.3390/app13159011",
+    "ok": true,
+    "title": "Investigation into Mining Economic Evaluation Approaches Based on the Rosenblueth Point Estimate Method",
+    "year": 2023,
+    "container": "Applied Sciences",
+    "error": null
+  },
+  {
+    "num": 45,
+    "doi": "10.1016/j.resourpol.2014.01.003",
+    "ok": true,
+    "title": "Evaluation of the mining projects under economic uncertainties using multidimensional binomial tree",
+    "year": 2014,
+    "container": "Resources Policy",
+    "error": null
+  },
+  {
+    "num": 46,
+    "doi": "10.13225/j.cnki.jccs.SH19.1167",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 47,
+    "doi": "10.13225/j.cnki.jccs.2018.0417",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 48,
+    "doi": "10.13225/j.cnki.jccs.2016.1871",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 49,
+    "doi": "10.13225/j.cnki.jccs.2016.6016",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  },
+  {
+    "num": 50,
+    "doi": "10.13225/j.cnki.jccs.2016.6024",
+    "ok": null,
+    "title": null,
+    "year": null,
+    "container": null,
+    "error": null
+  }
+]

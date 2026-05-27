@@ -1,0 +1,42 @@
+== template ==
+paragraphs: 68
+sections: [{'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': True}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}, {'page_w_cm': 21.0, 'page_h_cm': 29.7, 'top_cm': 2.3, 'bottom_cm': 2.4, 'left_cm': 1.7, 'right_cm': 1.7, 'header_cm': 1.7, 'footer_cm': 1.75, 'different_first_page': False}]
+styles: [('正文文字', 35), ('Normal', 17), ('中文摘要', 7), ('Plain Text', 3), ('作者中文', 2), ('作者单位英文', 2), ('作者英文', 1), ('英文摘要', 1)]
+
+-- markers --
+1: Normal | 尊敬的作者，为了便于国外数据库检索，您文章图和表的名称请采用双语，即将中文图表明翻译成对应的英文；参考文献采用双语参考文献，即将您的中文参考文献翻译成对应的英文参考文献。
+5: 中文摘要 | 基金项目：基金项目：国家重点基础研究发展计划(973计划)资助项目(2010CB226806，2011CB201206)；国家自然科学基金资助项目（51174112）
+6: 中文摘要 | 作者简介：齐庆新(1964—),男,吉林九台人,满族,研究员,博士生导师,博士。Tel：，E-mail：
+8: 中文摘要 | 关键词：冲击地压；应力控制理论；单位应力梯度；相似模拟
+9: 中文摘要 | 中图分类号：TD713        文献标识码：A
+13: 中文摘要 | Abstract: Based on the study and site practices on the mine pressure bumping theory,with the stress control as the center and the unit stress gradient as the mine pressure bumping 
+15: 正文文字 | 0引  言
+17: 正文文字 | 1冲击地压应力控制理论
+24: 正文文字 | 2应力控制下的冲击地压发生机理
+25: 正文文字 | 1）构造应力诱发冲击地压。2011年11月3日，河南义马煤业集团公司千秋煤矿21221回风巷掘进时发生1起冲击地压事故，地面震感强烈，事故发生地点位于F16断层构造带附近，构造应力影响显著。根据千秋煤矿煤岩层地质条件，模拟煤岩层物理力学参数见表1，运用UDEC建立基于连续体的离散单元二维数值模型，如图1a所示。
+35: 正文文字 | 2）采动应力诱发冲击地压。某煤矿在工作面运输巷掘进时发生冲击地压事故，事故影响巷道范围为50 m，如图4所示。
+41: 正文文字 | 3冲击地压应力控制理论实践
+42: Normal | 3.1超前深孔顶板预裂爆破防冲击地压
+46: Normal | 3.2开切眼贯通动态应力控制防冲击地压
+53: 正文文字 | 4结  论
+54: Normal | 1）冲击地压导致煤岩体突然破坏是高应力作用的结果，应力控制理论的核心是控制煤岩体的应力分布状态和单位应力梯度。
+55: Normal | 2）现场实践、数值模拟和相似模拟研究表明：冲击地压的发生是由于应力的变化所引起的，即冲击地压的防治是可以通过控制应力来实现的。
+56: Normal | 3）断层的构造应力会造成煤岩体的应力分布集中和单位应力梯度明显增加，动应力比远大于临界值，是导致冲击地压发生的主要原因；受邻近采区残余应力的影响，巷道掘进过程中，采场应力分布的不均匀，通常也会诱发掘进巷道冲击地压。
+57: Normal | 4）在超前深孔顶板预裂爆破和开切眼贯通动态应力控制的防冲实践中，验证了可通过应力控制理论来实现冲击地压的有效防治。
+58: 正文文字 | 参考文献：
+
+-- references --
+1: 正文文字 | [1] Cook N G W,Hock E,Pretorius J P G,et al.Rock Mechanics Applied to the Study of Rock Bursts[J].Journal of the South African Institute of Mining and Metallurgy，1965（66）:435-528.
+2: 正文文字 | [2]佩图霍夫.冲击地压和突出的力学计算方法[M].段克信，译.北京:煤炭工业出版社,1994：10-100.
+3: 正文文字 | [3]Bieniawski Z T,Denkhaus H G,Vogler UW.Failure of Fracture Rock[J].International Journal of Rock Mechanics and Mining Sciences，1969(6):323-341.
+4: 正文文字 | [4]Salamon M D G，Wagner H.Role of Stabilizing Pillars in the Alleviation of Rockburst Hazard in Deep Mines[J].Int Congr Rock Mech， Montreal,1979(2):561-566.
+5: 正文文字 | [5]李玉生.冲击地压机理及其初步应用[J].中国矿业学院学报,1985（3）:41-43. Li Yusheng.The mechanism of impact ground pressure and its preliminary application[J].Journal of China University of Mining & Technology,1985（3）:41-43.
+6: 正文文字 | [6]齐庆新,史元伟,刘天泉.冲击地压粘滑失稳机理的实验研究[J].煤炭学报,1997,22(2):144-147. Qi Qingxin，Shi Yuanwei，Liu Tianquan.Experimental research on impact ground pressure stick-slip instability mechanism[J].Journal of China Coal Society,1997,22(2):144-147.
+7: 正文文字 | [7]潘一山.冲击地压发生和破坏过程研究[D].北京:清华大学,1999:25-50. （由于文献较多，就不在此一一赘述）
+
+-- intext citation tokens --
+[1-3] | 来各国学者从不同的角度对冲击地压理论进行了研究，其中最具代表性的理论有强度理论、能量理论、冲击倾向性理论和“三准则”理论[1-3]。随着现代数学理论的发展，非线性理论和分形理论也被应用到冲击地压机理的分析。有学者在总结试验结果和冲击现场特征的基础上，
+[4-6] | 。有学者在总结试验结果和冲击现场特征的基础上，认为冲击地压发生的过程是煤岩地层受力的瞬间粘滑过程，并提出了“三因素”理论[4-6]。总的来说，我国冲击地压机理等相关理论的研究才刚起步[7-12]，解决实际问题还需要做大量的工作。因此，对于冲击地压发生
+[7-12] | 的过程是煤岩地层受力的瞬间粘滑过程，并提出了“三因素”理论[4-6]。总的来说，我国冲击地压机理等相关理论的研究才刚起步[7-12]，解决实际问题还需要做大量的工作。因此，对于冲击地压发生机理仍需开展深入的研究工作。基于多年冲击地压理论研究和现场实践工
+[13] | 键因素。无论是哪种类型的冲击地压现象，均是应力作用导致煤岩体突然破坏的结果，只是应力的来源、大小和表现形式等要素不同而已[13]。 具有冲击倾向性的煤岩体，受构造应力的影响内部积聚了一定的原始应力，煤层开采引起采场应力的重新分布并在局部形成高应力集
+[14] | 采场应力的重新分布并在局部形成高应力集中，此时处于非稳定动态平衡状态的煤岩体在外界扰动应力的作用下就会诱发冲击地压的发生[14]。由此可见，冲击地压问题实质上就是煤岩体的应力问题，控制冲击地压灾害的发生，实质上就是改变煤岩体的应力状态或控制高应力区
